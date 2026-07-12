@@ -20,12 +20,15 @@ final class OverlayController {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .statusBar                     // above normal & floating windows
+        // Above everything — including fullscreen apps and other floating HUDs.
+        panel.level = .screenSaver
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false                      // shadow is drawn in SwiftUI
         panel.ignoresMouseEvents = true              // click-through
         panel.hidesOnDeactivate = false
+        // canJoinAllSpaces + fullScreenAuxiliary = shows on every Space and
+        // over apps that are in fullscreen; stationary = doesn't slide with Spaces.
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.isReleasedWhenClosed = false
 
