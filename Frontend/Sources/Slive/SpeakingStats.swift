@@ -39,10 +39,7 @@ final class SpeakingStats: ObservableObject {
     /// no words, or an absurd rate) are ignored so a stray tap can't skew the
     /// average.
     func record(text: String, seconds: TimeInterval) {
-        let words = text.split(whereSeparator: { $0.isWhitespace }).count
-        guard words > 0, seconds >= 0.5 else { return }
-        let wpm = Double(words) / (seconds / 60.0)
-        guard wpm.isFinite, wpm > 0, wpm < 600 else { return }
+        guard let wpm = Self.wpm(text: text, seconds: seconds) else { return }
 
         lastWPM = wpm
         bestWPM = max(bestWPM, wpm)
@@ -51,6 +48,16 @@ final class SpeakingStats: ObservableObject {
             : (averageWPM * Double(sampleCount) + wpm) / Double(sampleCount + 1)
         sampleCount += 1
         persist()
+    }
+
+    /// Pure WPM computation with the plausibility guards; nil = don't record.
+    /// Split out so tests can pin the math and the rejection rules.
+    static func wpm(text: String, seconds: TimeInterval) -> Double? {
+        let words = text.split(whereSeparator: { $0.isWhitespace }).count
+        guard words > 0, seconds >= 0.5 else { return nil }
+        let wpm = Double(words) / (seconds / 60.0)
+        guard wpm.isFinite, wpm > 0, wpm < 600 else { return nil }
+        return wpm
     }
 
     func reset() {

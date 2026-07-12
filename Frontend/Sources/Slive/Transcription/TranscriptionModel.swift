@@ -273,7 +273,7 @@ final class TranscriptionModel: ObservableObject {
     /// Belt-and-suspenders: strip any residual Whisper control tokens like
     /// `<|startoftranscript|>`, `<|en|>`, `<|0.00|>`, `<|endoftext|>` that can
     /// slip through even with skipSpecialTokens set, plus the placeholder.
-    private static func cleanStreamText(_ text: String) -> String {
+    static func cleanStreamText(_ text: String) -> String {   // internal for tests
         var t = text.replacingOccurrences(of: "Waiting for speech...", with: "")
         if t.contains("<|") {
             t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)

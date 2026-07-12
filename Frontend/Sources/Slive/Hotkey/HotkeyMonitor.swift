@@ -200,7 +200,7 @@ final class HotkeyMonitor {
 
     // MARK: - Event handling  (returns true to CONSUME the event)
 
-    fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
+    func handle(type: CGEventType, event: CGEvent) -> Bool {   // internal for tests
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             Log.hotkey("tap disabled (\(type == .tapDisabledByTimeout ? "timeout" : "userInput")) — re-enabling")
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
