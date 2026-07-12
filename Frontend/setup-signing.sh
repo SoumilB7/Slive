@@ -31,17 +31,28 @@ if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CN"; then
     exit 0
 fi
 
+# Prefer Homebrew openssl (3.x, supports -legacy). The -legacy PKCS#12 cipher
+# is REQUIRED, or macOS Keychain silently imports a key codesign can't use.
+OPENSSL=/opt/homebrew/bin/openssl
+[ -x "$OPENSSL" ] || OPENSSL="$(command -v openssl)"
+
 echo "▸ Generating self-signed code-signing certificate…"
-openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+"$OPENSSL" req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
     -keyout "$TMP/flowy.key" -out "$TMP/flowy.crt" \
     -subj "/CN=$CN" \
     -addext "basicConstraints=critical,CA:false" \
     -addext "keyUsage=critical,digitalSignature" \
     -addext "extendedKeyUsage=critical,codeSigning"
 
-openssl pkcs12 -export -out "$TMP/flowy.p12" \
-    -inkey "$TMP/flowy.key" -in "$TMP/flowy.crt" \
-    -name "$CN" -passout pass:flowy
+echo "▸ Packaging (PKCS#12, legacy cipher for Keychain compatibility)…"
+if ! "$OPENSSL" pkcs12 -export -legacy -out "$TMP/flowy.p12" \
+        -inkey "$TMP/flowy.key" -in "$TMP/flowy.crt" \
+        -name "$CN" -passout pass:flowy 2>/dev/null; then
+    # LibreSSL / older openssl has no -legacy flag (already uses legacy cipher).
+    "$OPENSSL" pkcs12 -export -out "$TMP/flowy.p12" \
+        -inkey "$TMP/flowy.key" -in "$TMP/flowy.crt" \
+        -name "$CN" -passout pass:flowy
+fi
 
 echo "▸ Importing into your login keychain…"
 security import "$TMP/flowy.p12" -k "$KEYCHAIN" -P flowy -T /usr/bin/codesign
