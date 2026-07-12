@@ -19,8 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)   // background agent: menu-bar only
+        NSApp.setActivationPolicy(.regular)   // normal app: Dock icon + Cmd-Tab
 
+        setupMainMenu()
         setupMenuBar()
         wireAudioAndHotkey()
 
@@ -149,6 +150,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
         return "flowy-\(f.string(from: Date())).mp3"
+    }
+
+    // MARK: - Main menu (standard app shortcuts)
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // Application menu — About, Settings, Hide, Quit.
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "About Flowy",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let settings = appMenu.addItem(withTitle: "Settings…",
+                                       action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide Flowy",
+                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others",
+                                         action: #selector(NSApplication.hideOtherApplications(_:)),
+                                         keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit Flowy",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        // Window menu — Minimize, Zoom, Close.
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "Minimize",
+                           action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom",
+                           action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Close",
+                           action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+
+        NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
     }
 
     // MARK: - Menu bar

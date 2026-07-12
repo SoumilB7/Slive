@@ -22,7 +22,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
             let w = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 460, height: 640),
-                styleMask: [.titled, .closable, .fullSizeContentView],
+                styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
@@ -30,6 +30,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.isMovableByWindowBackground = true
+            w.collectionBehavior = [.fullScreenNone]   // don't stick to fullscreen apps
             w.backgroundColor = NSColor(white: 0.10, alpha: 1)
             w.contentView = hosting
             w.isReleasedWhenClosed = false
