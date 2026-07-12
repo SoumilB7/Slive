@@ -55,6 +55,74 @@ final class ProviderStore: ObservableObject {
         keyEdition += 1
     }
 
+    // MARK: - Local models (download + read the HF cache, all in the backend)
+
+    /// Models currently in the on-disk HF cache (largest first).
+    @Published private(set) var localModels: [LocalCachedModel] = []
+    /// True while re-reading the cache.
+    @Published private(set) var localLoading = false
+    /// repo_id of the download in flight, if any (one at a time).
+    @Published private(set) var localDownloading: String?
+    @Published private(set) var localError: String?
+
+    private let localClient = LocalModelsClient()
+
+    /// Re-read the HF cache (starts the lazy backend first).
+    func refreshLocalCache() async {
+        localLoading = true
+        localError = nil
+        defer { localLoading = false }
+        guard await BackendManager.shared.ensureHealthy() else {
+            localError = "Couldn't start the local backend."
+            return
+        }
+        do {
+            localModels = try await localClient.cachedModels()
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
+    /// Download `repoID` into the standard HF cache via the backend, polling the
+    /// job to completion, then refresh the cache list.
+    func downloadLocalModel(_ repoID: String) async {
+        let id = repoID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, localDownloading == nil else { return }
+        localError = nil
+        guard await BackendManager.shared.ensureHealthy() else {
+            localError = "Couldn't start the local backend."
+            return
+        }
+        localDownloading = id
+        defer { localDownloading = nil }
+        do {
+            let jobID = try await localClient.startDownload(repoID: id, token: huggingFaceToken)
+            while true {
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+                let job = try await localClient.downloadStatus(jobID: jobID)
+                if job.state == "done" { break }
+                if job.state == "error" {
+                    localError = job.message.isEmpty ? "Download failed." : job.message
+                    break
+                }
+            }
+            await refreshLocalCache()
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
+    /// Remove a cached model from disk, then refresh.
+    func deleteLocalModel(_ repoID: String) async {
+        localError = nil
+        do {
+            try await localClient.delete(repoID: repoID)
+            await refreshLocalCache()
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
     // MARK: - Provider-global config
 
     /// The one base URL a provider needs (OpenAI-compatible only). Ground truth

@@ -316,69 +316,30 @@ private struct ProviderRow: View {
     ]
 }
 
-// MARK: - Local (Hugging Face) — coming soon
+// MARK: - Local (Hugging Face) — download into the standard cache + browse it
 
 private struct LocalProviderRow: View {
     @Binding var expanded: Bool
     @ObservedObject private var providers = ProviderStore.shared
+
     @State private var tokenDraft = ""
+    @State private var modelIDDraft = ""
+    @State private var filter = ""
+
+    private var downloading: String? { providers.localDownloading }
+
+    private var filteredModels: [LocalCachedModel] {
+        let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return providers.localModels }
+        return providers.localModels.filter { $0.repo_id.lowercased().contains(q) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
-            } label: {
-                HStack(spacing: 12) {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(.white.opacity(0.05))
-                        .frame(width: 30, height: 30)
-                        .overlay(
-                            Image(systemName: "desktopcomputer")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(SliveTheme.textSecondary)
-                        )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Local (Hugging Face)")
-                            .font(SliveTheme.rowFont)
-                            .foregroundStyle(SliveTheme.textPrimary)
-                        Text("Runs on this Mac — add your token now")
-                            .font(SliveTheme.captionFont)
-                            .foregroundStyle(SliveTheme.textSecondary)
-                    }
-                    Spacer(minLength: 8)
-                    Text("SOON")
-                        .font(SliveTheme.font(9, .bold))
-                        .tracking(0.8)
-                        .foregroundStyle(SliveTheme.textTertiary)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Capsule().fill(.white.opacity(0.06)))
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(SliveTheme.textTertiary)
-                        .rotationEffect(.degrees(expanded ? 180 : 0))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
+            header
             if expanded {
                 CardDivider().padding(.top, 12)
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Download models from Hugging Face and run them fully on-device. Save your access token now — model download and on-device inference are the next milestone; once live, Local joins the pickers in Assistant and Training.")
-                        .sliveCaption()
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Access token")
-                            .font(SliveTheme.rowFont)
-                            .foregroundStyle(SliveTheme.textPrimary)
-                        SecureField("hf_…  (huggingface.co/settings/tokens)", text: $tokenDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 12, design: .monospaced))
-                            .onChange(of: tokenDraft) { _, new in
-                                providers.setHuggingFaceToken(new)
-                            }
-                    }
-                }
-                .padding(.top, 12)
+                detail.padding(.top, 12)
             }
         }
         .padding(SliveTheme.cardPad)
@@ -390,6 +351,192 @@ private struct LocalProviderRow: View {
                         .strokeBorder(SliveTheme.cardStroke, lineWidth: 0.8)
                 )
         )
-        .onAppear { tokenDraft = providers.huggingFaceToken }
+        .onAppear {
+            tokenDraft = providers.huggingFaceToken
+            if providers.localModels.isEmpty { Task { await providers.refreshLocalCache() } }
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+        } label: {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.white.opacity(0.05))
+                    .frame(width: 30, height: 30)
+                    .overlay(
+                        Image(systemName: "desktopcomputer")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(SliveTheme.textSecondary)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local (Hugging Face)")
+                        .font(SliveTheme.rowFont)
+                        .foregroundStyle(SliveTheme.textPrimary)
+                    Text(subtitle)
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textSecondary)
+                }
+                Spacer(minLength: 8)
+                Text("RUNS · SOON")
+                    .font(SliveTheme.font(9, .bold))
+                    .tracking(0.6)
+                    .foregroundStyle(SliveTheme.textTertiary)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(.white.opacity(0.06)))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(SliveTheme.textTertiary)
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var subtitle: String {
+        if let downloading { return "Downloading \(downloading)…" }
+        let n = providers.localModels.count
+        return n > 0 ? "\(n) models in your cache" : "Download models to this Mac"
+    }
+
+    // MARK: Detail
+
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Downloads land in your standard Hugging Face cache (shared with transformers / PyTorch) and run in the Python backend. Running downloaded models for the Assistant is the next milestone.")
+                .sliveCaption()
+
+            // Access token.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Access token (for gated / private repos)")
+                    .font(SliveTheme.rowFont)
+                    .foregroundStyle(SliveTheme.textPrimary)
+                SecureField("hf_…  (huggingface.co/settings/tokens)", text: $tokenDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .onChange(of: tokenDraft) { _, new in providers.setHuggingFaceToken(new) }
+            }
+
+            CardDivider()
+
+            // Download by id.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Download a model")
+                    .font(SliveTheme.rowFont)
+                    .foregroundStyle(SliveTheme.textPrimary)
+                HStack(spacing: 8) {
+                    TextField("owner/name  (e.g. google/gemma-3-4b-it)", text: $modelIDDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .onSubmit(startDownload)
+                    if downloading != nil {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Download", action: startDownload)
+                            .buttonStyle(.borderedProminent)
+                            .tint(SliveTheme.accent)
+                            .controlSize(.small)
+                            .disabled(modelIDDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                if let err = providers.localError {
+                    Text(err)
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(.orange.opacity(0.95))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            CardDivider()
+
+            cacheList
+        }
+    }
+
+    // MARK: In your cache
+
+    private var cacheList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("IN YOUR CACHE")
+                    .font(SliveTheme.font(10, .bold))
+                    .foregroundStyle(SliveTheme.textTertiary)
+                    .tracking(1.1)
+                if providers.localLoading { ProgressView().controlSize(.mini) }
+                Spacer()
+                Button {
+                    Task { await providers.refreshLocalCache() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(SliveTheme.accent)
+                }
+                .buttonStyle(.plain)
+                .help("Re-read the Hugging Face cache")
+            }
+
+            if providers.localModels.isEmpty {
+                Text(providers.localLoading ? "Reading cache…" : "Nothing downloaded yet.")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textTertiary)
+                    .padding(.vertical, 4)
+            } else {
+                if providers.localModels.count > 8 {
+                    TextField("Filter \(providers.localModels.count) cached models…", text: $filter)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                }
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredModels) { model in
+                            cacheRow(model)
+                            Divider().overlay(.white.opacity(0.05))
+                        }
+                    }
+                }
+                .frame(maxHeight: 240)
+            }
+        }
+    }
+
+    private func cacheRow(_ model: LocalCachedModel) -> some View {
+        HStack(spacing: 10) {
+            Text(model.repo_id)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(SliveTheme.textMid)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            Text(model.sizeText)
+                .font(SliveTheme.mono(11))
+                .foregroundStyle(SliveTheme.textSecondary)
+                .fixedSize()
+            Button {
+                Task { await providers.deleteLocalModel(model.repo_id) }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+            .buttonStyle(.plain)
+            .help("Delete \(model.repo_id) from the cache")
+        }
+        .padding(.vertical, 7)
+    }
+
+    // MARK: Actions
+
+    private func startDownload() {
+        let id = modelIDDraft.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty else { return }
+        Task {
+            await providers.downloadLocalModel(id)
+            if providers.localError == nil { modelIDDraft = "" }
+        }
     }
 }

@@ -28,6 +28,7 @@ from flowy.assistant import answer as assistant_answer
 from flowy.assistant import answer_stream as assistant_answer_stream
 from flowy.assistant import list_models as assistant_list_models
 from flowy.assistant import transcribe_audio as assistant_transcribe_audio
+from flowy import local as local_models
 from flowy.transcribe import transcribe
 
 HOST = "127.0.0.1"
@@ -234,6 +235,59 @@ async def models_endpoint(req: ModelsRequest) -> JSONResponse:
         logger.exception("Model list request failed")
         return JSONResponse(status_code=502, content={"error": str(exc)})
     return JSONResponse(status_code=200, content={"models": models})
+
+
+# ---------------------------------------------------------------------------
+# Local (Hugging Face) models — download into the standard cache + read it
+# ---------------------------------------------------------------------------
+
+
+@app.get("/local/cache")
+async def local_cache_endpoint() -> JSONResponse:
+    """List the model repos currently in the HF cache (fast, no network)."""
+    models = await run_in_threadpool(local_models.list_cached_models)
+    return JSONResponse(status_code=200, content={"models": models})
+
+
+class LocalDownloadRequest(BaseModel):
+    repo_id: str
+    token: str | None = None
+
+
+@app.post("/local/download")
+async def local_download_endpoint(req: LocalDownloadRequest) -> JSONResponse:
+    """Start a background snapshot download; returns a job id to poll. Validates
+    the id in the handler (not a pydantic validator) so a bad id returns a clean
+    {error} the app can show, not a 422 the client would mis-read."""
+    repo_id = req.repo_id.strip()
+    if not repo_id or "/" not in repo_id or any(ord(c) < 0x20 for c in repo_id):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Enter a model id like 'owner/name'."},
+        )
+    token = (req.token or "").strip() or None
+    job_id = local_models.start_download(repo_id, token)
+    return JSONResponse(status_code=200, content={"job_id": job_id})
+
+
+@app.get("/local/download/{job_id}")
+async def local_download_status_endpoint(job_id: str) -> JSONResponse:
+    status = local_models.download_status(job_id)
+    if status is None:
+        return JSONResponse(status_code=404, content={"error": "Unknown job."})
+    return JSONResponse(status_code=200, content=status)
+
+
+class LocalDeleteRequest(BaseModel):
+    repo_id: str
+
+
+@app.post("/local/delete")
+async def local_delete_endpoint(req: LocalDeleteRequest) -> JSONResponse:
+    ok = await run_in_threadpool(local_models.delete_cached_model, req.repo_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "Not in the cache."})
+    return JSONResponse(status_code=200, content={"deleted": req.repo_id})
 
 
 def main() -> None:
