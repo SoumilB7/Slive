@@ -10,6 +10,7 @@ struct SettingsView: View {
     @ObservedObject private var history = HistoryStore.shared
     @ObservedObject private var transcription = TranscriptionModel.shared
     @ObservedObject private var stats = SpeakingStats.shared
+    @ObservedObject private var training = TrainingStore.shared
     var onRelaunch: () -> Void
 
     private let accent = Color(hue: 0.50, saturation: 0.68, brightness: 0.86)
@@ -394,10 +395,85 @@ struct SettingsView: View {
                     .foregroundStyle(.white.opacity(0.5))
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider().overlay(.white.opacity(0.08))
+
+            captureEditsBlock
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(card)
+    }
+
+    /// Toggle + live comparison for the edit-capture (training data) feature.
+    private var captureEditsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $settings.captureEdits) {
+                Text("Capture dictation edits (training data)")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .toggleStyle(.switch)
+            .tint(accent)
+            Text("When you dictate into a field, records what Slive typed vs. what that section became when the field loses focus — plus the audio. Stored locally only, for later fine-tuning.")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if settings.captureEdits {
+                HStack(spacing: 6) {
+                    Image(systemName: "tray.full")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(accent)
+                    Text("\(training.count) sample\(training.count == 1 ? "" : "s") captured")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .padding(.top, 2)
+
+                if let s = training.latest {
+                    latestComparison(s)
+                }
+            }
+        }
+    }
+
+    /// The most recent (Slive → final) pair, so you can watch the diff live.
+    private func latestComparison(_ s: EditSample) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(s.edited ? "EDITED" : "UNCHANGED")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(0.8)
+                    .foregroundStyle(s.edited ? Color.orange : Color.green)
+                Text("· \(s.confidence)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+            comparisonRow(label: "Slive", text: s.transcript, color: .white.opacity(0.55))
+            comparisonRow(label: "Final", text: s.finalText.isEmpty ? "—" : s.finalText,
+                          color: s.edited ? .orange.opacity(0.9) : .white.opacity(0.8))
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.white.opacity(0.05))
+        )
+    }
+
+    private func comparisonRow(label: String, text: String, color: Color) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.4))
+                .frame(width: 34, alignment: .leading)
+            Text(text)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(color)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// On-device (Neural Engine) transcription model — accuracy vs. speed.

@@ -285,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .dictate, .stream:
                 // `.stream` never reaches here (it uses the live path), but the
                 // file path falls back to plain dictation if it ever did.
-                await MainActor.run { self.finishTranscription(text: text) }
+                await MainActor.run { self.finishTranscription(text: text, audioURL: wavURL) }
             case .assist:
                 if await self.backend.ensureHealthy() {
                     if Task.isCancelled { return }
@@ -497,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Result path: grow the overlay to show `text`, then auto-collapse. On a nil
     /// (failure) or empty transcript, quietly fade the overlay away.
-    @MainActor private func finishTranscription(text: String?) {
+    @MainActor private func finishTranscription(text: String?, audioURL: URL? = nil) {
         transcribeTask = nil
         // Ignore stale completions — a new recording may already be listening.
         guard model.phase == .transcribing else { return }
@@ -513,11 +513,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // If auto-insert is on and a text field is focused, paste straight there
         // and skip the copy box entirely.
-        if Settings.shared.autoInsert, PasteEngine.insertIfPossible(trimmed) {
-            SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)  // after write
-            model.finishListening()
-            hideOverlaySoon()
-            return
+        if Settings.shared.autoInsert {
+            // Snapshot the field BEFORE typing so the training capture has clean
+            // pre-insertion context (only when capture is enabled).
+            let pre = Settings.shared.captureEdits ? EditCapture.shared.capturePre() : nil
+            if PasteEngine.insertIfPossible(trimmed) {
+                if let pre {
+                    EditCapture.shared.begin(pre: pre, transcript: trimmed, audioURL: audioURL)
+                }
+                SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)  // after write
+                model.finishListening()
+                hideOverlaySoon()
+                return
+            }
         }
 
         // Otherwise, surface the copy box.
