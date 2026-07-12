@@ -86,9 +86,13 @@ enum OverlayMetrics {
 /// grows into a rounded box to show the returned text.
 struct OverlayView: View {
     @ObservedObject var model: AudioModel
+    @ObservedObject private var settings = Settings.shared
 
     /// Retained across the fade-out so the box doesn't collapse mid-animation.
     @State private var displayText: String = ""
+
+    /// User-tunable opacity for the overlay chrome (pill / box backgrounds).
+    private var chromeOpacity: Double { settings.overlayOpacity }
 
     private var isListening: Bool {
         if case .listening = model.phase { return true }; return false
@@ -171,7 +175,7 @@ struct OverlayView: View {
             .frame(width: 48, height: 18)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(Capsule().fill(Color.black.opacity(0.92)))
+            .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
             .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
@@ -184,6 +188,7 @@ struct OverlayView: View {
         // its own dark disc + orbiting mass, centered in the pill container.
         BlackHoleOrbitView(active: isAssistantListening)
             .frame(width: 40, height: 40)
+            .opacity(chromeOpacity)
             .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
     }
 
@@ -194,7 +199,7 @@ struct OverlayView: View {
             .frame(width: 48, height: 18)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(Capsule().fill(Color.black.opacity(0.92)))
+            .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
             .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
@@ -304,7 +309,7 @@ struct OverlayView: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.92))
+                    .fill(Color.black.opacity(chromeOpacity))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous)
