@@ -8,6 +8,7 @@ struct SettingsView: View {
     @ObservedObject var permissions: PermissionsModel
     var audiosPath: String
     var onOpenAudios: () -> Void
+    var onRelaunch: () -> Void
 
     private let accent = Color(hue: 0.76, saturation: 0.7, brightness: 1.0)
 
@@ -132,6 +133,25 @@ struct SettingsView: View {
                 granted: permissions.micGranted,
                 action: { permissions.requestMic() }
             )
+            Divider().overlay(.white.opacity(0.08))
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .foregroundStyle(accent)
+                    .font(.system(size: 16))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Just enabled Input Monitoring?")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Text("macOS only applies it after a relaunch.")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+                Spacer()
+                Button("Relaunch", action: onRelaunch)
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
+                    .controlSize(.small)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

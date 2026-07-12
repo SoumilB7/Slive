@@ -6,6 +6,7 @@ import SwiftUI
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     var audiosPath: String = ""
     var onOpenAudios: () -> Void = {}
+    var onRelaunch: () -> Void = {}
 
     private var window: NSWindow?
     private let permissions = PermissionsModel()
@@ -16,7 +17,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                 settings: .shared,
                 permissions: permissions,
                 audiosPath: audiosPath,
-                onOpenAudios: onOpenAudios
+                onOpenAudios: onOpenAudios,
+                onRelaunch: onRelaunch
             )
             let hosting = NSHostingView(rootView: root)
 
