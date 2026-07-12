@@ -31,18 +31,23 @@ enum PasteEngine {
         // No Accessibility permission → we can't read focus or post events.
         guard AXIsProcessTrusted() else { return false }
 
+        // Something must have keyboard focus, else we'd paste into nowhere — let
+        // the caller fall back to the copy box instead.
         guard let element = focusedElement() else { return false }
 
         // Never insert into a secure/password field.
         guard !isSecure(element) else { return false }
 
-        // Only insert into something that is actually an editable text field.
-        guard isEditableTextField(element) else { return false }
+        // Strategy 1: clean AX insert when the field exposes an editable text
+        // role (native fields, most web inputs) — no clipboard involved.
+        if isEditableTextField(element), setSelectedText(element, text) {
+            return true
+        }
 
-        // Strategy 1: direct AX insert (no clipboard involvement).
-        if setSelectedText(element, text) { return true }
-
-        // Strategy 2: clipboard paste fallback (web / Electron fields).
+        // Strategy 2: ⌘V fallback. This is what reaches Electron / VS Code /
+        // terminal editors (e.g. the Claude Code extension's Monaco view) whose
+        // custom text areas don't expose a settable AX value. Something is
+        // focused and it isn't secure, so the paste lands in the right place.
         return pasteViaClipboard(text)
     }
 
