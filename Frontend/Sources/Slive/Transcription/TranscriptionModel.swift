@@ -149,13 +149,17 @@ final class TranscriptionModel: ObservableObject {
             tokenizer: tokenizer,
             audioProcessor: pipe.audioProcessor,
             decodingOptions: options,
+            // Confirm text after just one trailing segment (default is 2) so words
+            // flow into the field sooner instead of stalling several segments back.
+            requiredSegmentsForConfirmation: 1,
             useVAD: true,
             stateChangeCallback: { _, state in
                 let confirmed = Self.cleanStreamText(state.confirmedSegments.map { $0.text }.joined())
-                var hypothesis = Self.cleanStreamText(state.unconfirmedSegments.map { $0.text }.joined())
-                // While a fresh chunk is decoding there may be no unconfirmed
-                // segment yet — fall back to the in-progress decode text.
-                if hypothesis.isEmpty { hypothesis = Self.cleanStreamText(state.currentText) }
+                // Only the stabilised unconfirmed segments — deliberately NOT
+                // `state.currentText`, which is the volatile in-progress decode and
+                // can be an early-audio hallucination or the internal "Waiting for
+                // speech..." placeholder we must never type into the field.
+                let hypothesis = Self.cleanStreamText(state.unconfirmedSegments.map { $0.text }.joined())
                 let energy = state.bufferEnergy.last ?? 0
                 Task { @MainActor in onUpdate(confirmed, hypothesis, energy) }
             }
@@ -172,6 +176,7 @@ final class TranscriptionModel: ObservableObject {
     /// `<|startoftranscript|>`, `<|en|>`, `<|0.00|>`, `<|endoftext|>` that can
     /// slip through the in-progress decode text even with skipSpecialTokens set.
     private static func cleanStreamText(_ text: String) -> String {
+        if text == "Waiting for speech..." { return "" }   // internal placeholder
         guard text.contains("<|") else { return text }
         return text.replacingOccurrences(
             of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)

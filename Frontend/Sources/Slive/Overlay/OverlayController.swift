@@ -20,26 +20,54 @@ final class OverlayController {
             defer: false
         )
         panel.isFloatingPanel = true
-        // Above EVERYTHING, including other apps' full-screen spaces. `.screenSaver`
-        // (level 1000) isn't reliably above a full-screen app's own window layers
-        // on recent macOS; `CGShieldingWindowLevel()` is the level Apple uses for
-        // overlays that must sit on top of full-screen content (screen dimmers /
-        // capture overlays use it).
-        panel.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false                      // shadow is drawn in SwiftUI
         panel.ignoresMouseEvents = true              // click-through
         panel.hidesOnDeactivate = false
-        // canJoinAllSpaces + fullScreenAuxiliary = shows on every Space and
-        // over apps that are in fullscreen; stationary = doesn't slide with Spaces.
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.isReleasedWhenClosed = false
+        applyTopmostLevel()                          // level + collection behavior
 
         let host = NSHostingView(rootView: OverlayView(model: model))
         host.frame = NSRect(origin: .zero, size: size)
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
+
+        // Re-assert the top-most level when the environment changes underneath a
+        // long-running session: a Space switch, or a wake from sleep, can leave
+        // the panel below the frontmost app. See `applyTopmostLevel`.
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didWakeNotification] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.reassertIfVisible()
+            }
+        }
+    }
+
+    /// Set the panel's window level and collection behavior so it floats above
+    /// everything — including other apps' full-screen spaces.
+    ///
+    /// `CGShieldingWindowLevel()` is the level Apple uses for overlays that must
+    /// sit on top of full-screen content (screen dimmers / capture overlays);
+    /// `.screenSaver` isn't reliably above a full-screen app's own layers on
+    /// recent macOS. Crucially this is re-read on every `show()` (not cached from
+    /// launch): the effective shielding level can rise during a long session —
+    /// after full-screen apps, screen recording, or a lock/wake — and a stale
+    /// level captured at launch would leave the pill rendering BEHIND the
+    /// frontmost app (looking like it vanished).
+    private func applyTopmostLevel() {
+        panel.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
+        // canJoinAllSpaces + fullScreenAuxiliary = shows on every Space and over
+        // full-screen apps; stationary = doesn't slide with Spaces.
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+    }
+
+    /// If the pill is on screen, refresh its level and re-order it to the front —
+    /// used after Space switches / wake so it never gets stuck behind an app.
+    private func reassertIfVisible() {
+        guard panel.isVisible else { return }
+        applyTopmostLevel()
+        panel.orderFrontRegardless()
     }
 
     /// Bring the overlay on screen, positioned bottom-centre of whichever
@@ -47,6 +75,7 @@ final class OverlayController {
     /// a previous result box may have left the panel grown.
     func show() {
         panel.ignoresMouseEvents = true              // pill/transcribing stay click-through
+        applyTopmostLevel()                          // refresh level (may be stale)
         setPanelSize(OverlayMetrics.pillSize)
         reposition()
         panel.orderFrontRegardless()
