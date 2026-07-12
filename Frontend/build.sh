@@ -32,11 +32,20 @@ if [[ -f Resources/AppIcon.icns ]]; then
     cp Resources/AppIcon.icns "$CONTENTS/Resources/AppIcon.icns"
 fi
 
-# Ad-hoc code signing gives the bundle a stable identity so macOS TCC
-# (Microphone / Accessibility permissions) remembers the grant across launches.
-echo "▸ Signing (ad-hoc)…"
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || {
-    echo "  (codesign warning ignored — ad-hoc signing is best-effort)"
+# Prefer a stable self-signed identity if the user created one — then macOS TCC
+# (Microphone / Input Monitoring) remembers grants across REBUILDS, not just
+# relaunches. Falls back to ad-hoc otherwise (grants reset on each rebuild).
+# To create the identity, see: Frontend/setup-signing.sh
+SIGN_ID="Flowy Local Signing"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+    SIGN_ARGS=(--sign "$SIGN_ID")
+    echo "▸ Signing with stable identity: $SIGN_ID"
+else
+    SIGN_ARGS=(--sign -)
+    echo "▸ Signing (ad-hoc — grants reset on rebuild; run setup-signing.sh for persistence)"
+fi
+codesign --force --deep "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
+    echo "  (codesign warning ignored)"
 }
 
 echo "✓ Built: $APP"
@@ -51,8 +60,8 @@ if [[ "${1:-}" == "install" ]]; then
     sleep 0.3
     rm -rf "$DEST"
     cp -R "$APP" "$DEST"
-    # Re-sign in place so the installed copy has a valid signature.
-    codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
+    # Re-sign the installed copy with the same identity.
+    codesign --force --deep "${SIGN_ARGS[@]}" "$DEST" >/dev/null 2>&1 || true
     LAUNCH_TARGET="$DEST"
     echo "✓ Installed: $DEST"
 fi

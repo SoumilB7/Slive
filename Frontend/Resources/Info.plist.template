@@ -18,9 +18,9 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
-    <!-- Normal app: visible Dock icon + menu-bar item (never silently hides). -->
+    <!-- Background agent: runs headless in the menu bar, no Dock icon. -->
     <key>LSUIElement</key>
-    <false/>
+    <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Flowy records your voice while you hold the talk key, then saves it as an MP3.</string>
     <key>NSHighResolutionCapable</key>

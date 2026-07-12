@@ -24,6 +24,13 @@ final class FFTProcessor {
     // Precomputed [startBin, endBin) ranges for each output band.
     private let bandRanges: [(Int, Int)]
 
+    // Level-mapping dials for bar liveliness (see `process`). `gain` is raw
+    // sensitivity; `shape` (<1) expands the low end so normal speech reads
+    // ~30–40% instead of hugging zero.
+    private let gain: Float = 22000
+    private let logRange: Float = 3.4
+    private let shape: Float = 0.6
+
     init(fftSize: Int = 1024, bandCount: Int = 28, sampleRate: Double = 48_000) {
         self.fftSize = fftSize
         self.bandCount = bandCount
@@ -103,9 +110,9 @@ final class FFTProcessor {
             var sum: Float = 0
             for bin in range.0..<range.1 { sum += magnitudes[bin] }
             let mean = sum / Float(max(1, range.1 - range.0))
-            // magnitudes are power (squared); convert to a gentle dB-ish scale.
-            let level = log10(1 + mean * 8_000) / 4.0
-            bands[i] = min(1, max(0, level))
+            // Log (dB-like) mapping, not linear — lifts quiet/normal speech.
+            let compressed = min(1, log10(1 + mean * gain) / logRange)
+            bands[i] = pow(compressed, shape)
         }
         return bands
     }
