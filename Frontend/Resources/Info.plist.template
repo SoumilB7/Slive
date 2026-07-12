@@ -25,6 +25,10 @@
     <string>Flowy records your voice while you hold the talk key, then saves it as an MP3.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <!-- Baked at build time: absolute path to the repo's /Audios folder. -->
     <key>FlowyAudiosPath</key>
     <string>__AUDIOS_DIR__</string>
