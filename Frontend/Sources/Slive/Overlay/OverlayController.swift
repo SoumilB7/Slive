@@ -39,7 +39,7 @@ final class OverlayController {
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didWakeNotification] {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.reassertIfVisible()
+                self?.reassertTopmost()
             }
         }
     }
@@ -62,12 +62,14 @@ final class OverlayController {
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
     }
 
-    /// If the pill is on screen, refresh its level and re-order it to the front —
-    /// used after Space switches / wake so it never gets stuck behind an app.
-    private func reassertIfVisible() {
-        guard panel.isVisible else { return }
+    /// Refresh the panel's level + collection behavior — used after Space
+    /// switches and wake-from-sleep, when the window server can demote the panel
+    /// or drop its all-spaces / full-screen behavior. Applied even while hidden
+    /// (sleep resets it whether or not the pill is up), so the next appearance
+    /// already draws over everything; re-ordered to the front if it's visible.
+    private func reassertTopmost() {
         applyTopmostLevel()
-        panel.orderFrontRegardless()
+        if panel.isVisible { panel.orderFrontRegardless() }
     }
 
     /// Bring the overlay on screen, positioned bottom-centre of whichever

@@ -42,6 +42,7 @@ final class HotkeyMonitor {
     private var runLoopSource: CFRunLoopSource?
     private var pollTimer: Timer?
     private var healthTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
     private var installedConsuming = false
 
     private var activeAction: HotkeyAction?    // shortcut currently held
@@ -75,11 +76,28 @@ final class HotkeyMonitor {
 
         installTap()
         if !tapGranted { startPolling() }
+
+        // macOS kills a session event tap when the machine sleeps; re-enabling it
+        // afterwards doesn't revive it, so on wake we rebuild it from scratch —
+        // otherwise the hotkey (and thus the whole overlay) stops working after a
+        // lid-close/open until the app is relaunched.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            NSLog("Slive: wake — rebuilding hotkey tap.")
+            self.reinstallTap()
+            if !self.tapGranted { self.startPolling() }
+        }
     }
 
     func stop() {
         pollTimer?.invalidate(); pollTimer = nil
         healthTimer?.invalidate(); healthTimer = nil
+        if let obs = wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+            wakeObserver = nil
+        }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
         eventTap = nil; runLoopSource = nil
