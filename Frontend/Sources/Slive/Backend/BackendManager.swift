@@ -45,8 +45,28 @@ final class BackendManager: ObservableObject {
     /// assistant path's `ensureHealthy()` brings it up on first use — so a user
     /// who only dictates never pays for a resident Python process at all.
     func reapOrphans() {
-        pkillServer(signal: "TERM")
         status = .offline
+        // PID-snapshot, then kill asynchronously. Killing by PATTERN later
+        // would race a server we spawn in the meantime (`pkill -f` matches our
+        // own child); killing by captured PID can never touch a process that
+        // didn't exist yet. Also keeps the fork/exec+wait off the launch path.
+        Task.detached(priority: .utility) {
+            let pgrep = Process()
+            pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            pgrep.arguments = ["-f", "flowy.server"]
+            let out = Pipe()
+            pgrep.standardOutput = out
+            guard (try? pgrep.run()) != nil else { return }
+            pgrep.waitUntilExit()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let pids = String(data: data, encoding: .utf8)?
+                .split(whereSeparator: \.isNewline)
+                .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) } ?? []
+            for pid in pids { kill(pid, SIGTERM) }
+            if !pids.isEmpty {
+                NSLog("Slive: reaped \(pids.count) orphan backend process(es).")
+            }
+        }
     }
 
     /// Terminate the backend on quit — the one we started, plus any reused/orphan

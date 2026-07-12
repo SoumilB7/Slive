@@ -115,7 +115,14 @@ final class OverlayController {
     private func rebuildPanel(reason: String) {
         let wasVisible = panel.isVisible
         let frame = panel.frame
-        panel.orderOut(nil)
+        let old = panel
+        old.orderOut(nil)
+        // Sever the old hosting view's ObservableObject subscription NOW rather
+        // than trusting ARC/autorelease timing: a transiently-surviving
+        // NSHostingView keeps re-rendering the model's every publish into an
+        // off-screen window (and holds its IOSurface). A lid-open can fire 2-3
+        // rebuilds back-to-back, amplifying any per-swap transient.
+        old.contentView = nil
         panel = Self.makePanel(model: model)
         applyTopmostLevel()
         panel.setFrame(frame, display: true)
@@ -175,6 +182,12 @@ final class OverlayController {
         panel.ignoresMouseEvents = true              // reset to click-through
         // Reset for the next appearance so it never flashes at the grown size.
         setPanelSize(OverlayMetrics.pillSize)
+        // The model resets HERE, structurally — the "no animation loop while
+        // hidden" guarantee used to depend on every call site remembering to
+        // pair hide() with model.reset(). Ordering matters: reset AFTER
+        // orderOut, or the phase snap to .idle would render a box→pill
+        // collapse for a frame while the panel is still on screen.
+        model.reset()
     }
 
     /// Trust, but verify: shortly after ordering in, ask the window server
