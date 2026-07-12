@@ -17,27 +17,42 @@ import Foundation
 final class LiveTypist: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.slive.app.livetypist", qos: .userInitiated)
 
+    /// Cadence at/above which we type "instantly": don't pace at all, just flush the
+    /// whole remaining diff on each `setTarget` so text appears at once.
+    private static let instantThreshold: Double = 120
+
     // Queue-isolated state.
     private var committed = ""     // exactly what we've typed into the field
     private var target = ""        // what we're typing toward
     private var running = false
     private var enabled = false    // false → no editable field, so never post keys
+    private var cps: Double = 30   // characters/sec cruising speed for this session
+    private var instant = false    // cps >= instantThreshold → flush whole diff
 
     /// Begin a session. `allowed` (from `PasteEngine.canStreamType()`, checked on
     /// the main thread) gates whether we actually post keystrokes this session.
-    func start(allowed: Bool) {
+    /// `cps` is the cruising characters-per-second; `>= 120` means "Instant" (each
+    /// `setTarget` flushes the whole remaining diff immediately, no paced loop).
+    func start(allowed: Bool, cps: Double) {
         queue.async {
             self.committed = ""
             self.target = ""
             self.enabled = allowed
+            self.cps = cps
+            self.instant = cps >= Self.instantThreshold
             self.running = true
-            self.tick()
+            // Instant mode has no paced loop — `setTarget` does all the work.
+            if !self.instant { self.tick() }
         }
     }
 
-    /// Update the text we're easing toward.
+    /// Update the text we're easing toward. In Instant mode, flush the whole
+    /// remaining diff right away so the text lands at once.
     func setTarget(_ text: String) {
-        queue.async { self.target = text }
+        queue.async {
+            self.target = text
+            if self.instant, self.running, self.enabled { self.flushRemaining() }
+        }
     }
 
     /// Stop pacing, immediately flush whatever's left so the field matches the
@@ -70,15 +85,22 @@ final class LiveTypist: @unchecked Sendable {
         guard running else { return }
         if enabled, committed != target { stepOne() }
 
-        // Adapt cadence to how far behind we are: drain bursts quickly, ease when
-        // close so it reads as smooth continuous typing.
+        // Cruise at 1/cps between keystrokes, but never lag unbounded: when far
+        // behind, shrink the delay toward a fast ~0.008s floor so a burst drains
+        // quickly, easing back to the cruise delay as we catch up.
+        let cruise = cps > 0 ? 1.0 / cps : 0.035
+        let floor = 0.008
         let backlog = abs(target.count - committed.count)
         let delay: TimeInterval
         switch backlog {
-        case 0:            delay = 0.030   // idle poll for the next target
-        case 1...5:        delay = 0.035   // ~28 cps — the smooth cruising speed
-        case 6...11:       delay = 0.020
-        default:           delay = 0.010   // far behind → catch up fast
+        case 0:
+            delay = max(cruise, 0.030)     // idle poll for the next target
+        case 1...5:
+            delay = cruise                 // the smooth cruising speed
+        default:
+            // Scale from cruise (backlog 6) down to the floor (backlog ≥ 40).
+            let t = min(1, Double(backlog - 6) / Double(40 - 6))
+            delay = max(floor, cruise + (floor - cruise) * t)
         }
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.tick() }
     }

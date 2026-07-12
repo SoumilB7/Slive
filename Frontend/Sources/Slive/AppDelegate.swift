@@ -75,11 +75,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Preload the on-device transcription model IF it's already downloaded
         // (never auto-downloads — the user does that from Settings). Refresh the
         // status when the selected model changes.
-        Settings.shared.onWhisperModelChange = { [weak self] model in
-            self?.whisper.select(model)
+        // Dictation and continuous dictation each keep their OWN model. On either
+        // change, evict anything no longer referenced by the two sections, then
+        // preload the new one (shared as one instance when the names match).
+        Settings.shared.onWhisperModelChange = { [weak self] m in
+            self?.whisper.retainModels([m, Settings.shared.continuousModel])
+            self?.whisper.select(m)
+        }
+        Settings.shared.onContinuousModelChange = { [weak self] m in
+            self?.whisper.retainModels([Settings.shared.whisperModel, m])
+            self?.whisper.select(m)
         }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
         whisper.select(Settings.shared.whisperModel)
+        whisper.select(Settings.shared.continuousModel)
+        whisper.retainModels([Settings.shared.whisperModel, Settings.shared.continuousModel])
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
@@ -260,8 +270,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Streaming can't wait on a first-time model load — it needs one in
         // memory now. If none is ready, tell the user and kick off a load.
-        guard whisper.isReady else {
-            whisper.select(Settings.shared.whisperModel)
+        guard whisper.isReady(Settings.shared.continuousModel) else {
+            whisper.select(Settings.shared.continuousModel)
             let msg = "Preparing the transcription model — hold again in a moment."
             model.showResult(msg)
             overlay.show()
@@ -383,7 +393,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// do); otherwise just fade the overlay (silence / a mis-hit key).
     @MainActor private func handleNoTranscript() {
         let message: String?
-        switch whisper.status {
+        switch whisper.status(for: Settings.shared.whisperModel) {
         case .notDownloaded:
             message = "Transcription model isn't downloaded yet — open Settings → General to download it."
         case .downloading(let p):
