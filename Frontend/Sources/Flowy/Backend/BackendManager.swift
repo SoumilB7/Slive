@@ -40,12 +40,25 @@ final class BackendManager {
         }
     }
 
-    /// Terminate the backend we started (SIGTERM → uvicorn shuts down cleanly).
+    /// Terminate the backend on quit. Terminates the process we started, AND
+    /// pkills any `flowy.server` we merely *reused* (didn't spawn) — so ⌘Q always
+    /// leaves nothing running on the port.
     func stop() {
-        guard let p = process, p.isRunning else { return }
-        NSLog("Flowy: stopping backend (pid \(p.processIdentifier))")
-        p.terminate()
+        if let p = process, p.isRunning {
+            NSLog("Flowy: stopping backend (pid \(p.processIdentifier))")
+            p.terminate()
+        }
         process = nil
+        pkillServer()
+    }
+
+    /// Kill any lingering `flowy.server` process (the reused-orphan case).
+    private func pkillServer() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        task.arguments = ["-f", "flowy.server"]
+        try? task.run()
+        task.waitUntilExit()
     }
 
     // MARK: - Internals
