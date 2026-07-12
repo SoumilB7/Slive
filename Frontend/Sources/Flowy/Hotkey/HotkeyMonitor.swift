@@ -26,6 +26,7 @@ final class HotkeyMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var pollTimer: Timer?
+    private var healthTimer: Timer?
     private var isDown = false
 
     func start() {
@@ -48,9 +49,26 @@ final class HotkeyMonitor {
 
     func stop() {
         pollTimer?.invalidate(); pollTimer = nil
+        healthTimer?.invalidate(); healthTimer = nil
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
         eventTap = nil; runLoopSource = nil
+    }
+
+    /// macOS can silently disable an event tap (App Nap, timeouts, the "silent
+    /// disable race"). Poll and re-enable so hold-to-talk keeps working while
+    /// Flowy is in the background with no open window.
+    private func startHealthCheck() {
+        healthTimer?.invalidate()
+        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self, let tap = self.eventTap else { return }
+            if !CGEvent.tapIsEnabled(tap: tap) {
+                NSLog("Flowy: event tap disabled — re-enabling")
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        healthTimer = t
     }
 
     // MARK: - Tap installation
@@ -77,6 +95,7 @@ final class HotkeyMonitor {
         CGEvent.tapEnable(tap: tap, enable: true)
         eventTap = tap
         runLoopSource = src
+        startHealthCheck()
         NSLog("Flowy: ✅ event tap installed — hold fn to talk.")
         return true
     }
