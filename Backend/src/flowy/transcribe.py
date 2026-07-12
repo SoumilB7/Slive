@@ -48,12 +48,20 @@ def load_model() -> None:
     _get_model()
 
 
-def transcribe(audio_bytes: bytes) -> str:
+def transcribe(
+    audio_bytes: bytes,
+    hotwords: str | None = None,
+    initial_prompt: str | None = None,
+) -> str:
     """Transcribe raw audio bytes (MP3, 16 kHz mono) into text.
 
     The incoming bytes are written to a temp file and decoded by faster-whisper's
     bundled backend (PyAV/ffmpeg). Returns the transcribed text (may be empty for
     silence).
+
+    ``hotwords`` biases recognition toward a space-separated list of custom words,
+    and ``initial_prompt`` seeds the decoder with a context sentence. Each is only
+    forwarded to faster-whisper when it's a non-empty string.
 
     # TODO: replace with Gemma 4 E2B
     """
@@ -73,12 +81,18 @@ def transcribe(audio_bytes: bytes) -> str:
         # detection for English-only models. Much faster, negligible quality loss
         # for short dictation.
         lang = "en" if MODEL_SIZE.endswith(".en") else None
+        extra: dict[str, Any] = {}
+        if hotwords:
+            extra["hotwords"] = hotwords
+        if initial_prompt:
+            extra["initial_prompt"] = initial_prompt
         segments, _info = model.transcribe(
             tmp_path,
             beam_size=1,
             language=lang,
             vad_filter=True,
             condition_on_previous_text=False,
+            **extra,
         )
         text = "".join(segment.text for segment in segments)
         return text.strip()

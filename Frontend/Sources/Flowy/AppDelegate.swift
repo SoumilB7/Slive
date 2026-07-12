@@ -145,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("flowy-\(UUID().uuidString).mp3")
         let transcriber = self.transcriber
+        // Captured on the main thread; sent as vocabulary hints to the backend.
+        let hotwords = Settings.shared.hotwords
+        let prompt = Settings.shared.contextPrompt
 
         transcribeTask?.cancel()
         // Strong `self` capture: the task always returns (breaking any cycle),
@@ -168,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // 2. Send it to the backend and await the transcript.
             do {
-                let text = try await transcriber.transcribe(mp3)
+                let text = try await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt)
                 if Task.isCancelled { return }
                 await MainActor.run { self.finishTranscription(text: text) }
             } catch {

@@ -14,6 +14,8 @@ Contract:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 
 from fastapi import FastAPI, Request
@@ -43,14 +45,33 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _decode_header(value: str | None) -> str | None:
+    """Base64-decode a header into a UTF-8 string, defensively.
+
+    Missing, empty, or malformed values all collapse to None so a bad header
+    never turns into a 500 — recognition just proceeds without the hint.
+    """
+    if not value:
+        return None
+    try:
+        decoded = base64.b64decode(value, validate=True).decode("utf-8").strip()
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return None
+    return decoded or None
+
+
 @app.post("/transcribe")
 async def transcribe_endpoint(request: Request) -> JSONResponse:
     audio_bytes = await request.body()
     if not audio_bytes:
         return JSONResponse(status_code=400, content={"error": "Empty request body"})
+    hotwords = _decode_header(request.headers.get("X-Flowy-Hotwords"))
+    initial_prompt = _decode_header(request.headers.get("X-Flowy-Prompt"))
     try:
         # Offload the blocking model call so the event loop stays responsive.
-        text = await run_in_threadpool(transcribe, audio_bytes)
+        text = await run_in_threadpool(
+            transcribe, audio_bytes, hotwords, initial_prompt
+        )
     except Exception as exc:  # noqa: BLE001 - surface any engine error as JSON
         logger.exception("Transcription failed")
         return JSONResponse(status_code=500, content={"error": str(exc)})

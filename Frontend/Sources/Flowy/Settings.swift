@@ -61,6 +61,8 @@ final class Settings: ObservableObject {
         static let hotkey = "hotkey"
         static let launchAtLogin = "launchAtLogin"
         static let autoInsert = "autoInsert"
+        static let hotwords = "hotwords"
+        static let contextPrompt = "contextPrompt"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -84,6 +86,17 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(autoInsert, forKey: Keys.autoInsert) }
     }
 
+    /// Custom vocabulary — names, jargon, acronyms — sent with each request so
+    /// the model spells them the way the user expects.
+    @Published var hotwords: String {
+        didSet { UserDefaults.standard.set(hotwords, forKey: Keys.hotwords) }
+    }
+
+    /// A sentence of context that steers the transcription (optional).
+    @Published var contextPrompt: String {
+        didSet { UserDefaults.standard.set(contextPrompt, forKey: Keys.contextPrompt) }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -99,6 +112,8 @@ final class Settings: ObservableObject {
         } else {
             autoInsert = UserDefaults.standard.bool(forKey: Keys.autoInsert)
         }
+        hotwords = UserDefaults.standard.string(forKey: Keys.hotwords) ?? ""
+        contextPrompt = UserDefaults.standard.string(forKey: Keys.contextPrompt) ?? ""
     }
 
     var isFirstRun: Bool {

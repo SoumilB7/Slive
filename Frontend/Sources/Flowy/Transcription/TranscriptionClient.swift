@@ -6,6 +6,8 @@ import Foundation
 /// Wire format:
 ///   POST http://127.0.0.1:50711/transcribe
 ///   Content-Type: audio/mpeg
+///   X-Flowy-Hotwords: base64(utf8 custom vocabulary)   [optional]
+///   X-Flowy-Prompt:   base64(utf8 context prompt)       [optional]
 ///   body: raw MP3 file bytes
 ///   200 → { "text": "<string>" }
 struct TranscriptionClient {
@@ -31,13 +33,23 @@ struct TranscriptionClient {
     private struct Payload: Decodable { let text: String }
 
     /// Send `audioURL`'s bytes to the backend and return the transcript.
-    /// Throws on transport errors, non-200 status, or an undecodable body.
-    func transcribe(_ audioURL: URL) async throws -> String {
+    /// `hotwords` and `prompt` are attached as base64-encoded headers when
+    /// non-empty. Throws on transport errors, non-200 status, or an
+    /// undecodable body.
+    func transcribe(_ audioURL: URL, hotwords: String, prompt: String) async throws -> String {
         let bytes = try Data(contentsOf: audioURL)
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("audio/mpeg", forHTTPHeaderField: "Content-Type")
+        if !hotwords.isEmpty {
+            request.setValue(Data(hotwords.utf8).base64EncodedString(),
+                             forHTTPHeaderField: "X-Flowy-Hotwords")
+        }
+        if !prompt.isEmpty {
+            request.setValue(Data(prompt.utf8).base64EncodedString(),
+                             forHTTPHeaderField: "X-Flowy-Prompt")
+        }
         request.httpBody = bytes
         request.timeoutInterval = timeout
 

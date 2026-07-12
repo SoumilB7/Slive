@@ -20,6 +20,7 @@ struct SettingsView: View {
                 keyPicker
                 permissionsSection
                 generalSection
+                vocabularySection
                 historySection
                 footer
             }
@@ -217,6 +218,55 @@ struct SettingsView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(card)
+    }
+
+    // MARK: - Vocabulary
+
+    private var vocabularySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionTitle("VOCABULARY")
+
+            vocabularyField(
+                label: "Custom words",
+                hint: "Names, jargon, acronyms — space or comma separated. Helps the model spell them right.",
+                text: $settings.hotwords
+            )
+
+            vocabularyField(
+                label: "Context prompt",
+                hint: "A sentence of context to steer transcription (optional).",
+                text: $settings.contextPrompt
+            )
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card)
+    }
+
+    private func vocabularyField(label: String, hint: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+            TextEditor(text: text)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.9))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: 58, maxHeight: 58)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(.white.opacity(0.06))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(.white.opacity(0.10), lineWidth: 0.8)
+                        )
+                )
+            Text(hint)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: - History
