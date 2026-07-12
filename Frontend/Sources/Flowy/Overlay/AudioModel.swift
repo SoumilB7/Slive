@@ -25,6 +25,9 @@ final class AudioModel: ObservableObject {
     /// True while an assistant answer is streaming in, so the box uses a fixed
     /// size and auto-scrolls instead of resizing on every token.
     @Published private(set) var streaming = false
+    /// True while the CURRENT recording is for the assistant (fn+ctrl) rather
+    /// than plain dictation — drives which listening animation the pill shows.
+    @Published private(set) var assistantListening = false
 
     let bandCount: Int
 
@@ -51,8 +54,9 @@ final class AudioModel: ObservableObject {
 
     // MARK: - Lifecycle
 
-    func beginListening() {
+    func beginListening(assistant: Bool = false) {
         streaming = false
+        assistantListening = assistant
         phase = .listening
         elapsed = 0
         startDate = Date()
@@ -117,6 +121,7 @@ final class AudioModel: ObservableObject {
     func reset() {
         phase = .idle
         streaming = false
+        assistantListening = false
         startDate = nil
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
