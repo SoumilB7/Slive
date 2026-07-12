@@ -222,9 +222,13 @@ final class Settings: ObservableObject {
 
     // MARK: - Assistant API keys (Keychain-backed)
 
-    /// Read a provider's stored API key (nil/empty if none).
+    /// Read a provider's stored API key (nil/empty if none). Trimmed on read as
+    /// well as write: a value stored by an earlier build (before `setAPIKey`
+    /// trimmed) can still carry a trailing newline, which would otherwise reach
+    /// the HTTP layer as an illegal `Authorization` header value.
     func apiKey(for provider: AssistantProvider) -> String {
-        KeychainStore.get(provider.keychainAccount) ?? ""
+        (KeychainStore.get(provider.keychainAccount) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Store (or clear, when empty) a provider's API key. Trimmed so a stray
