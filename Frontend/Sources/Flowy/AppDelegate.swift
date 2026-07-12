@@ -7,11 +7,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorder()
     private let hotkey = HotkeyMonitor()
     private let settingsWindow = SettingsWindowController()
+    private let transcriber = TranscriptionClient()
 
     private var statusItem: NSStatusItem?
     private var recordStart: Date?
     private var armWorkItem: DispatchWorkItem?
     private var activityToken: NSObjectProtocol?   // holds off App Nap
+    private var transcribeTask: Task<Void, Never>? // in-flight encode + transcribe
+    private var collapseWorkItem: DispatchWorkItem? // pending result auto-dismiss
+
+    /// How long a result box stays on screen before collapsing.
+    private let resultDisplayDuration: TimeInterval = 4.0
 
     /// How long you must hold the key before recording begins. Brief taps under
     /// this do nothing. Tune to taste.
@@ -100,6 +106,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginRecording() {
         guard !recorder.isRecording else { return }
+        // A new recording supersedes any pending transcription / result box.
+        transcribeTask?.cancel()
+        transcribeTask = nil
+        collapseWorkItem?.cancel()
+        collapseWorkItem = nil
+
         model.beginListening()
         overlay.show()
         recordStart = Date()
@@ -115,21 +127,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let duration = recordStart.map { Date().timeIntervalSince($0) } ?? 0
         let wavURL = recorder.stop()
 
-        // Fade the pill away — no confirmation shown.
-        model.finishListening()
-        hideOverlaySoon()
+        guard let wavURL else {
+            model.finishListening()
+            hideOverlaySoon()
+            return
+        }
 
-        guard let wavURL else { return }
+        // Keep the overlay up and show a loading state while we save + transcribe.
+        model.beginTranscribing()
+
         let destination = audiosDirectory().appendingPathComponent(makeFilename())
-        DispatchQueue.global(qos: .userInitiated).async {
-            defer { try? FileManager.default.removeItem(at: wavURL) }
+        let transcriber = self.transcriber
+
+        transcribeTask?.cancel()
+        // Strong `self` capture: the task always returns (breaking any cycle),
+        // and a new recording cancels it so a stale UI update never lands.
+        transcribeTask = Task {
+            // 1. Encode the WAV → MP3 (off the main thread). The file is always
+            //    saved, even if the transcription step later fails.
+            let mp3: URL
             do {
-                let mp3 = try Mp3Encoder.encode(wavURL: wavURL, to: destination)
+                mp3 = try await Self.encodeMp3(wavURL: wavURL, to: destination)
                 NSLog("Flowy: saved \(mp3.path) (\(String(format: "%.1f", duration))s)")
             } catch {
                 NSLog("Flowy: save failed — \(error)")
+                try? FileManager.default.removeItem(at: wavURL)
+                await MainActor.run { self.finishTranscription(text: nil) }
+                return
+            }
+            try? FileManager.default.removeItem(at: wavURL)
+
+            if Task.isCancelled { return }
+
+            // 2. Send it to the backend and await the transcript.
+            do {
+                let text = try await transcriber.transcribe(mp3)
+                if Task.isCancelled { return }
+                await MainActor.run { self.finishTranscription(text: text) }
+            } catch {
+                NSLog("Flowy: transcription failed — \(error)")
+                if Task.isCancelled { return }
+                await MainActor.run { self.finishTranscription(text: nil) }
             }
         }
+    }
+
+    /// Encode on a background queue without blocking a cooperative-pool thread on
+    /// `Process.waitUntilExit()`.
+    private static func encodeMp3(wavURL: URL, to destination: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try Mp3Encoder.encode(wavURL: wavURL, to: destination))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Result path: grow the overlay to show `text`, then auto-collapse. On a nil
+    /// (failure) or empty transcript, quietly fade the overlay away.
+    @MainActor private func finishTranscription(text: String?) {
+        transcribeTask = nil
+        // Ignore stale completions — a new recording may already be listening.
+        guard model.phase == .transcribing else { return }
+
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            model.finishListening()
+            hideOverlaySoon()
+            return
+        }
+
+        model.showResult(trimmed)
+        overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
+        scheduleCollapse(after: resultDisplayDuration)
+    }
+
+    private func scheduleCollapse(after seconds: TimeInterval) {
+        collapseWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.collapseOverlay() }
+        collapseWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func collapseOverlay() {
+        collapseWorkItem = nil
+        overlay.hide()
+        model.reset()
     }
 
     private func hideOverlaySoon() {

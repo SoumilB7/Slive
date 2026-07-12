@@ -39,14 +39,34 @@ final class OverlayController {
     }
 
     /// Bring the overlay on screen, positioned bottom-centre of whichever
-    /// screen currently has the mouse.
+    /// screen currently has the mouse. Always resets to the resting pill size —
+    /// a previous result box may have left the panel grown.
     func show() {
+        setPanelSize(OverlayMetrics.pillSize)
         reposition()
         panel.orderFrontRegardless()
     }
 
     func hide() {
         panel.orderOut(nil)
+        // Reset for the next appearance so it never flashes at the grown size.
+        setPanelSize(OverlayMetrics.pillSize)
+    }
+
+    /// Grow (or shrink) the panel to fit the given content size, keeping it
+    /// bottom-centred so the box grows upward with a fixed bottom edge.
+    func resize(to size: NSSize) {
+        setPanelSize(size)
+        reposition()
+    }
+
+    private func setPanelSize(_ size: NSSize) {
+        var frame = panel.frame
+        // Keep the bottom edge fixed while the size changes; `reposition` then
+        // recentres horizontally.
+        frame.origin.y = frame.maxY - size.height
+        frame.size = size
+        panel.setFrame(frame, display: true)
     }
 
     private func reposition() {
