@@ -115,8 +115,8 @@ final class AudioModel: ObservableObject {
         // moves the bars while loud speech slams them. A gamma < 1 (here ≈ sqrt)
         // lifts the low end a lot and eases off up top, so the wave grows on a
         // smooth curve: clearly alive when soft, still tall when loud.
-        let gain: Float = 15
-        targetGlow = powf(min(1, rms * gain), 0.55)
+        let gain: Float = 34
+        targetGlow = powf(min(1, rms * gain), 0.45)
     }
 
     // MARK: - 60 fps easing
@@ -146,7 +146,7 @@ final class AudioModel: ObservableObject {
         // `glow` is already loudness-shaped, so map it near-linearly here — a
         // second compression (the old tanh) would flatten the curve back out.
         var amp = waveCeiling * glow
-        if listening { amp = max(amp, 0.16) }
+        if listening { amp = max(amp, 0.24) }
 
         // A SINGLE hump — tall in the centre, tapering to both edges — that
         // grows vertically with volume. Static (does not travel), but each bar
@@ -160,7 +160,7 @@ final class AudioModel: ObservableObject {
             let noise = sin(noisePhase * 1.7 + Double(i) * 1.3)
                       + sin(noisePhase * 1.1 + Double(i) * 2.9)   // [-2, 2]
             let wobble = 1 + 0.11 * Float(noise)                  // ≈ ±22%
-            newLevels[i] = amp * (0.16 + 0.84 * arch) * wobble
+            newLevels[i] = amp * (0.38 + 0.62 * arch) * wobble
         }
         levels = newLevels
 
