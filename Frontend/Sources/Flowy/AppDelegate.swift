@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var overlay = OverlayController(model: model)
     private let recorder = AudioRecorder()
     private let hotkey = HotkeyMonitor()
+    private let settingsWindow = SettingsWindowController()
 
     private var statusItem: NSStatusItem?
     private var recordStart: Date?
@@ -20,13 +21,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupMenuBar()
         wireAudioAndHotkey()
-        requestMicrophoneAccess()
 
-        // Prompt for Accessibility so the global fn monitor can see key events.
-        if !HotkeyMonitor.ensureAccessibility(prompt: true) {
-            NSLog("Flowy: Accessibility not yet granted — global fn key won't fire until enabled.")
+        // Settings window + live hotkey switching.
+        settingsWindow.audiosPath = audiosDirectory().path
+        settingsWindow.onOpenAudios = { [weak self] in self?.openAudios() }
+        Settings.shared.onHotkeyChange = { [weak self] choice in self?.hotkey.choice = choice }
+        hotkey.choice = Settings.shared.hotkey
+
+        hotkey.start()   // self-arms once Input Monitoring is granted
+
+        // First launch, or a missing permission → show the home window so the
+        // user sees what Flowy does and can grant permissions in place.
+        if Settings.shared.isFirstRun || !HotkeyMonitor.inputMonitoringGranted {
+            openSettings()
+            Settings.shared.markFirstRunComplete()
         }
-        hotkey.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -129,21 +138,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "flowy-\(f.string(from: Date())).mp3"
     }
 
-    // MARK: - Permissions
-
-    private func requestMicrophoneAccess() {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            break
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
-                if !granted { NSLog("Flowy: microphone access denied") }
-            }
-        default:
-            NSLog("Flowy: microphone access previously denied — enable in System Settings ▸ Privacy ▸ Microphone")
-        }
-    }
-
     // MARK: - Menu bar
 
     private func setupMenuBar() {
@@ -155,20 +149,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image?.isTemplate = true
 
         let menu = NSMenu()
-        let header = NSMenuItem(title: "Flowy — hold fn to talk", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: "Flowy", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
 
-        let openItem = NSMenuItem(title: "Open Audios Folder",
+        let settingsItem = NSMenuItem(title: "Settings…",
+                                      action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        let openItem = NSMenuItem(title: "Open Recordings Folder",
                                   action: #selector(openAudios), keyEquivalent: "o")
         openItem.target = self
         menu.addItem(openItem)
-
-        let axItem = NSMenuItem(title: "Accessibility Settings…",
-                                action: #selector(openAccessibility), keyEquivalent: "")
-        axItem.target = self
-        menu.addItem(axItem)
 
         menu.addItem(.separator())
         // Quit has no explicit target: it travels the responder chain to NSApp.
@@ -178,15 +172,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
+    @objc private func openSettings() {
+        settingsWindow.audiosPath = audiosDirectory().path
+        settingsWindow.show()
+    }
+
     @objc private func openAudios() {
         let dir = audiosDirectory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         NSWorkspace.shared.open(dir)
-    }
-
-    @objc private func openAccessibility() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-        NSWorkspace.shared.open(url)
     }
 }
 
