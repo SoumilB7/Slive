@@ -1,6 +1,9 @@
-# Slive Whisper training backend — v1 foundation
+# Slive Whisper training backend
 
-This first version does not train a model. It establishes the safe input boundary between the Swift app's captured data and the future Whisper trainer.
+The backend now provides the safe input boundary plus the first end-to-end
+training job: validate at least 50 eligible captures, train a Balanced Whisper
+LoRA adapter, merge it, convert it with WhisperKit tools, and atomically install
+it for Slive's model selector.
 
 ## Source store
 
@@ -78,7 +81,52 @@ Each eligible row contains:
 
 The writer uses a temporary file and atomic rename. It refuses to create an empty manifest unless `--allow-empty` is explicitly supplied.
 
-## Deliberate v1 boundaries
+## Start a training session
+
+Training is deliberately unavailable below 50 eligible samples. Eligibility
+uses `best-available`: corrected `finalText` first, then `llmTranscript`; raw
+Whisper output is never a target.
+
+Install the optional training dependency set:
+
+```bash
+uv sync --extra dev --extra training
+```
+
+Install/pin `whisperkittools` separately and expose its generator when it is not
+on `PATH`:
+
+```bash
+export WHISPERKIT_GENERATE_MODEL=/path/to/whisperkit-generate-model
+```
+
+The Slive Training page calls:
+
+```text
+GET  /training/readiness
+POST /training/start
+GET  /training/jobs/<id>
+```
+
+The initial trainer uses a rank-4 LoRA on `openai/whisper-large-v3`, then merges
+the adapter into a standard Hugging Face checkpoint before conversion. The
+portable installed result is named:
+
+```text
+balenced-ft-YYYYMMDD-HHMMSS
+```
+
+and stored under:
+
+```text
+~/Library/Application Support/Slive/Models/Custom/<model-name>/
+```
+
+Slive scans each custom model's `manifest.json`, validates its WhisperKit
+components, and includes the exact `balenced-ft-*` name in both Dictation and
+Continuous model selectors.
+
+## Current boundaries
 
 Not implemented yet:
 
@@ -87,10 +135,14 @@ Not implemented yet:
 - Human verification UI or a `verified` schema field.
 - Hugging Face `Dataset` conversion.
 - Whisper processor/tokenization.
-- LoRA or full fine-tuning.
+- Full-parameter fine-tuning.
 - General replay data.
 - KL-divergence retention.
-- Checkpointing, evaluation, merge, or WhisperKit export.
-- GPU/MPS/ANE hardware orchestration.
+- Automatic evaluation/release gates beyond conversion structure validation.
+- Resumable training after the backend or app is terminated.
+- Pinned `whisperkittools` installation automation.
+- Tuned GPU/MPS hardware profiles; device selection is currently CUDA, then MPS, then CPU.
 
-The next backend layer should create immutable dataset snapshots and grouped splits from this validated manifest before importing any model-training stack.
+Before production training, add immutable grouped splits, general replay, KL
+retention, evaluation gates, and a detached/resumable worker process. The
+current job is a first executable integration and should remain opt-in.

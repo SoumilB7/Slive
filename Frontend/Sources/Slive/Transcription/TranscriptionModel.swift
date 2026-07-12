@@ -40,7 +40,7 @@ private func withTimeout<T>(seconds: UInt64,
 @MainActor
 final class TranscriptionModel: ObservableObject {
     static let shared = TranscriptionModel()
-    private init() {}
+    private init() { refreshCustomModels() }
 
     enum Status: Equatable {
         case notDownloaded
@@ -53,6 +53,8 @@ final class TranscriptionModel: ObservableObject {
     /// Per-model status, keyed by model name. Drives the UI (both sections read
     /// `status(for:)` for the model they're pointed at).
     @Published private(set) var statuses: [String: Status] = [:]
+    /// Fine-tuned models installed by the Python pipeline.
+    @Published private(set) var customModels: [CustomWhisperModel] = []
 
     /// Loaded WhisperKit instances, keyed by model name. One entry == one resident
     /// model in RAM.
@@ -71,6 +73,14 @@ final class TranscriptionModel: ObservableObject {
     /// Whether `model` is loaded and ready to transcribe right now (streaming needs
     /// one already in memory — it can't wait on a first-time load).
     func isReady(_ model: String) -> Bool { pipes[model] != nil }
+
+    func refreshCustomModels() {
+        customModels = CustomWhisperModelRegistry.load()
+    }
+
+    private func customModel(_ id: String) -> CustomWhisperModel? {
+        customModels.first { $0.id == id }
+    }
 
     // MARK: - Storage (one basket in the app's data dir)
 
@@ -108,6 +118,8 @@ final class TranscriptionModel: ObservableObject {
 
     /// Available without a download — bundled OR on disk.
     func isDownloaded(_ model: String) -> Bool {
+        refreshCustomModels()
+        if customModel(model) != nil { return true }
         if bundledModelFolder(model) != nil { return true }
         guard let subs = try? FileManager.default.contentsOfDirectory(
             at: modelsRoot, includingPropertiesForKeys: nil) else { return false }
@@ -118,6 +130,7 @@ final class TranscriptionModel: ObservableObject {
     }
 
     private func removeDownloaded(_ model: String) {
+        guard customModel(model) == nil else { return }
         guard let subs = try? FileManager.default.contentsOfDirectory(
             at: modelsRoot, includingPropertiesForKeys: nil) else { return }
         for f in subs where f.lastPathComponent.hasSuffix(model) { try? FileManager.default.removeItem(at: f) }
@@ -327,6 +340,7 @@ final class TranscriptionModel: ObservableObject {
     /// background if it's available (never auto-downloads). An already-loaded model
     /// keeps working until this one is ready.
     func select(_ model: String) {
+        refreshCustomModels()
         if pipes[model] != nil { statuses[model] = .ready; return }
         if loadingModels.contains(model) { return }        // already preparing
         if isDownloaded(model) {
@@ -338,6 +352,8 @@ final class TranscriptionModel: ObservableObject {
 
     /// Download (if needed) then load `model`, reporting progress.
     func download(_ model: String) async {
+        refreshCustomModels()
+        if customModel(model) != nil { await load(model); return }
         if pipes[model] != nil { statuses[model] = .ready; return }
         if !isDownloaded(model) {
             statuses[model] = .downloading(0)
@@ -355,6 +371,7 @@ final class TranscriptionModel: ObservableObject {
 
     /// Delete the on-disk copy and fetch fresh (recovers a stale/partial download).
     func redownload(_ model: String) async {
+        if customModel(model) != nil { await load(model); return }
         pipes.removeValue(forKey: model)
         removeDownloaded(model)
         await download(model)
@@ -370,10 +387,15 @@ final class TranscriptionModel: ObservableObject {
         let t0 = Date()
 
         let bundled = bundledModelFolder(model)
-        let tokenizerRoot = bundled != nil ? bundledTokenizerRoot : basket
+        let custom = customModel(model)
+        let tokenizerRoot = custom?.tokenizerFolder ?? (bundled != nil ? bundledTokenizerRoot : basket)
         // Default compute = Neural Engine (fastest transcription).
         let config: WhisperKitConfig
-        if let bundled {
+        if let custom {
+            config = WhisperKitConfig(model: model, modelFolder: custom.modelFolder.path,
+                                      tokenizerFolder: tokenizerRoot,
+                                      prewarm: false, load: false, download: false)
+        } else if let bundled {
             config = WhisperKitConfig(model: model, modelFolder: bundled.path,
                                       tokenizerFolder: tokenizerRoot,
                                       prewarm: false, load: false, download: false)

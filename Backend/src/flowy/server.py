@@ -29,6 +29,7 @@ from flowy.assistant import answer_stream as assistant_answer_stream
 from flowy.assistant import list_models as assistant_list_models
 from flowy.assistant import transcribe_audio as assistant_transcribe_audio
 from flowy import local as local_models
+from flowy.training import jobs as training_jobs
 from flowy.transcribe import transcribe
 
 HOST = "127.0.0.1"
@@ -300,6 +301,42 @@ async def local_delete_endpoint(req: LocalDeleteRequest) -> JSONResponse:
     if not ok:
         return JSONResponse(status_code=404, content={"error": "Not in the cache."})
     return JSONResponse(status_code=200, content={"deleted": req.repo_id})
+
+
+# ---------------------------------------------------------------------------
+# Whisper fine-tuning — readiness + one local background job
+# ---------------------------------------------------------------------------
+
+
+@app.get("/training/readiness")
+async def training_readiness_endpoint() -> JSONResponse:
+    """Report whether the current Slive training store has the required 50 rows."""
+    result = await run_in_threadpool(training_jobs.readiness)
+    return JSONResponse(status_code=200, content=result)
+
+
+@app.post("/training/start")
+async def training_start_endpoint() -> JSONResponse:
+    """Start LoRA training through merge, WhisperKit conversion, and install."""
+    try:
+        job = training_jobs.start_job()
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    return JSONResponse(status_code=202, content={"job": job.to_dict()})
+
+
+@app.get("/training/jobs/latest")
+async def training_latest_job_endpoint() -> JSONResponse:
+    job = training_jobs.latest_job()
+    return JSONResponse(status_code=200, content={"job": job.to_dict() if job else None})
+
+
+@app.get("/training/jobs/{job_id}")
+async def training_job_endpoint(job_id: str) -> JSONResponse:
+    job = training_jobs.get_job(job_id)
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "Unknown training job."})
+    return JSONResponse(status_code=200, content={"job": job.to_dict()})
 
 
 def main() -> None:

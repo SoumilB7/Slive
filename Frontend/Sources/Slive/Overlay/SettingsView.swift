@@ -159,13 +159,16 @@ struct SettingsView: View {
         case .models:
             ModelsSettingsView(settings: settings)
                 .frame(maxWidth: layout == .compact ? .infinity : SliveTheme.historyWidth)
+        case .data:
+            DataSettingsView(settings: settings, openModels: { page = .models })
+                .frame(maxWidth: trainingCap)
         case .training:
-            TrainingSettingsView(settings: settings, openModels: { page = .models })
+            TrainingSettingsView(settings: settings, openData: { page = .data })
                 .frame(maxWidth: trainingCap)
         }
     }
 
-    /// Training may grow past the form cap — its table earns real width.
+    /// Data may grow past the form cap — its table earns real width.
     private var trainingCap: CGFloat {
         switch layout {
         case .compact: return .infinity

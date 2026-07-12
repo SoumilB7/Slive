@@ -14,7 +14,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 /// Every page the window can show — the single source of truth for navigation
 /// (replaces the old Section/Tab/ATab trio). Dictation has five pages;
-/// Assistant and Training are each one scrolling page.
+/// Training splits into Data (capture + ground truth + samples) and Training
+/// (the fine-tuning pipeline).
 enum SettingsPage: String, CaseIterable, Identifiable {
     case general = "General"
     case continuous = "Continuous"
@@ -23,6 +24,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     case history = "History"
     case assistant = "Assistant"
     case models = "Models"
+    case data = "Data"
     case training = "Training"
     var id: String { rawValue }
 
@@ -31,7 +33,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .general, .continuous, .permissions, .vocabulary, .history: return .dictation
         case .assistant: return .assistant
         case .models: return .models
-        case .training: return .training
+        case .data, .training: return .training
         }
     }
 
@@ -44,7 +46,8 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .history: return "clock.fill"
         case .assistant: return "sparkles"
         case .models: return "cpu.fill"
-        case .training: return "tray.full.fill"
+        case .data: return "tray.full.fill"
+        case .training: return "waveform.path.ecg"
         }
     }
 
@@ -53,7 +56,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .dictation: return .general
         case .assistant: return .assistant
         case .models: return .models
-        case .training: return .training
+        case .training: return .data
         }
     }
 

@@ -24,6 +24,9 @@ dev = [
   "pytest>=8.4.0",
   "ruff>=0.12.0",
 ]
+training = [
+  "peft>=0.18.0",
+]
 
 [project.scripts]
 flowy-translate = "flowy.cli:main"

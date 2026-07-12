@@ -402,6 +402,7 @@ struct ModelStatusRow: View {
 /// A full model card: picker + detail, live status row, footnote. Used by both
 /// Dictation (whisperModel) and Continuous (continuousModel).
 struct ModelPickerCard: View {
+    @ObservedObject private var transcription = TranscriptionModel.shared
     let title: String
     @Binding var model: String
     let footnote: String
@@ -413,8 +414,15 @@ struct ModelPickerCard: View {
                     ForEach(WhisperModelChoice.all) { c in
                         Text(c.label).tag(c.model)
                     }
+                    if !transcription.customModels.isEmpty {
+                        Divider()
+                        ForEach(transcription.customModels) { custom in
+                            Text(custom.displayName).tag(custom.id)
+                        }
+                    }
                     // Keep any custom/previously-saved model selectable.
-                    if !WhisperModelChoice.all.contains(where: { $0.model == model }) {
+                    if !WhisperModelChoice.all.contains(where: { $0.model == model })
+                        && !transcription.customModels.contains(where: { $0.id == model }) {
                         Text("Custom").tag(model)
                     }
                 }
@@ -423,6 +431,8 @@ struct ModelPickerCard: View {
                 .tint(SliveTheme.accent)
                 .fixedSize()
                 Text(WhisperModelChoice.all.first { $0.model == model }?.detail
+                     ?? transcription.customModels.first { $0.id == model }
+                        .map { "Fine-tuned Balanced model · \($0.id)" }
                      ?? "Custom model · \(model)")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.white.opacity(0.55))
@@ -431,5 +441,6 @@ struct ModelPickerCard: View {
             ModelStatusRow(model: model)
             Text(footnote).sliveCaption()
         }
+        .onAppear { transcription.refreshCustomModels() }
     }
 }
