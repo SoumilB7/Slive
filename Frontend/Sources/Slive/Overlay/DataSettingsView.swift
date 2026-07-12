@@ -131,6 +131,10 @@ struct DataSettingsView: View {
         store.samples.contains { store.audioURL($0) != nil }
     }
 
+    private var audioSampleCount: Int {
+        store.samples.filter { store.audioURL($0) != nil }.count
+    }
+
     private var groundTruthCard: some View {
         SettingsCard("GROUND TRUTH", trailing: {
             // Key presence at a glance; tap to manage keys (or, for Local,
@@ -225,6 +229,20 @@ struct DataSettingsView: View {
                 .controlSize(.small)
                 .disabled(bulkRunning || missingCount == 0)
 
+                // Re-run every recording with the currently selected model —
+                // replaces existing Should-be values (e.g. after switching to
+                // a better model).
+                Button {
+                    bulkTranscribe(includeExisting: true)
+                } label: {
+                    Label("Run all (\(audioSampleCount))", systemImage: "arrow.triangle.2.circlepath")
+                        .font(SliveTheme.font(11, .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(bulkRunning || audioSampleCount == 0)
+                .help("Re-transcribe every recording with \(settings.groundTruthModel), replacing existing ground truth")
+
                 if bulkRunning {
                     ProgressView(value: Double(bulkDone), total: Double(max(bulkTotal, 1)))
                         .frame(width: 80)
@@ -273,7 +291,10 @@ struct DataSettingsView: View {
     /// Sequentially fetch every sample that has audio but no ground truth yet.
     /// Sequential on purpose: provider rate limits, and errors stop the run
     /// instead of failing 30 requests at once.
-    private func bulkTranscribe() {
+    /// With `includeExisting`, every recording is re-run and its Should-be
+    /// value replaced — the way to upgrade all ground truth after switching
+    /// to a better model.
+    private func bulkTranscribe(includeExisting: Bool = false) {
         guard !bulkRunning else { return }
         bulkRunning = true
         gtError = nil
@@ -281,7 +302,9 @@ struct DataSettingsView: View {
         let model = settings.groundTruthModel
         let key = providers.apiKey(for: provider)
         let baseURL = providers.baseURL(for: provider)
-        let todo = store.samples.filter { $0.llmTranscript == nil && store.audioURL($0) != nil }
+        let todo = store.samples.filter {
+            store.audioURL($0) != nil && (includeExisting || $0.llmTranscript == nil)
+        }
         bulkTotal = todo.count
         bulkDone = 0
         Task { @MainActor in

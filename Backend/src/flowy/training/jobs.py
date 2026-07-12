@@ -14,6 +14,9 @@ from flowy.training.pipeline import PipelineConfig, run_pipeline
 from flowy.training.store import LabelPolicy, TrainingStore
 
 MIN_TRAINING_SAMPLES = 50
+#: Fifty one-second clips are not a dataset — training also needs this much
+#: eligible audio in total before it may begin.
+MIN_TRAINING_AUDIO_MINUTES = 5.0
 
 
 def fine_tuned_model_name(now: datetime | None = None) -> str:
@@ -53,11 +56,17 @@ _lock = threading.Lock()
 def readiness(store_root: Path | str | None = None) -> dict:
     report = TrainingStore(store_root).inspect(label_policy=LabelPolicy.BEST_AVAILABLE)
     eligible = report.eligible_count
+    minutes = report.total_audio_seconds / 60
     return {
         **report.summary_dict(),
         "required_samples": MIN_TRAINING_SAMPLES,
         "remaining_samples": max(0, MIN_TRAINING_SAMPLES - eligible),
-        "ready": eligible >= MIN_TRAINING_SAMPLES,
+        "required_audio_minutes": MIN_TRAINING_AUDIO_MINUTES,
+        "remaining_audio_minutes": round(max(0.0, MIN_TRAINING_AUDIO_MINUTES - minutes), 3),
+        # Both gates must hold: enough samples AND enough total audio — each
+        # sample individually well-populated (audio present and valid, label
+        # ≥ 3 words) is enforced by the store's eligibility rules.
+        "ready": eligible >= MIN_TRAINING_SAMPLES and minutes >= MIN_TRAINING_AUDIO_MINUTES,
     }
 
 
@@ -70,9 +79,10 @@ def start_job(
     ready = readiness(store_root)
     if not ready["ready"]:
         raise ValueError(
-            f"Need at least {MIN_TRAINING_SAMPLES} eligible samples; "
-            f"have {ready['eligible_count']}. Capture and ground-truth "
-            f"{ready['remaining_samples']} more before training."
+            f"Training needs at least {MIN_TRAINING_SAMPLES} well-populated "
+            f"samples and {MIN_TRAINING_AUDIO_MINUTES:g} minutes of audio; "
+            f"have {ready['eligible_count']} samples and "
+            f"{ready.get('eligible_audio_minutes', 0):g} minutes."
         )
 
     with _lock:

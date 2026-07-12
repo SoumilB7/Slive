@@ -158,9 +158,12 @@ class TrainingStore:
         label_policy: LabelPolicy = LabelPolicy.VERIFIED,
         min_duration: float = 0.5,
         max_duration: float = 30.0,
+        min_label_words: int = 3,
     ) -> StoreReport:
         """Parse the store and return eligible and rejected samples.
 
+        A sample only counts as well-populated when its label carries at least
+        ``min_label_words`` words — one-word labels are noise, not supervision.
         Inspection is read-only. It does not normalize, copy, or modify audio.
         """
 
@@ -217,6 +220,8 @@ class TrainingStore:
                 label, label_source = _select_label(sample, label_policy)
                 if label is None:
                     reasons.append(f"no-{label_policy.value}-label")
+                elif len(label.split()) < min_label_words:
+                    reasons.append("label-too-short")
 
                 audio_path, path_error = self._resolve_audio(sample.audio_file)
                 if path_error:

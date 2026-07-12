@@ -23,11 +23,36 @@ def test_start_job_requires_fifty_eligible_samples(monkeypatch) -> None:
             "ready": False,
             "eligible_count": 49,
             "remaining_samples": 1,
+            "eligible_audio_minutes": 6.2,
         },
     )
 
-    with pytest.raises(ValueError, match="Need at least 50 eligible samples; have 49"):
+    with pytest.raises(ValueError, match="50 well-populated samples and 5 minutes"):
         jobs.start_job()
+
+
+def test_readiness_requires_audio_minutes_as_well_as_count(monkeypatch, tmp_path) -> None:
+    """Fifty tiny clips must NOT unlock training — both gates hold together."""
+
+    class FakeReport:
+        eligible_count = 50
+        total_audio_seconds = 120.0  # 2 min < 5 min floor
+
+        def summary_dict(self):
+            return {"eligible_count": 50, "eligible_audio_minutes": 2.0}
+
+    class FakeStore:
+        def __init__(self, _root):
+            pass
+
+        def inspect(self, **_kwargs):
+            return FakeReport()
+
+    monkeypatch.setattr(jobs, "TrainingStore", FakeStore)
+    result = jobs.readiness(tmp_path)
+    assert result["ready"] is False
+    assert result["remaining_samples"] == 0
+    assert result["remaining_audio_minutes"] == 3.0
 
 
 def test_job_runs_pipeline_and_records_installed_model(tmp_path: Path, monkeypatch) -> None:
@@ -39,6 +64,7 @@ def test_job_runs_pipeline_and_records_installed_model(tmp_path: Path, monkeypat
             "ready": True,
             "eligible_count": 50,
             "remaining_samples": 0,
+            "eligible_audio_minutes": 7.5,
         },
     )
     installed = tmp_path / "Models" / "Custom" / "balenced-ft-test"

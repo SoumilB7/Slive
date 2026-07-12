@@ -6,6 +6,9 @@ struct TrainingReadiness: Decodable {
     let remainingSamples: Int
     let ready: Bool
     let eligibleAudioMinutes: Double
+    /// Second gate: total eligible audio must reach this many minutes — fifty
+    /// one-second clips are not a dataset.
+    let requiredAudioMinutes: Double
 
     private enum CodingKeys: String, CodingKey {
         case eligibleCount = "eligible_count"
@@ -13,6 +16,18 @@ struct TrainingReadiness: Decodable {
         case remainingSamples = "remaining_samples"
         case ready
         case eligibleAudioMinutes = "eligible_audio_minutes"
+        case requiredAudioMinutes = "required_audio_minutes"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        eligibleCount = try c.decode(Int.self, forKey: .eligibleCount)
+        requiredSamples = try c.decode(Int.self, forKey: .requiredSamples)
+        remainingSamples = try c.decode(Int.self, forKey: .remainingSamples)
+        ready = try c.decode(Bool.self, forKey: .ready)
+        eligibleAudioMinutes = try c.decode(Double.self, forKey: .eligibleAudioMinutes)
+        // Tolerate a backend one release behind (no minutes gate yet).
+        requiredAudioMinutes = try c.decodeIfPresent(Double.self, forKey: .requiredAudioMinutes) ?? 0
     }
 }
 

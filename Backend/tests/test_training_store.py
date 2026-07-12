@@ -95,11 +95,11 @@ def test_rejects_unsafe_missing_short_and_duplicate_audio(tmp_path: Path) -> Non
     _write_rows(
         root,
         [
-            _row("unsafe", finalText="x", audioFile="../../outside.wav"),
-            _row("missing", finalText="x"),
-            _row("short", finalText="x"),
-            _row("same-a", finalText="x"),
-            _row("same-b", finalText="x"),
+            _row("unsafe", finalText="a valid label", audioFile="../../outside.wav"),
+            _row("missing", finalText="a valid label"),
+            _row("short", finalText="a valid label"),
+            _row("same-a", finalText="a valid label"),
+            _row("same-b", finalText="a valid label"),
         ],
     )
 
@@ -113,10 +113,21 @@ def test_rejects_unsafe_missing_short_and_duplicate_audio(tmp_path: Path) -> Non
     assert "duplicate-audio" in reasons["same-b"]
 
 
+def test_one_word_labels_are_not_well_populated(tmp_path: Path) -> None:
+    root = tmp_path / "training"
+    _write_wav(root / "audio" / "terse.wav")
+    _write_rows(root, [_row("terse", finalText="okay")])
+
+    report = TrainingStore(root).inspect()
+
+    assert report.eligible_count == 0
+    assert "label-too-short" in report.rejected_samples[0].reasons
+
+
 def test_invalid_json_is_reported_without_stopping_other_rows(tmp_path: Path) -> None:
     root = tmp_path / "training"
     _write_wav(root / "audio" / "good.wav")
-    _write_rows(root, ["not-json", _row("good", finalText="correct")])
+    _write_rows(root, ["not-json", _row("good", finalText="this is correct")])
 
     report = TrainingStore(root).inspect()
 
@@ -133,7 +144,7 @@ def test_manifest_contains_only_eligible_samples(tmp_path: Path) -> None:
     _write_rows(
         root,
         [
-            _row("good", finalText="correct"),
+            _row("good", finalText="this is correct"),
             _row("raw-only"),
         ],
     )
@@ -145,7 +156,7 @@ def test_manifest_contains_only_eligible_samples(tmp_path: Path) -> None:
     assert len(lines) == 1
     payload = json.loads(lines[0])
     assert payload["id"] == "good"
-    assert payload["reference_text"] == "correct"
+    assert payload["reference_text"] == "this is correct"
     assert payload["original_transcript"] == "raw model prediction"
     assert payload["audio"]["sample_rate"] == 16_000
     assert len(payload["audio"]["sha256"]) == 64
