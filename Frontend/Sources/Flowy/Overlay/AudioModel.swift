@@ -12,6 +12,10 @@ final class AudioModel: ObservableObject {
         case saved(seconds: Double)
         case tooShort
         case error(String)
+        /// Waiting on the backend to return the transcript.
+        case transcribing
+        /// Backend returned text — grown into a box and displayed briefly.
+        case result(text: String)
     }
 
     @Published var phase: Phase = .idle
@@ -60,6 +64,21 @@ final class AudioModel: ObservableObject {
 
     func beginSaving() {
         phase = .saving
+        targetLevels = [Float](repeating: 0, count: bandCount)
+        targetGlow = 0
+    }
+
+    /// Stopped recording; the audio is now on its way to the backend. Keep the
+    /// pill on screen (a loading indicator is shown instead of the waveform).
+    func beginTranscribing() {
+        phase = .transcribing
+        targetLevels = [Float](repeating: 0, count: bandCount)
+        targetGlow = 0
+    }
+
+    /// Backend returned text — grow the pill into a box showing it.
+    func showResult(_ text: String) {
+        phase = .result(text: text)
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
     }
