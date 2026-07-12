@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
+import psutil
+
 from flowy.training.models import DEFAULT_TRAINING_MODEL, get_training_model
 from flowy.training.store import LabelPolicy, TrainingStore, write_manifest
 
@@ -28,6 +30,7 @@ class PipelineConfig:
     source_model: str = DEFAULT_TRAINING_MODEL
     base_model: str = ""
     method: str = "qlora"
+    max_ram_gb: float = 12.0
     epochs: int = 3
     learning_rate: float = 1e-5
     lora_rank: int = 4
@@ -70,6 +73,8 @@ def custom_models_root() -> Path:
 def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     """Run all stages and return the atomically installed custom-model folder."""
 
+    memory = MemoryGuard(config.max_ram_gb)
+    memory.check("dataset preparation")
     report = TrainingStore(config.store_root).inspect(label_policy=LabelPolicy.BEST_AVAILABLE)
     if report.eligible_count < 50:
         raise ValueError(f"Training requires 50 eligible samples; found {report.eligible_count}")
@@ -89,9 +94,11 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     merged_dir = run_dir / "merged-hf"
     converted_dir = run_dir / "whisperkit"
 
-    _train_lora(config, report.eligible_samples, adapter_dir, progress)
+    _train_lora(config, report.eligible_samples, adapter_dir, progress, memory)
+    memory.check("adapter merge")
     progress(stage="merging", message="Merging LoRA into Balanced Whisper", value=0.76)
     _merge_adapter(config, adapter_dir, merged_dir)
+    memory.check("WhisperKit conversion")
     progress(stage="converting", message="Converting merged model for WhisperKit", value=0.84)
     model_folder = _convert_whisperkit(merged_dir, converted_dir)
     progress(stage="installing", message="Installing fine-tuned model", value=0.96)
@@ -125,7 +132,30 @@ def _training_imports():
     )
 
 
-def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Progress) -> None:
+class MemoryGuard:
+    """Cooperative total-process RSS ceiling for the in-process trainer."""
+
+    def __init__(self, limit_gb: float):
+        self.limit_gb = limit_gb
+        self.limit_bytes = int(limit_gb * 1024**3)
+        self.process = psutil.Process()
+
+    def used_gb(self) -> float:
+        return self.process.memory_info().rss / 1024**3
+
+    def check(self, stage: str) -> None:
+        used = self.process.memory_info().rss
+        if used > self.limit_bytes:
+            raise RuntimeError(
+                f"SFT stopped during {stage}: RAM use reached {used / 1024**3:.2f} GB, "
+                f"above the {self.limit_gb:g} GB limit. Choose a smaller model, QLoRA "
+                "on CUDA, or raise the limit."
+            )
+
+
+def _train_lora(
+    config: PipelineConfig, samples, adapter_dir: Path, progress: Progress, memory: MemoryGuard
+) -> None:
     torch, LoraConfig, _, get_peft_model, prepare_kbit, Model, Processor = _training_imports()
     device = _device(torch)
     processor = Processor.from_pretrained(config.base_model, language="en", task="transcribe")
@@ -156,6 +186,7 @@ def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Pr
         model = prepare_kbit(model)
     else:
         model = Model.from_pretrained(config.base_model).to(device)
+    memory.check("model loading")
     model.config.use_cache = False
     lora = LoraConfig(
         r=config.lora_rank,
@@ -177,6 +208,7 @@ def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Pr
         epoch_samples = list(samples)
         random.Random(17 + epoch).shuffle(epoch_samples)
         for index, sample in enumerate(epoch_samples):
+            memory.check(f"epoch {epoch + 1} sample {index + 1}")
             audio, rate = _load_audio(sample.audio.path)
             batch = processor(
                 audio=audio,
@@ -186,6 +218,7 @@ def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Pr
             )
             inputs = {key: value.to(device) for key, value in batch.items()}
             outputs = model(**inputs)
+            memory.check(f"epoch {epoch + 1} forward pass")
             loss = outputs.loss / config.gradient_accumulation_steps
             loss.backward()
             if ((index + 1) % config.gradient_accumulation_steps == 0
@@ -294,6 +327,7 @@ def _install_model(
         "base_model": config.base_model,
         "source_model": config.source_model,
         "training_method": config.method,
+        "max_ram_gb": config.max_ram_gb,
         "model_folder": "model",
         "tokenizer_folder": "tokenizer",
         "training_run": str(run_dir),

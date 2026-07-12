@@ -26,6 +26,7 @@ dev = [
 ]
 training = [
   "peft>=0.18.0",
+  "psutil>=7.0.0",
 ]
 
 [project.scripts]

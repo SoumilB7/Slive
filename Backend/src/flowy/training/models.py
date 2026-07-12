@@ -16,6 +16,8 @@ class TrainingModel:
     lora_rank: int
     gradient_accumulation_steps: int
     kl_every: int
+    lora_ram_gb: float
+    qlora_ram_gb: float
     detail: str
 
     def public_dict(self) -> dict:
@@ -35,13 +37,14 @@ def _model(
     # less trainable state, lower peak pressure, and safer movement on a small
     # personal corpus.
     profiles = {
-        "tiny": (2e-5, 8, 4, 8),
-        "base": (1.5e-5, 8, 4, 8),
-        "small": (1e-5, 4, 8, 6),
-        "medium": (7.5e-6, 4, 12, 4),
-        "large": (5e-6, 4, 16, 4),
+        # lr, rank, accumulation, KL cadence, LoRA host/unified RAM, QLoRA host RAM
+        "tiny": (2e-5, 8, 4, 8, 2.0, 2.0),
+        "base": (1.5e-5, 8, 4, 8, 3.0, 2.0),
+        "small": (1e-5, 4, 8, 6, 5.0, 3.0),
+        "medium": (7.5e-6, 4, 12, 4, 9.0, 4.0),
+        "large": (5e-6, 4, 16, 4, 14.0, 6.0),
     }
-    learning_rate, rank, accumulation, kl_every = profiles[family]
+    learning_rate, rank, accumulation, kl_every, lora_ram, qlora_ram = profiles[family]
     suffix = ".en" if english_only else ""
     hf_variant = f"{variant}{suffix}"
     return TrainingModel(
@@ -54,6 +57,8 @@ def _model(
         lora_rank=rank,
         gradient_accumulation_steps=accumulation,
         kl_every=kl_every,
+        lora_ram_gb=lora_ram,
+        qlora_ram_gb=qlora_ram,
         detail=detail,
     )
 

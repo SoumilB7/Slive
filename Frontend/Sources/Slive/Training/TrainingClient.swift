@@ -14,6 +14,8 @@ struct WhisperTrainingModel: Decodable, Identifiable {
     let loraRank: Int
     let gradientAccumulationSteps: Int
     let klEvery: Int
+    let loraRamGB: Double
+    let qloraRamGB: Double
 
     private enum CodingKeys: String, CodingKey {
         case id, label, family, multilingual, detail
@@ -22,6 +24,8 @@ struct WhisperTrainingModel: Decodable, Identifiable {
         case loraRank = "lora_rank"
         case gradientAccumulationSteps = "gradient_accumulation_steps"
         case klEvery = "kl_every"
+        case loraRamGB = "lora_ram_gb"
+        case qloraRamGB = "qlora_ram_gb"
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +41,8 @@ struct WhisperTrainingModel: Decodable, Identifiable {
         loraRank = try c.decodeIfPresent(Int.self, forKey: .loraRank) ?? 0
         gradientAccumulationSteps = try c.decodeIfPresent(Int.self, forKey: .gradientAccumulationSteps) ?? 0
         klEvery = try c.decodeIfPresent(Int.self, forKey: .klEvery) ?? 0
+        loraRamGB = try c.decodeIfPresent(Double.self, forKey: .loraRamGB) ?? 0
+        qloraRamGB = try c.decodeIfPresent(Double.self, forKey: .qloraRamGB) ?? 0
     }
 
     /// The profile as one mono line, e.g. "lr 5e-6 · r=4 · accum 16 · KL ¼".
@@ -96,6 +102,7 @@ struct WhisperTrainingJob: Decodable {
     let sourceModel: String
     let baseModel: String
     let method: String
+    let maxRamGB: Double
     let state: String
     let stage: String
     let message: String
@@ -106,6 +113,8 @@ struct WhisperTrainingJob: Decodable {
     let error: String?
     let metrics: [TrainingMetric]
     let totalUpdates: Int
+    /// When the job was created — the anchor for the live ETA.
+    let createdAt: Date?
 
     private enum CodingKeys: String, CodingKey {
         case id, state, stage, message, progress, error, metrics
@@ -113,10 +122,22 @@ struct WhisperTrainingJob: Decodable {
         case sourceModel = "source_model"
         case baseModel = "base_model"
         case method
+        case maxRamGB = "max_ram_gb"
         case eligibleSamples = "eligible_samples"
         case requiredSamples = "required_samples"
         case installedModelDir = "installed_model_dir"
         case totalUpdates = "total_updates"
+        case createdAt = "created_at"
+    }
+
+    /// Python isoformat carries 6-digit fractional seconds; parse with and
+    /// without them.
+    private static func parseISO(_ string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
     }
 
     init(from decoder: Decoder) throws {
@@ -126,6 +147,7 @@ struct WhisperTrainingJob: Decodable {
         sourceModel = try c.decodeIfPresent(String.self, forKey: .sourceModel) ?? "large-v3-v20240930_626MB"
         baseModel = try c.decodeIfPresent(String.self, forKey: .baseModel) ?? "openai/whisper-large-v3"
         method = try c.decodeIfPresent(String.self, forKey: .method) ?? "lora"
+        maxRamGB = try c.decodeIfPresent(Double.self, forKey: .maxRamGB) ?? 12
         state = try c.decode(String.self, forKey: .state)
         stage = try c.decode(String.self, forKey: .stage)
         message = try c.decode(String.self, forKey: .message)
@@ -137,6 +159,8 @@ struct WhisperTrainingJob: Decodable {
         // Tolerate a backend one release behind (no telemetry fields yet).
         metrics = try c.decodeIfPresent([TrainingMetric].self, forKey: .metrics) ?? []
         totalUpdates = try c.decodeIfPresent(Int.self, forKey: .totalUpdates) ?? 0
+        createdAt = (try c.decodeIfPresent(String.self, forKey: .createdAt))
+            .flatMap(Self.parseISO)
     }
 
     var isActive: Bool { state == "queued" || state == "running" }
@@ -166,12 +190,14 @@ struct TrainingClient {
         return try JSONDecoder().decode(ModelEnvelope.self, from: data).models
     }
 
-    func start(sourceModel: String, method: String, name: String? = nil) async throws -> WhisperTrainingJob {
+    func start(sourceModel: String, method: String, name: String? = nil,
+               maxRamGB: Double) async throws -> WhisperTrainingJob {
         guard await BackendManager.shared.ensureHealthy() else {
             throw TrainingError(message: "Couldn't start the training backend.")
         }
         let body = try JSONEncoder().encode(
-            StartRequest(sourceModel: sourceModel, method: method, name: name))
+            StartRequest(sourceModel: sourceModel, method: method, name: name,
+                         maxRamGB: maxRamGB))
         let data = try await request("/training/start", method: "POST", body: body)
         return try JSONDecoder().decode(JobEnvelope.self, from: data).job
     }
@@ -197,7 +223,11 @@ struct TrainingClient {
         let sourceModel: String
         let method: String
         let name: String?
-        enum CodingKeys: String, CodingKey { case sourceModel = "source_model", method, name }
+        let maxRamGB: Double
+        enum CodingKeys: String, CodingKey {
+            case sourceModel = "source_model", method, name
+            case maxRamGB = "max_ram_gb"
+        }
     }
 
     private func request(_ path: String, method: String = "GET", body: Data? = nil) async throws -> Data {

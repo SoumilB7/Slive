@@ -131,6 +131,20 @@ The available SFT methods are:
   training load; post-training reloads the chosen base in full precision, merges
   the adapter, and then converts that merged checkpoint for WhisperKit.
 
+### RAM ceiling
+
+Every run carries a user-selected `max_ram_gb` value (12 GB by default). The
+Training page shows the selected model/method's conservative recommendation.
+The backend rejects configurations below that recommendation before loading
+weights, then monitors total backend-process resident memory during dataset
+preparation, model loading, every training sample/forward pass, adapter merge,
+and conversion handoff. Crossing the ceiling stops the run with a clear error.
+
+This is a cooperative safety ceiling rather than an operating-system hard
+allocation limit: a single native allocation can briefly cross it before the
+next check. On Apple Silicon, process RSS covers the unified-memory pressure of
+MPS training. On CUDA hosts this controls system RAM; GPU VRAM is separate.
+
 The trainer then merges
 the adapter into a standard Hugging Face checkpoint before conversion. The
 portable installed result is named:

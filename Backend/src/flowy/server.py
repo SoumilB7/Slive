@@ -22,7 +22,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from flowy.assistant import answer as assistant_answer
 from flowy.assistant import answer_stream as assistant_answer_stream
@@ -314,6 +314,7 @@ class TrainingStartRequest(BaseModel):
     #: Optional user-chosen name for the finished model (sanitized server-side;
     #: empty → the timestamped default).
     name: str | None = None
+    max_ram_gb: float = Field(default=12.0, ge=2, le=128)
 
 
 @app.get("/training/models")
@@ -333,7 +334,10 @@ async def training_start_endpoint(req: TrainingStartRequest) -> JSONResponse:
     """Start LoRA training through merge, WhisperKit conversion, and install."""
     try:
         job = training_jobs.start_job(
-            source_model=req.source_model, method=req.method, custom_name=req.name
+            source_model=req.source_model,
+            method=req.method,
+            custom_name=req.name,
+            max_ram_gb=req.max_ram_gb,
         )
     except ValueError as exc:
         return JSONResponse(status_code=409, content={"error": str(exc)})

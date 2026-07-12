@@ -24,6 +24,7 @@ struct TrainingSettingsView: View {
     /// Optional user-chosen name for the finished model (fine-tunes only —
     /// stock models keep their names). Empty → the timestamped default.
     @State private var customName = ""
+    @State private var maxRamGB = 12.0
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -105,8 +106,13 @@ struct TrainingSettingsView: View {
             if let job, job.isActive {
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: job.progress).tint(SliveTheme.accent)
-                    HStack {
+                    HStack(spacing: 6) {
                         Text(job.message).sliveCaption()
+                        if let eta = etaText(job) {
+                            Text("· \(eta)")
+                                .font(SliveTheme.captionFont)
+                                .foregroundStyle(SliveTheme.accent.opacity(0.85))
+                        }
                         Spacer()
                         Text(job.modelName)
                             .font(SliveTheme.mono(10))
@@ -183,6 +189,53 @@ struct TrainingSettingsView: View {
             }
 
             HStack(spacing: 10) {
+                Text("Max RAM")
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(SliveTheme.textSecondary)
+                Slider(value: $maxRamGB, in: 2...32, step: 1)
+                    .frame(maxWidth: 220)
+                    .disabled(job?.isActive == true)
+                Text("\(Int(maxRamGB)) GB")
+                    .font(SliveTheme.mono(11))
+                    .foregroundStyle(SliveTheme.accent)
+                    .frame(width: 42, alignment: .trailing)
+                if let model = selectedTrainingModel {
+                    let recommended = selectedMethod == "qlora"
+                        ? model.qloraRamGB : model.loraRamGB
+                    Text("~\(Int(recommended)) GB recommended")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(maxRamGB < recommended ? Color.orange : SliveTheme.textTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            Text("The backend refuses an undersized profile and stops SFT if its total process RAM crosses this ceiling. CUDA VRAM is separate.")
+                .sliveCaption()
+
+            HStack(spacing: 10) {
+                Text("Est. time")
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(SliveTheme.textSecondary)
+                if selectedMethod == "qlora" {
+                    Text("depends on your CUDA host")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textTertiary)
+                } else if let estimate = estimatedMinutes {
+                    Text(timeText(estimate))
+                        .font(SliveTheme.mono(11))
+                        .foregroundStyle(SliveTheme.accent)
+                    Text(String(format: "3 epochs · %.1f min audio · rough",
+                                readiness?.eligibleAudioMinutes ?? 0))
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textTertiary)
+                } else {
+                    Text("known once eligible recordings exist")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 10) {
                 Text("Name")
                     .font(SliveTheme.font(11, .semibold))
                     .foregroundStyle(SliveTheme.textSecondary)
@@ -197,6 +250,46 @@ struct TrainingSettingsView: View {
         }
         .padding(10)
         .innerWell()
+    }
+
+    // MARK: - Time estimates
+
+    /// Rough SFT minutes per minute of eligible audio, per epoch, on Apple
+    /// silicon — measured order-of-magnitude by checkpoint family, not a
+    /// promise. The tail is merge + ANE conversion + install.
+    private static let sftMinutesPerAudioMinute: [String: Double] = [
+        "tiny": 0.4, "base": 0.8, "small": 2, "medium": 5, "large": 10,
+    ]
+    private static let tailMinutes: [String: Double] = [
+        "tiny": 3, "base": 4, "small": 7, "medium": 14, "large": 26,
+    ]
+
+    /// Pre-run whole-pipeline estimate for LoRA on this Mac (nil when the
+    /// audio pool is empty or the family is unknown).
+    private var estimatedMinutes: Double? {
+        guard let model = selectedTrainingModel,
+              let audio = readiness?.eligibleAudioMinutes, audio > 0,
+              let rate = Self.sftMinutesPerAudioMinute[model.family]
+        else { return nil }
+        return audio * rate * 3 + (Self.tailMinutes[model.family] ?? 5)
+    }
+
+    private func timeText(_ minutes: Double) -> String {
+        if minutes < 1 { return "under a minute" }
+        if minutes < 90 { return "≈ \(Int(minutes.rounded())) min" }
+        return String(format: "≈ %.1f h", minutes / 60)
+    }
+
+    /// Live remaining-time readout from the job's own pace: elapsed since it
+    /// was created, scaled by how much progress is left. Silent for the first
+    /// 30 s and the first few percent — early rates are noise.
+    private func etaText(_ job: WhisperTrainingJob) -> String? {
+        guard job.progress > 0.04, job.progress < 0.99,
+              let started = job.createdAt else { return nil }
+        let elapsed = Date().timeIntervalSince(started)
+        guard elapsed > 30 else { return nil }
+        let remaining = elapsed * (1 - job.progress) / job.progress / 60
+        return "\(timeText(remaining)) left"
     }
 
     /// True while a run is actually progressing — the only time the rail
@@ -460,6 +553,7 @@ struct TrainingSettingsView: View {
         SettingsCard("OUTPUT MODEL") {
             infoRow("Base", job?.baseModel ?? selectedTrainingModel?.hfModel ?? "Loading models…")
             infoRow("Method", (job?.method ?? selectedMethod).uppercased())
+            infoRow("RAM cap", "\(Int(job?.maxRamGB ?? maxRamGB)) GB")
             infoRow("Name", job?.modelName
                     ?? (customName.trimmingCharacters(in: .whitespaces).isEmpty
                         ? "balenced-ft-<date>-<time>"
@@ -525,7 +619,11 @@ struct TrainingSettingsView: View {
                 if !trainingModels.isEmpty, !trainingModels.contains(where: { $0.id == selectedModel }) {
                     selectedModel = trainingModels[0].id
                 }
-                if let job, job.isActive { selectedModel = job.sourceModel; selectedMethod = job.method }
+                if let job, job.isActive {
+                    selectedModel = job.sourceModel
+                    selectedMethod = job.method
+                    maxRamGB = job.maxRamGB
+                }
                 if let job, job.isActive { poll(job.id) }
                 if job?.state == "done" { transcription.refreshCustomModels() }
                 if job?.state == "error" { jobError = job?.error }
@@ -542,7 +640,8 @@ struct TrainingSettingsView: View {
                 let trimmedName = customName.trimmingCharacters(in: .whitespaces)
                 let started = try await TrainingClient().start(
                     sourceModel: selectedModel, method: selectedMethod,
-                    name: trimmedName.isEmpty ? nil : trimmedName)
+                    name: trimmedName.isEmpty ? nil : trimmedName,
+                    maxRamGB: maxRamGB)
                 job = started
                 poll(started.id)
             } catch {

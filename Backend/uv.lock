@@ -404,6 +404,7 @@ dev = [
 ]
 training = [
     { name = "peft" },
+    { name = "psutil" },
 ]
 
 [package.metadata]
@@ -415,6 +416,7 @@ requires-dist = [
     { name = "librosa", specifier = ">=0.11.0" },
     { name = "peft", marker = "extra == 'training'", specifier = ">=0.18.0" },
     { name = "pillow", specifier = ">=11.3.0" },
+    { name = "psutil", marker = "extra == 'training'", specifier = ">=7.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12.0" },
     { name = "soundfile", specifier = ">=0.13.1" },

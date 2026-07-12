@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -47,6 +48,7 @@ class TrainingJob:
     source_model: str
     base_model: str
     method: str
+    max_ram_gb: float
     state: str = "queued"  # queued | running | done | error
     stage: str = "queued"
     message: str = "Waiting to start"
@@ -93,6 +95,7 @@ def start_job(
     source_model: str = DEFAULT_TRAINING_MODEL,
     method: str = "qlora",
     custom_name: str | None = None,
+    max_ram_gb: float = 12.0,
     store_root: Path | str | None = None,
     output_root: Path | str | None = None,
     runner: Callable[[PipelineConfig, Callable[..., None]], Path] = run_pipeline,
@@ -100,6 +103,14 @@ def start_job(
     profile = get_training_model(source_model)
     if method not in {"lora", "qlora"}:
         raise ValueError(f"Unsupported training method: {method}")
+    if not math.isfinite(max_ram_gb) or not 2 <= max_ram_gb <= 128:
+        raise ValueError("SFT RAM limit must be between 2 and 128 GB")
+    recommended = profile.qlora_ram_gb if method == "qlora" else profile.lora_ram_gb
+    if max_ram_gb < recommended:
+        raise ValueError(
+            f"{profile.label} {method.upper()} needs about {recommended:g} GB RAM; "
+            f"raise the SFT limit or choose a smaller model."
+        )
 
     # Only NEW fine-tunes are nameable — the name is the installed folder and
     # the picker id, so collisions must fail here, not after an hour of
@@ -133,6 +144,7 @@ def start_job(
             source_model=profile.id,
             base_model=profile.hf_model,
             method=method,
+            max_ram_gb=max_ram_gb,
             eligible_samples=ready["eligible_count"],
         )
         _jobs[job.id] = job
@@ -141,6 +153,7 @@ def start_job(
         model_name=job.model_name,
         source_model=profile.id,
         method=method,
+        max_ram_gb=max_ram_gb,
         store_root=Path(store_root).expanduser() if store_root else None,
         output_root=Path(output_root).expanduser() if output_root else None,
     )

@@ -7,6 +7,7 @@ import pytest
 
 from flowy.training import jobs
 from flowy.training.pipeline import PipelineConfig
+from flowy.training.pipeline import MemoryGuard
 from flowy.training.models import get_training_model, training_models_payload
 
 
@@ -34,6 +35,18 @@ def test_profiles_reduce_large_model_update_pressure() -> None:
     assert large.learning_rate < tiny.learning_rate
     assert large.lora_rank < tiny.lora_rank
     assert large.gradient_accumulation_steps > tiny.gradient_accumulation_steps
+
+
+def test_start_job_rejects_ram_cap_below_selected_profile() -> None:
+    with pytest.raises(ValueError, match="needs about 14 GB RAM"):
+        jobs.start_job(source_model="large-v3", method="lora", max_ram_gb=8)
+
+
+def test_memory_guard_stops_after_process_crosses_cap(monkeypatch) -> None:
+    guard = MemoryGuard(4)
+    monkeypatch.setattr(guard.process, "memory_info", lambda: type("M", (), {"rss": 5 * 1024**3})())
+    with pytest.raises(RuntimeError, match="above the 4 GB limit"):
+        guard.check("training")
 
 
 def test_sanitize_model_name_is_filesystem_and_picker_safe() -> None:
