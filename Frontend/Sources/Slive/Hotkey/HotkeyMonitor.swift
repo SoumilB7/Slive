@@ -85,6 +85,7 @@ final class HotkeyMonitor {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            Log.hotkey("wake — rebuilding tap")
             NSLog("Slive: wake — rebuilding hotkey tap.")
             self.reinstallTap()
             if !self.tapGranted { self.startPolling() }
@@ -199,6 +200,7 @@ final class HotkeyMonitor {
 
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            Log.hotkey("tap disabled (\(type == .tapDisabledByTimeout ? "timeout" : "userInput")) — re-enabling")
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
         }

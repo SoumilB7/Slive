@@ -35,10 +35,15 @@ final class ContinuousDictation {
     /// the caller should surface that).
     func start() -> Bool {
         let model = Settings.shared.continuousModel
-        guard whisper.isReady(model) else { return false }
+        guard whisper.isReady(model) else {
+            Log.live("start SKIPPED — model \(model) not ready")
+            return false
+        }
         self.model = model
         active = true
-        typist.start(allowed: PasteEngine.canStreamType(), cps: Settings.shared.continuousTypeCPS)
+        let canType = PasteEngine.canStreamType()
+        Log.live("start — model=\(model) cps=\(Int(Settings.shared.continuousTypeCPS)) canType=\(canType)")
+        typist.start(allowed: canType, cps: Settings.shared.continuousTypeCPS)
         let ok = whisper.startLiveDictation(model: model) { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
@@ -57,14 +62,14 @@ final class ContinuousDictation {
         active = false
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         whisper.stopLiveDictation()
-        NSLog(String(format: "Slive.live: RELEASE  audio=%.1fs  running final pass…",
-                     Double(snapshot.count) / 16_000.0))
+        Log.live(String(format: "RELEASE  audio=%.1fs  running final pass…", Double(snapshot.count) / 16_000.0))
+        let t0 = Date()
         let final = await whisper.transcribeSamples(snapshot, model: model)
         if let final { typist.setTarget(Self.normalize(final)) }
         // Flush the remaining diff immediately so the field is correct on release.
         let result = await typist.finish()
-        NSLog(String(format: "Slive.live: DONE  final len=%d  (streaming had reached len=%d)",
-                     final?.count ?? -1, result.count == 0 ? 0 : result.count))
+        Log.live(String(format: "DONE  final pass %.2fs  len=%d  «%@»",
+                        Date().timeIntervalSince(t0), result.count, String(result.suffix(40))))
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

@@ -175,7 +175,7 @@ final class TranscriptionModel: ObservableObject {
         var lastTranscript = ""
         var lastChange = Date()
         var lastBeat = Date()
-        NSLog("Slive.live: START model=\(model)")
+        Log.live("START model=\(model)")
 
         let transcriber = AudioStreamTranscriber(
             audioEncoder: pipe.audioEncoder,
@@ -206,15 +206,16 @@ final class TranscriptionModel: ObservableObject {
                 let now = Date()
                 guard transcript != lastTranscript else {   // energy-only tick
                     if now.timeIntervalSince(lastBeat) > 1.0 {
-                        NSLog(String(format: "Slive.live:   …frozen %.1fs  energy=%.2f  conf=%d tail=%d",
-                                     now.timeIntervalSince(lastChange), energy, confirmed.count, tail.count))
+                        Log.live(String(format: "  …frozen %.1fs  energy=%.2f  conf=%d tail=%d",
+                                        now.timeIntervalSince(lastChange), energy, confirmed.count, tail.count))
                         lastBeat = now
                     }
                     return
                 }
-                NSLog(String(format: "Slive.live: +text len=%d (+%d)  gap=%.2fs  energy=%.2f  conf=%d tail=%d",
-                             transcript.count, transcript.count - lastTranscript.count,
-                             now.timeIntervalSince(lastChange), energy, confirmed.count, tail.count))
+                Log.live(String(format: "+text len=%d (+%d)  gap=%.2fs  energy=%.2f  conf=%d tail=%d  «%@»",
+                                transcript.count, transcript.count - lastTranscript.count,
+                                now.timeIntervalSince(lastChange), energy, confirmed.count, tail.count,
+                                String(transcript.suffix(24))))
                 lastChange = now
                 lastBeat = now
                 lastTranscript = transcript
@@ -228,9 +229,9 @@ final class TranscriptionModel: ObservableObject {
                 // Returns when the realtime loop ends. If this logs BEFORE the user
                 // releases, the loop died on a decode error (streaming is dead until
                 // release). Normally it logs right after stopLiveDictation().
-                NSLog("Slive.live: stream loop ended")
+                Log.live("stream loop ended")
             } catch {
-                NSLog("Slive.live: stream ERROR — \(error)")
+                Log.live("stream ERROR — \(error)")
             }
         }
         return true
@@ -333,6 +334,8 @@ final class TranscriptionModel: ObservableObject {
     private func load(_ model: String) async {
         loadingModels.insert(model)
         statuses[model] = .preparing("Loading")
+        Log.stt("load begin \(model) (bundled=\(bundledModelFolder(model) != nil))")
+        let t0 = Date()
 
         let bundled = bundledModelFolder(model)
         let tokenizerRoot = bundled != nil ? bundledTokenizerRoot : basket
@@ -355,6 +358,7 @@ final class TranscriptionModel: ObservableObject {
                     Task { @MainActor in
                         guard let self, self.loadingModels.contains(model) else { return }
                         self.statuses[model] = .preparing(new.description)  // live stage
+                        Log.stt("stage \(model): \(new.description)")
                     }
                 }
                 try await kit.loadModels()                        // Neural Engine load — the work
@@ -363,13 +367,16 @@ final class TranscriptionModel: ObservableObject {
             pipes[model] = p
             loadingModels.remove(model)
             statuses[model] = .ready
+            Log.stt(String(format: "READY \(model) in %.1fs (resident: \(pipes.keys.sorted()))", Date().timeIntervalSince(t0)))
             NSLog("Slive: WhisperKit ready (\(model)).")
         } catch is TimeoutError {
             loadingModels.remove(model)
             statuses[model] = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
+            Log.stt("TIMEOUT loading \(model)")
         } catch {
             loadingModels.remove(model)
             statuses[model] = .failed(error.localizedDescription)
+            Log.stt("FAILED loading \(model) — \(error)")
             NSLog("Slive: WhisperKit load failed — \(error)")
         }
     }
