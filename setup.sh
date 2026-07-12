@@ -7,7 +7,7 @@
 # prompts (Command Line Tools install, and granting the three permissions).
 #
 # Requirements it assumes: an Apple-Silicon Mac + internet. It provides the rest
-# (uv even fetches Python for you; lame comes from Homebrew).
+# (uv even fetches Python for you).
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 cd "$(dirname "$0")"
@@ -22,39 +22,28 @@ if ! xcode-select -p >/dev/null 2>&1; then
     exit 1
 fi
 
-# 2. MP3 encoder (lame; ffmpeg also works) — via Homebrew.
-if ! command -v lame >/dev/null 2>&1 && ! command -v ffmpeg >/dev/null 2>&1; then
-    if command -v brew >/dev/null 2>&1; then
-        step "Installing lame (MP3 encoder)…"; brew install lame
-    else
-        echo "✗ Need 'lame' (or ffmpeg) but Homebrew isn't installed."
-        echo "  Install Homebrew from https://brew.sh, then re-run ./setup.sh"
-        exit 1
-    fi
-fi
-
-# 3. uv — Python env manager (also provides Python itself).
+# 2. uv — Python env manager (also provides Python itself).
 if ! command -v uv >/dev/null 2>&1; then
     step "Installing uv…"
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# 4. Backend virtualenv + dependencies.
+# 3. Backend virtualenv + dependencies.
 step "Setting up the Python backend (uv sync)…"
 ( cd Backend && uv sync )
 
-# 5. Stable self-signed identity so macOS remembers the permissions.
+# 4. Stable self-signed identity so macOS remembers the permissions.
 if ! security find-certificate -c "Flowy Local Signing" >/dev/null 2>&1; then
     step "Creating the signing identity (one time)…"
     ( cd Frontend && ./setup-signing.sh )
 fi
 
-# 6. Pre-download the transcription model so the first dictation is instant.
+# 5. Pre-download the transcription model so the first dictation is instant.
 step "Downloading the transcription model (one time, ~75 MB)…"
 ( cd Backend && .venv/bin/python -c "from flowy.transcribe import load_model; load_model()" )
 
-# 7. Build + install the app (signs with the stable identity).
+# 6. Build + install the app (signs with the stable identity).
 step "Building and installing Flowy.app…"
 ( cd Frontend && ./build.sh install )
 
