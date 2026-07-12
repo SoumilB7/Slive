@@ -511,22 +511,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
 
-        // If auto-insert is on and a text field is focused, paste straight there
-        // and skip the copy box entirely.
-        if Settings.shared.autoInsert {
-            // Snapshot the field BEFORE typing so the training capture has clean
-            // pre-insertion context (only when capture is on and under the cap).
-            let canCapture = Settings.shared.captureEdits && !TrainingStore.shared.isOverLimit
-            let pre = canCapture ? EditCapture.shared.capturePre() : nil
-            if PasteEngine.insertIfPossible(trimmed) {
-                if let pre {
-                    EditCapture.shared.begin(pre: pre, transcript: trimmed, audioURL: audioURL)
-                }
-                SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)  // after write
-                model.finishListening()
-                hideOverlaySoon()
-                return
-            }
+        // Save the training pair — this dictation's audio + transcript — for
+        // every dictation while capture is on and under the size cap. No field
+        // tracking involved, so it records regardless of where the text lands.
+        if Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
+            TrainingStore.shared.addRecording(transcript: trimmed, audioURL: audioURL)
+        }
+
+        // If auto-insert is on, type straight to the caret and skip the copy box.
+        if Settings.shared.autoInsert, PasteEngine.insertIfPossible(trimmed) {
+            SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)  // after write
+            model.finishListening()
+            hideOverlaySoon()
+            return
         }
 
         // Otherwise, surface the copy box.

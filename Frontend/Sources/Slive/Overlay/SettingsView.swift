@@ -412,13 +412,13 @@ struct SettingsView: View {
     private var captureEditsBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle(isOn: $settings.captureEdits) {
-                Text("Capture dictation edits (training data)")
+                Text("Save dictation recordings (training data)")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.92))
             }
             .toggleStyle(.switch)
             .tint(accent)
-            Text("When you dictate into a field, records what Slive typed vs. what that section became when the field loses focus — plus the audio. Stored locally only, for later fine-tuning.")
+            Text("Saves each dictation's audio plus what Slive transcribed it as. Stored locally only, for later fine-tuning.")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.5))
                 .fixedSize(horizontal: false, vertical: true)

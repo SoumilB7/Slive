@@ -156,9 +156,8 @@ final class Settings: ObservableObject {
         }
     }
 
-    /// Developer/research: capture (transcript → final field text) pairs plus
-    /// audio as training data, finalized when the dictated field loses focus.
-    /// Off by default; stored locally only. See EditCapture / TrainingStore.
+    /// Developer/research: save each dictation's audio + transcript as training
+    /// data. Off by default; stored locally only. See TrainingStore.
     @Published var captureEdits: Bool {
         didSet { UserDefaults.standard.set(captureEdits, forKey: Keys.captureEdits) }
     }

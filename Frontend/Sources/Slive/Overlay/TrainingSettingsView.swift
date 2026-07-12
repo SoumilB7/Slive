@@ -60,7 +60,7 @@ struct TrainingSettingsView: View {
             }
             .buttonStyle(.plain)
 
-            Text("Captured while “Capture dictation edits” is on (Dictation → General). Each row pairs what Slive typed with what that section became after you edited it, plus the audio.")
+            Text("Captured while “Save dictation recordings” is on (Dictation → General). Each row is one dictation: its audio plus what Slive transcribed it as. The “should be” column stays empty until corrected-text capture returns.")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
