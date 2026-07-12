@@ -42,6 +42,7 @@ final class OverlayController {
     /// screen currently has the mouse. Always resets to the resting pill size —
     /// a previous result box may have left the panel grown.
     func show() {
+        panel.ignoresMouseEvents = true              // pill/transcribing stay click-through
         setPanelSize(OverlayMetrics.pillSize)
         reposition()
         panel.orderFrontRegardless()
@@ -49,8 +50,18 @@ final class OverlayController {
 
     func hide() {
         panel.orderOut(nil)
+        panel.ignoresMouseEvents = true              // reset to click-through
         // Reset for the next appearance so it never flashes at the grown size.
         setPanelSize(OverlayMetrics.pillSize)
+    }
+
+    /// Opt-in interactivity. The overlay is click-through by default; the app
+    /// enables this only while a result box (with its copy button) is showing,
+    /// then disables it again on collapse. The panel stays a non-activating
+    /// panel throughout, so receiving a click never steals focus from the app
+    /// the user is dictating into.
+    func setInteractive(_ interactive: Bool) {
+        panel.ignoresMouseEvents = !interactive
     }
 
     /// Grow (or shrink) the panel to fit the given content size, keeping it

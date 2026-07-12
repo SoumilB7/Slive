@@ -31,8 +31,8 @@ struct WaveformView: View {
     /// Off-blue, brighter now — still calm, but clearly lit.
     private func color(level: CGFloat) -> Color {
         Color(hue: 0.58,
-              saturation: 0.45,
-              brightness: 0.85 + 0.15 * Double(level),
-              opacity: 0.75 + 0.25 * Double(level))
+              saturation: 0.55,
+              brightness: 0.92 + 0.08 * Double(level),
+              opacity: 0.80 + 0.20 * Double(level))
     }
 }

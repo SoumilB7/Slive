@@ -19,8 +19,26 @@ MP3, ready for on-device transcription.
 | Folder | What it is |
 |---|---|
 | **`Frontend/`** | `Flowy.app` — the macOS hold-to-talk mic overlay (Swift/SwiftUI). |
-| **`Backend/`** | Python speech backend (Gemma 4 E2B). Has its own [README](Backend/README.md). |
-| **`Audios/`** | Where recordings are written (`.mp3`). Git-ignored contents. |
+| **`Backend/`** | Python transcription server. Has its own [README](Backend/README.md). |
+| **`Audios/`** | Legacy output folder (recordings are no longer persisted — audio is sent to the backend from a temp file that's deleted after). |
+
+Transcripts are kept in an in-app **history catalogue** (Settings ▸ History):
+a bounded, self-pruning store — 24h TTL, max 200 entries, 2000 chars each —
+persisted at `~/Library/Application Support/Flowy/history.json`.
+
+## Developer setup (any Mac)
+
+Nothing is hardcoded to one machine — `build.sh` bakes each checkout's own
+paths at build time, so cloning anywhere just works:
+
+```bash
+git clone <repo> && cd Flowy
+cd Backend  && uv sync --extra dev     # create the venv the app auto-launches
+cd ../Frontend && ./build.sh install   # bakes THIS checkout's paths, installs to /Applications
+```
+
+Then grant Microphone + Input Monitoring once (see below). The app auto-starts
+its own backend, so there's nothing else to run.
 
 ---
 
