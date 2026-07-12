@@ -26,6 +26,20 @@ def fine_tuned_model_name(now: datetime | None = None) -> str:
     return (now or datetime.now().astimezone()).strftime("balenced-ft-%Y%m%d-%H%M%S")
 
 
+def sanitize_model_name(raw: str) -> str:
+    """A user-chosen model name, made filesystem- and picker-safe.
+
+    Spaces become dashes; anything outside [A-Za-z0-9._-] is dropped; leading
+    dots (hidden dirs / the installer's staging prefix) are stripped. Returns
+    "" when nothing safe remains — callers fall back to the timestamped name.
+    """
+
+    cleaned = "".join(
+        ch for ch in raw.strip().replace(" ", "-") if ch.isalnum() or ch in "._-"
+    ).lstrip(".")
+    return cleaned[:80]
+
+
 @dataclass
 class TrainingJob:
     id: str
@@ -78,6 +92,7 @@ def start_job(
     *,
     source_model: str = DEFAULT_TRAINING_MODEL,
     method: str = "qlora",
+    custom_name: str | None = None,
     store_root: Path | str | None = None,
     output_root: Path | str | None = None,
     runner: Callable[[PipelineConfig, Callable[..., None]], Path] = run_pipeline,
@@ -85,6 +100,19 @@ def start_job(
     profile = get_training_model(source_model)
     if method not in {"lora", "qlora"}:
         raise ValueError(f"Unsupported training method: {method}")
+
+    # Only NEW fine-tunes are nameable — the name is the installed folder and
+    # the picker id, so collisions must fail here, not after an hour of
+    # training when the installer refuses to overwrite.
+    model_name = sanitize_model_name(custom_name or "") or fine_tuned_model_name()
+    from flowy.training.pipeline import custom_models_root
+
+    if (custom_models_root() / model_name).exists():
+        raise ValueError(
+            f"A personal model named “{model_name}” already exists — pick a "
+            f"different name."
+        )
+
     ready = readiness(store_root)
     if not ready["ready"]:
         raise ValueError(
@@ -101,7 +129,7 @@ def start_job(
 
         job = TrainingJob(
             id=str(uuid.uuid4()),
-            model_name=fine_tuned_model_name(),
+            model_name=model_name,
             source_model=profile.id,
             base_model=profile.hf_model,
             method=method,

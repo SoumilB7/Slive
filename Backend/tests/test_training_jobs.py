@@ -36,6 +36,23 @@ def test_profiles_reduce_large_model_update_pressure() -> None:
     assert large.gradient_accumulation_steps > tiny.gradient_accumulation_steps
 
 
+def test_sanitize_model_name_is_filesystem_and_picker_safe() -> None:
+    assert jobs.sanitize_model_name("My Voice v2") == "My-Voice-v2"
+    assert jobs.sanitize_model_name("  .hidden/../etc  ") == "hidden..etc"
+    assert jobs.sanitize_model_name("!!!") == ""
+    assert len(jobs.sanitize_model_name("x" * 200)) == 80
+
+
+def test_start_job_rejects_name_collisions(monkeypatch, tmp_path) -> None:
+    from flowy.training import pipeline
+
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path)
+    (tmp_path / "my-voice").mkdir()
+
+    with pytest.raises(ValueError, match="already exists"):
+        jobs.start_job(source_model="large-v3", custom_name="my voice")
+
+
 def test_start_job_requires_fifty_eligible_samples(monkeypatch) -> None:
     monkeypatch.setattr(
         jobs,

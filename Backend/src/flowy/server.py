@@ -311,6 +311,9 @@ async def local_delete_endpoint(req: LocalDeleteRequest) -> JSONResponse:
 class TrainingStartRequest(BaseModel):
     source_model: str
     method: str = "qlora"
+    #: Optional user-chosen name for the finished model (sanitized server-side;
+    #: empty → the timestamped default).
+    name: str | None = None
 
 
 @app.get("/training/models")
@@ -329,7 +332,9 @@ async def training_readiness_endpoint() -> JSONResponse:
 async def training_start_endpoint(req: TrainingStartRequest) -> JSONResponse:
     """Start LoRA training through merge, WhisperKit conversion, and install."""
     try:
-        job = training_jobs.start_job(source_model=req.source_model, method=req.method)
+        job = training_jobs.start_job(
+            source_model=req.source_model, method=req.method, custom_name=req.name
+        )
     except ValueError as exc:
         return JSONResponse(status_code=409, content={"error": str(exc)})
     return JSONResponse(status_code=202, content={"job": job.to_dict()})

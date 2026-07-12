@@ -166,11 +166,12 @@ struct TrainingClient {
         return try JSONDecoder().decode(ModelEnvelope.self, from: data).models
     }
 
-    func start(sourceModel: String, method: String) async throws -> WhisperTrainingJob {
+    func start(sourceModel: String, method: String, name: String? = nil) async throws -> WhisperTrainingJob {
         guard await BackendManager.shared.ensureHealthy() else {
             throw TrainingError(message: "Couldn't start the training backend.")
         }
-        let body = try JSONEncoder().encode(StartRequest(sourceModel: sourceModel, method: method))
+        let body = try JSONEncoder().encode(
+            StartRequest(sourceModel: sourceModel, method: method, name: name))
         let data = try await request("/training/start", method: "POST", body: body)
         return try JSONDecoder().decode(JobEnvelope.self, from: data).job
     }
@@ -195,7 +196,8 @@ struct TrainingClient {
     private struct StartRequest: Encodable {
         let sourceModel: String
         let method: String
-        enum CodingKeys: String, CodingKey { case sourceModel = "source_model", method }
+        let name: String?
+        enum CodingKeys: String, CodingKey { case sourceModel = "source_model", method, name }
     }
 
     private func request(_ path: String, method: String = "GET", body: Data? = nil) async throws -> Data {

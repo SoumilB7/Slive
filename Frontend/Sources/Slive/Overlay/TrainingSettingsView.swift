@@ -21,6 +21,9 @@ struct TrainingSettingsView: View {
     @State private var trainingModels: [WhisperTrainingModel] = []
     @State private var selectedModel = "large-v3-v20240930_626MB"
     @State private var selectedMethod = "qlora"
+    /// Optional user-chosen name for the finished model (fine-tunes only —
+    /// stock models keep their names). Empty → the timestamped default.
+    @State private var customName = ""
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -178,6 +181,19 @@ struct TrainingSettingsView: View {
                 Text("QLoRA uses NF4 + double quantization during SFT and requires a CUDA/bitsandbytes training host. Apple MPS is not a supported NF4 backend; choose LoRA to train locally on this Mac.")
                     .sliveCaption()
             }
+
+            HStack(spacing: 10) {
+                Text("Name")
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(SliveTheme.textSecondary)
+                TextField("balenced-ft-<date>-<time>", text: $customName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: 260)
+                    .disabled(job?.isActive == true)
+            }
+            Text("Names the finished model in the Dictation picker — spaces become dashes, letters/digits/._- only. Leave empty for the dated default.")
+                .sliveCaption()
         }
         .padding(10)
         .innerWell()
@@ -444,7 +460,10 @@ struct TrainingSettingsView: View {
         SettingsCard("OUTPUT MODEL") {
             infoRow("Base", job?.baseModel ?? selectedTrainingModel?.hfModel ?? "Loading models…")
             infoRow("Method", (job?.method ?? selectedMethod).uppercased())
-            infoRow("Name", job?.modelName ?? "balenced-ft-<date>-<time>")
+            infoRow("Name", job?.modelName
+                    ?? (customName.trimmingCharacters(in: .whitespaces).isEmpty
+                        ? "balenced-ft-<date>-<time>"
+                        : customName.trimmingCharacters(in: .whitespaces)))
             infoRow("Runs on", "Neural Engine — compiled .mlmodelc, same serving path as stock models")
             infoRow("Stored in", "~/Library/Application Support/Slive/Models/Custom")
 
@@ -520,8 +539,10 @@ struct TrainingSettingsView: View {
         jobError = nil
         Task { @MainActor in
             do {
+                let trimmedName = customName.trimmingCharacters(in: .whitespaces)
                 let started = try await TrainingClient().start(
-                    sourceModel: selectedModel, method: selectedMethod)
+                    sourceModel: selectedModel, method: selectedMethod,
+                    name: trimmedName.isEmpty ? nil : trimmedName)
                 job = started
                 poll(started.id)
             } catch {
