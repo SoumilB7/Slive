@@ -33,7 +33,7 @@ final class FFTProcessor {
     private let shape: Float = 0.6
     private let ceiling: Float = 0.6
 
-    init(fftSize: Int = 1024, bandCount: Int = 20, sampleRate: Double = 48_000) {
+    init(fftSize: Int = 1024, bandCount: Int = 14, sampleRate: Double = 48_000) {
         self.fftSize = fftSize
         self.bandCount = bandCount
         self.log2n = vDSP_Length(log2(Float(fftSize)))
