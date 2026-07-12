@@ -71,6 +71,10 @@ struct AssistantConfig: Codable, Equatable {
     var systemPrompt: String
     /// When on, a full-screen screenshot is attached to every assistant call.
     var attachScreenshot: Bool
+    /// Live model lists remembered per provider (rawValue → model ids). Populated
+    /// only when you tap "Fetch live models"; persisted so the picker stays
+    /// filled without re-fetching.
+    var fetchedModels: [String: [String]]
 
     static let defaultSystemPrompt =
         "You are Slive, a concise voice assistant. The user speaks a question or "
@@ -82,7 +86,8 @@ struct AssistantConfig: Codable, Equatable {
         baseURL: "",
         promptName: "assistant",   // the shipped prompts/assistant.md
         systemPrompt: defaultSystemPrompt,
-        attachScreenshot: false
+        attachScreenshot: false,
+        fetchedModels: [:]
     )
 
     /// Effective model for a provider — the override if set, else its default.
@@ -110,5 +115,6 @@ extension AssistantConfig {
         systemPrompt = try c.decodeIfPresent(String.self, forKey: .systemPrompt)
             ?? Self.defaultSystemPrompt
         attachScreenshot = try c.decodeIfPresent(Bool.self, forKey: .attachScreenshot) ?? false
+        fetchedModels = try c.decodeIfPresent([String: [String]].self, forKey: .fetchedModels) ?? [:]
     }
 }

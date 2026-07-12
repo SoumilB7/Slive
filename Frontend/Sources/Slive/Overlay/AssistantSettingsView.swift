@@ -18,7 +18,6 @@ struct AssistantSettingsView: View {
     @State private var atab: ATab = .shortcut
     @State private var apiKeyDraft: String = ""
     @State private var promptNames: [String] = []
-    @State private var fetchedModels: [String] = []
     @State private var loadingModels = false
     @State private var modelsError: String?
 
@@ -143,18 +142,23 @@ struct AssistantSettingsView: View {
         .background(card)
     }
 
-    /// Reloads the key draft and clears the fetched model list when the provider
-    /// changes (models are provider-specific).
+    /// Reloads the key draft when the provider changes. The stored model list is
+    /// per-provider, so switching just shows that provider's remembered list.
     private var providerBinding: Binding<AssistantProvider> {
         Binding(
             get: { settings.assistantConfig.provider },
             set: { newValue in
                 settings.assistantConfig.provider = newValue
                 apiKeyDraft = settings.apiKey(for: newValue)
-                fetchedModels = []
                 modelsError = nil
             }
         )
+    }
+
+    /// Models remembered for the current provider (persisted; only refreshed when
+    /// you tap "Fetch live models").
+    private var currentFetched: [String] {
+        settings.assistantConfig.fetchedModels[settings.assistantConfig.provider.rawValue] ?? []
     }
 
     /// The effective model id (override, else the provider default). Setting it
@@ -169,7 +173,7 @@ struct AssistantSettingsView: View {
     /// Fetched models, guaranteeing the currently-selected one is present so the
     /// Picker always has a valid tag.
     private var modelOptions: [String] {
-        var opts = fetchedModels
+        var opts = currentFetched
         let current = settings.assistantConfig.model(for: settings.assistantConfig.provider)
         if !current.isEmpty && !opts.contains(current) { opts.insert(current, at: 0) }
         return opts
@@ -214,9 +218,9 @@ struct AssistantSettingsView: View {
                     .foregroundStyle(.orange.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text(fetchedModels.isEmpty
+                Text(currentFetched.isEmpty
                      ? "Tap “Fetch live models” to load the list from your provider, or type an id."
-                     : "\(fetchedModels.count) live models loaded — pick one above or type any id.")
+                     : "\(currentFetched.count) live models saved — pick one above, refetch to update, or type any id.")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.5))
             }
@@ -232,7 +236,8 @@ struct AssistantSettingsView: View {
             do {
                 let models = try await AssistantClient().listModels(config: config, apiKey: key)
                 await MainActor.run {
-                    fetchedModels = models
+                    // Persist per provider — only updated on an explicit fetch.
+                    settings.assistantConfig.fetchedModels[config.provider.rawValue] = models
                     loadingModels = false
                     if models.isEmpty { modelsError = "No models returned for this provider." }
                 }
