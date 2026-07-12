@@ -7,7 +7,7 @@ import Security
 /// app's container could see); they live in the login keychain as generic
 /// passwords scoped to this app's service name.
 enum KeychainStore {
-    private static let service = "com.flowy.overlay.apikeys"
+    private static let service = "com.slive.app.apikeys"
 
     /// Store (or clear, when `value` is empty/nil) the secret for `account`.
     static func set(_ value: String?, for account: String) {

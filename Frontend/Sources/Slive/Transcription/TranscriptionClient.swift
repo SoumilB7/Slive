@@ -6,8 +6,8 @@ import Foundation
 /// Wire format:
 ///   POST http://127.0.0.1:50711/transcribe
 ///   Content-Type: audio/mpeg
-///   X-Flowy-Hotwords: base64(utf8 custom vocabulary)   [optional]
-///   X-Flowy-Prompt:   base64(utf8 context prompt)       [optional]
+///   X-Slive-Hotwords: base64(utf8 custom vocabulary)   [optional]
+///   X-Slive-Prompt:   base64(utf8 context prompt)       [optional]
 ///   body: raw MP3 file bytes
 ///   200 → { "text": "<string>" }
 struct TranscriptionClient {
@@ -44,11 +44,11 @@ struct TranscriptionClient {
         request.setValue("audio/mpeg", forHTTPHeaderField: "Content-Type")
         if !hotwords.isEmpty {
             request.setValue(Data(hotwords.utf8).base64EncodedString(),
-                             forHTTPHeaderField: "X-Flowy-Hotwords")
+                             forHTTPHeaderField: "X-Slive-Hotwords")
         }
         if !prompt.isEmpty {
             request.setValue(Data(prompt.utf8).base64EncodedString(),
-                             forHTTPHeaderField: "X-Flowy-Prompt")
+                             forHTTPHeaderField: "X-Slive-Prompt")
         }
         request.httpBody = bytes
         request.timeoutInterval = timeout

@@ -25,7 +25,7 @@ final class AudioRecorder {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
-            NSLog("Flowy: invalid input format (mic not ready)")
+            NSLog("Slive: invalid input format (mic not ready)")
             return false
         }
 
@@ -38,7 +38,7 @@ final class AudioRecorder {
             file = try AVAudioFile(forWriting: tmp, settings: format.settings)
             tempURL = tmp
         } catch {
-            NSLog("Flowy: could not open temp file: \(error)")
+            NSLog("Slive: could not open temp file: \(error)")
             return false
         }
 
@@ -50,7 +50,7 @@ final class AudioRecorder {
         do {
             try engine.start()
         } catch {
-            NSLog("Flowy: engine start failed: \(error)")
+            NSLog("Slive: engine start failed: \(error)")
             input.removeTap(onBus: 0)
             file = nil
             return false

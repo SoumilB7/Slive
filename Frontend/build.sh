@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Flowy.app from the Swift package and assemble a proper macOS app bundle.
+# Build Slive.app from the Swift package and assemble a proper macOS app bundle.
 # Usage: ./build.sh            (build + bundle)
 #        ./build.sh run        (build + bundle + launch from build/)
 #        ./build.sh install    (build + bundle + copy to /Applications + launch)
@@ -13,14 +13,14 @@ CONFIG="release"
 echo "▸ Compiling (swift build -c $CONFIG)…"
 swift build -c "$CONFIG"
 
-BIN=".build/$CONFIG/Flowy"
-APP="build/Flowy.app"
+BIN=".build/$CONFIG/Slive"
+APP="build/Slive.app"
 CONTENTS="$APP/Contents"
 
 echo "▸ Assembling app bundle…"
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
-cp "$BIN" "$CONTENTS/MacOS/Flowy"
+cp "$BIN" "$CONTENTS/MacOS/Slive"
 
 # Bake absolute paths into Info.plist: the Backend/ dir whose .venv runs the
 # transcription server (auto-launched by the app), and the prompts folder.
@@ -40,8 +40,8 @@ fi
 # (Microphone / Input Monitoring) remembers grants across REBUILDS, not just
 # relaunches. Falls back to ad-hoc otherwise (grants reset on each rebuild).
 # To create the identity, see: Frontend/setup-signing.sh
-SIGN_ID="Flowy Local Signing"
-ENTITLEMENTS="Flowy.entitlements"   # audio-input entitlement (mic under Hardened Runtime)
+SIGN_ID="Slive Local Signing"
+ENTITLEMENTS="Slive.entitlements"   # audio-input entitlement (mic under Hardened Runtime)
 # Detect by certificate presence, not `find-identity -p codesigning` — the
 # latter hides untrusted self-signed certs even though codesign can use them.
 # Try the default search list AND the login keychain explicitly (more robust).
@@ -64,9 +64,9 @@ echo "✓ Built: $APP"
 LAUNCH_TARGET="$APP"
 
 if [[ "${1:-}" == "install" ]]; then
-    DEST="/Applications/Flowy.app"
+    DEST="/Applications/Slive.app"
     echo "▸ Installing to $DEST …"
-    pkill -x Flowy 2>/dev/null || true
+    pkill -x Slive 2>/dev/null || true
     sleep 0.3
     rm -rf "$DEST"
     cp -R "$APP" "$DEST"
@@ -84,8 +84,8 @@ fi
 
 if [[ "${1:-}" == "run" || "${1:-}" == "install" ]]; then
     echo "▸ Launching…"
-    pkill -x Flowy 2>/dev/null || true
+    pkill -x Slive 2>/dev/null || true
     sleep 0.3
     open "$LAUNCH_TARGET"
-    echo "✓ Flowy is running in your menu bar. Open Settings to pick your key & grant permissions."
+    echo "✓ Slive is running in your menu bar. Open Settings to pick your key & grant permissions."
 fi

@@ -1,4 +1,4 @@
-# Flowy — the local server (Backend)
+# Slive — the local server (Backend)
 
 A small FastAPI server that runs on `127.0.0.1:50711`. It does two jobs:
 
@@ -32,7 +32,7 @@ Requires `uv` (which also fetches Python). The app auto-launches the same
 | Method | Path | In → Out |
 |---|---|---|
 | `GET` | `/health` | → `{"status":"ok"}` |
-| `POST` | `/transcribe` | raw audio bytes (+ optional `X-Flowy-Hotwords`, `X-Flowy-Prompt` base64 headers) → `{"text": "..."}` |
+| `POST` | `/transcribe` | raw audio bytes (+ optional `X-Slive-Hotwords`, `X-Slive-Prompt` base64 headers) → `{"text": "..."}` |
 | `POST` | `/assistant` | JSON `{text, provider, model, api_key, base_url?, system_prompt?, images?, history?}` → `{"text": "..."}` |
 | `POST` | `/assistant/stream` | same body → **NDJSON stream**: `{"delta":"..."}` per chunk, then `{"done":true}` (or `{"error":"..."}`) |
 | `POST` | `/models` | `{provider, api_key, base_url?}` → `{"models":[...]}` (the provider's live list) |
@@ -76,7 +76,7 @@ Prompt picker; its contents become the system prompt. Ships with `assistant.md`,
 | `FLOWY_WHISPER_MODEL` | `tiny.en` | STT model. `base.en` for more accuracy, `base` for multilingual. |
 
 ```bash
-launchctl setenv FLOWY_WHISPER_MODEL base.en    # then Quit & reopen Flowy
+launchctl setenv FLOWY_WHISPER_MODEL base.en    # then Quit & reopen Slive
 ```
 
 Speed: `tiny.en` is ~1.8s for a 7s clip on an M4. The first run downloads the

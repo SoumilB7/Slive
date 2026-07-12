@@ -73,8 +73,8 @@ async def transcribe_endpoint(request: Request) -> JSONResponse:
     audio_bytes = await request.body()
     if not audio_bytes:
         return JSONResponse(status_code=400, content={"error": "Empty request body"})
-    hotwords = _decode_header(request.headers.get("X-Flowy-Hotwords"))
-    initial_prompt = _decode_header(request.headers.get("X-Flowy-Prompt"))
+    hotwords = _decode_header(request.headers.get("X-Slive-Hotwords"))
+    initial_prompt = _decode_header(request.headers.get("X-Slive-Prompt"))
     try:
         # Offload the blocking model call so the event loop stays responsive.
         text = await run_in_threadpool(

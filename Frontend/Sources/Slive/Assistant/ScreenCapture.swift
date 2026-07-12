@@ -18,14 +18,14 @@ enum ScreenCapture {
             try task.run()
             task.waitUntilExit()
         } catch {
-            NSLog("Flowy: screencapture failed to launch — \(error)")
+            NSLog("Slive: screencapture failed to launch — \(error)")
             return nil
         }
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         guard task.terminationStatus == 0,
               let data = try? Data(contentsOf: tmp), !data.isEmpty else {
-            NSLog("Flowy: screenshot capture produced no image (Screen Recording permission?)")
+            NSLog("Slive: screenshot capture produced no image (Screen Recording permission?)")
             return nil
         }
         return ("image/png", data.base64EncodedString())

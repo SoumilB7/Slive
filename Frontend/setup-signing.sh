@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# One-time setup: create a stable, self-signed code-signing identity for Flowy.
+# One-time setup: create a stable, self-signed code-signing identity for Slive.
 #
 # WHY: macOS privacy (TCC) identifies an app by its code signature. Ad-hoc
 # signing produces a NEW signature on every rebuild, so macOS re-asks for
@@ -11,11 +11,11 @@
 # /usr/bin/codesign, imported into your login keychain. Safe to re-run — it
 # removes any previous copies first so duplicates can't pile up.
 #
-# To undo entirely:  security delete-identity -c "Flowy Local Signing"
+# To undo entirely:  security delete-identity -c "Slive Local Signing"
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-CN="Flowy Local Signing"
+CN="Slive Local Signing"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -27,7 +27,7 @@ guard=0
 while security find-certificate -c "$CN" "$KEYCHAIN" >/dev/null 2>&1 && [ $guard -lt 10 ]; do
     security delete-identity -c "$CN" "$KEYCHAIN" >/dev/null 2>&1 || {
         echo "  ⚠️  Could not auto-delete. Open Keychain Access ▸ login, delete every"
-        echo "     'Flowy Local Signing' certificate, then re-run this script."
+        echo "     'Slive Local Signing' certificate, then re-run this script."
         exit 1
     }
     guard=$((guard + 1))
@@ -68,7 +68,7 @@ else
     echo ""
     echo "✗ Imported, but codesign couldn't use it (likely a keychain prompt was"
     echo "  denied, or leftover duplicates). Open Keychain Access ▸ login, delete"
-    echo "  every 'Flowy Local Signing' entry, then re-run this script and click"
+    echo "  every 'Slive Local Signing' entry, then re-run this script and click"
     echo "  'Always Allow' if prompted."
     exit 1
 fi
