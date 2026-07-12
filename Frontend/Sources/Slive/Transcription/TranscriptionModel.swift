@@ -123,23 +123,18 @@ final class TranscriptionModel: ObservableObject {
     // MARK: - Live streaming dictation
 
     /// Start real-time transcription from the mic. `onUpdate` fires on the main
-    /// actor as speech is recognised, with:
-    ///  - `confirmed`: text that has stabilised and won't change (safe to type),
-    ///  - `hypothesis`: the still-forming tail (may still be revised),
-    ///  - `energy`: recent mic energy (0…~1) for the waveform.
+    /// actor as speech is recognised, with the full running transcript so far
+    /// (confirmed + still-forming tail, already cleaned) and recent mic energy
+    /// (0…~1). The caller types it into the field with in-place correction.
     /// Returns false if no model is loaded yet. Runs until `stopLiveDictation()`.
     func startLiveDictation(
-        onUpdate: @escaping @MainActor (_ confirmed: String, _ hypothesis: String, _ energy: Float) -> Void
+        onUpdate: @escaping @MainActor (_ transcript: String, _ energy: Float) -> Void
     ) -> Bool {
         guard let pipe, let tokenizer = pipe.tokenizer else { return false }
         stopLiveDictation()   // never run two at once
-
-        // Clean text only: strip Whisper's control tokens (<|startoftranscript|>,
-        // <|en|>, <|0.00|> timestamps, <|endoftext|>, …) so none of them can be
-        // typed into the field or shown in the caption.
-        var options = DecodingOptions(language: "en")
-        options.skipSpecialTokens = true
-        options.withoutTimestamps = true
+        // Fresh buffer per session — otherwise the shared audioProcessor would
+        // still hold the previous utterance and re-transcribe it from the top.
+        pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
 
         let transcriber = AudioStreamTranscriber(
             audioEncoder: pipe.audioEncoder,
@@ -148,20 +143,20 @@ final class TranscriptionModel: ObservableObject {
             textDecoder: pipe.textDecoder,
             tokenizer: tokenizer,
             audioProcessor: pipe.audioProcessor,
-            decodingOptions: options,
-            // Confirm text after just one trailing segment (default is 2) so words
-            // flow into the field sooner instead of stalling several segments back.
+            decodingOptions: streamOptions(),
+            // Confirm text after just one trailing segment (default is 2) so the
+            // stable prefix grows sooner.
             requiredSegmentsForConfirmation: 1,
             useVAD: true,
             stateChangeCallback: { _, state in
-                let confirmed = Self.cleanStreamText(state.confirmedSegments.map { $0.text }.joined())
-                // Only the stabilised unconfirmed segments — deliberately NOT
-                // `state.currentText`, which is the volatile in-progress decode and
-                // can be an early-audio hallucination or the internal "Waiting for
-                // speech..." placeholder we must never type into the field.
-                let hypothesis = Self.cleanStreamText(state.unconfirmedSegments.map { $0.text }.joined())
+                // Full transcript so far = confirmed prefix + still-forming tail.
+                // (NOT state.currentText, which is the volatile decode and can be
+                // an early hallucination or the "Waiting for speech..." placeholder.)
+                let confirmed = state.confirmedSegments.map { $0.text }.joined()
+                let tail = state.unconfirmedSegments.map { $0.text }.joined()
+                let transcript = Self.cleanStreamText(confirmed + tail)
                 let energy = state.bufferEnergy.last ?? 0
-                Task { @MainActor in onUpdate(confirmed, hypothesis, energy) }
+                Task { @MainActor in onUpdate(transcript, energy) }
             }
         )
         liveTranscriber = transcriber
@@ -172,14 +167,41 @@ final class TranscriptionModel: ObservableObject {
         return true
     }
 
+    /// A copy of every sample captured so far this live session (16 kHz mono).
+    /// Grab this BEFORE `stopLiveDictation()` to keep the trailing audio.
+    func liveSamplesSnapshot() -> [Float] {
+        guard let pipe else { return [] }
+        return Array(pipe.audioProcessor.audioSamples)
+    }
+
+    /// Transcribe a raw sample array in full. Used on release to produce the
+    /// complete, accurate transcript — including the final sub-second the
+    /// streaming loop never processed (it only runs on >1s of new buffer).
+    func transcribeSamples(_ samples: [Float]) async -> String? {
+        guard let pipe, samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
+        let results: [TranscriptionResult]? =
+            try? await pipe.transcribe(audioArray: samples, decodeOptions: streamOptions())
+        guard let results else { return nil }
+        return Self.cleanStreamText(results.map { $0.text }.joined())
+    }
+
+    /// Clean-text decode options shared by the live stream and the final pass.
+    private func streamOptions() -> DecodingOptions {
+        var options = DecodingOptions(language: "en")
+        options.skipSpecialTokens = true   // no <|…|> control tokens
+        options.withoutTimestamps = true
+        return options
+    }
+
     /// Belt-and-suspenders: strip any residual Whisper control tokens like
     /// `<|startoftranscript|>`, `<|en|>`, `<|0.00|>`, `<|endoftext|>` that can
-    /// slip through the in-progress decode text even with skipSpecialTokens set.
+    /// slip through even with skipSpecialTokens set, plus the placeholder.
     private static func cleanStreamText(_ text: String) -> String {
-        if text == "Waiting for speech..." { return "" }   // internal placeholder
-        guard text.contains("<|") else { return text }
-        return text.replacingOccurrences(
-            of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
+        var t = text.replacingOccurrences(of: "Waiting for speech...", with: "")
+        if t.contains("<|") {
+            t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
+        }
+        return t
     }
 
     /// Stop the live stream (ends its mic capture + realtime loop).

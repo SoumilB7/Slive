@@ -23,10 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var collapseWorkItem: DispatchWorkItem? // pending result auto-dismiss
     private var currentAction: HotkeyAction = .dictate  // which shortcut is recording
 
-    // Live streaming dictation: text already typed into the field (confirmed) and
-    // the still-forming tail (typed on release if it never confirmed).
-    private var liveTypedConfirmed = ""
-    private var liveTailRaw = ""
+    /// Continuous (live streaming) dictation — a fully separate flow from the
+    /// main press-and-release dictation so the two never interfere.
+    private let continuous = ContinuousDictation()
 
     // In-memory assistant conversation (never persisted). `chatActive` is set
     // only by tapping "Continue"; the next assistant call then continues it.
@@ -101,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         hotkey.stop()
         transcribeTask?.cancel(); transcribeTask = nil
+        continuous.cancel()  // stop any live stream
         whisper.shutdown()   // release the WhisperKit (Neural Engine) model
         backend.stop()       // shut the Python server down with the app
         if let token = activityToken {
@@ -130,13 +130,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.onStop = { [weak self] _ in self?.keyUp() }
         model.onDismiss = { [weak self] in self?.dismissOverlay() }
         model.onContinue = { [weak self] in self?.continueChat() }
+        continuous.onEnergy = { [weak self] energy in self?.model.pushStreamEnergy(energy) }
     }
 
     /// User tapped ✕ — cancel any in-flight work, end the chat, and collapse now.
     private func dismissOverlay() {
         transcribeTask?.cancel(); transcribeTask = nil
         collapseWorkItem?.cancel(); collapseWorkItem = nil
-        whisper.stopLiveDictation()
+        continuous.cancel()
         chatActive = false
         conversation.removeAll()
         pendingTurn = nil
@@ -270,78 +271,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        liveTypedConfirmed = ""
-        liveTailRaw = ""
         model.beginLiveDictation()
         overlay.show()   // same small waveform pill as normal dictation
         FeedbackPlayer.shared.playActivation(for: .stream)
 
-        let started = whisper.startLiveDictation { [weak self] confirmed, hypothesis, energy in
-            self?.onLiveUpdate(confirmed: confirmed, hypothesis: hypothesis, energy: energy)
-        }
-        if !started {
+        if !continuous.start() {
             model.finishListening()
             hideOverlaySoon()
         }
     }
 
-    /// Hard guarantee at the typing boundary: never type Whisper control tokens
-    /// (`<|…|>`) or its internal "Waiting for speech..." placeholder into the
-    /// field, no matter where the text came from.
-    private func sanitizedForTyping(_ text: String) -> String {
-        var t = text.replacingOccurrences(of: "Waiting for speech...", with: "")
-        if t.contains("<|") {
-            t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
-        }
-        return t
-    }
-
-    /// A streaming update: type any newly-confirmed text into the field and show
-    /// the forming tail. Runs on the main actor.
-    @MainActor private func onLiveUpdate(confirmed: String, hypothesis: String, energy: Float) {
-        guard model.liveDictating else { return }   // ignore late callbacks
-
-        // Confirmed text only grows and is stable, so type just the new suffix.
-        if confirmed.count > liveTypedConfirmed.count, confirmed.hasPrefix(liveTypedConfirmed) {
-            var delta = String(confirmed.dropFirst(liveTypedConfirmed.count))
-            if liveTypedConfirmed.isEmpty { delta = String(delta.drop(while: { $0 == " " })) }
-            liveTypedConfirmed = confirmed
-            delta = sanitizedForTyping(delta)
-            if !delta.isEmpty { PasteEngine.streamInsert(delta) }
-        } else if !confirmed.hasPrefix(liveTypedConfirmed) {
-            // Rare revision of already-confirmed text — resync without retyping so
-            // we never duplicate what's already in the field.
-            liveTypedConfirmed = confirmed
-        }
-
-        liveTailRaw = hypothesis
-        model.updateLiveTail(hypothesis)
-        model.pushStreamEnergy(energy)
-    }
-
-    /// Stop live dictation: end the stream, flush any tail that never confirmed
-    /// into the field, record the full text, and hide the overlay.
+    /// Stop live dictation: run the final accurate pass (which also catches the
+    /// trailing audio), record the full text, and close the overlay. The pill
+    /// shows the loading dots briefly while that final pass runs.
     private func stopLiveDictation() {
-        whisper.stopLiveDictation()
-
-        // The hypothesis tail was shown but never confirmed → commit it now so
-        // nothing spoken is lost.
-        let tail = liveTailRaw
-        if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            var delta = tail
-            if liveTypedConfirmed.isEmpty { delta = String(delta.drop(while: { $0 == " " })) }
-            delta = sanitizedForTyping(delta)
-            if !delta.isEmpty { PasteEngine.streamInsert(delta) }
+        guard continuous.isActive else { return }
+        model.beginTranscribing()
+        Task { @MainActor in
+            let full = await continuous.stop()
+            if !full.isEmpty { HistoryStore.shared.add(full) }
+            model.finishListening()
+            hideOverlaySoon()
         }
-
-        let full = (liveTypedConfirmed + " " + tail)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !full.isEmpty { HistoryStore.shared.add(full) }
-
-        liveTypedConfirmed = ""
-        liveTailRaw = ""
-        model.finishListening()
-        hideOverlaySoon()
     }
 
     /// Assistant path: stream the LLM's answer into a fixed-size box, growing
