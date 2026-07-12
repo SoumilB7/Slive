@@ -270,7 +270,11 @@ final class Settings: ObservableObject {
         echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
         groundTruthProvider = UserDefaults.standard.string(forKey: Keys.groundTruthProvider)
             .flatMap(AssistantProvider.init(rawValue:)) ?? .gemini
-        groundTruthModel = UserDefaults.standard.string(forKey: Keys.groundTruthModel) ?? "gemini-2.5-flash"
+        var gtModel = UserDefaults.standard.string(forKey: Keys.groundTruthModel) ?? "gemini-2.5-flash"
+        // Migrate the retired OpenAI audio id we once defaulted to — accounts
+        // without the legacy preview 404 on it; gpt-audio is the GA successor.
+        if gtModel == "gpt-4o-audio-preview" { gtModel = "gpt-audio" }
+        groundTruthModel = gtModel
         groundTruthBaseURL = UserDefaults.standard.string(forKey: Keys.groundTruthBaseURL) ?? ""
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.
