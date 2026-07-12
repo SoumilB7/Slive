@@ -158,7 +158,7 @@ struct SettingsView: View {
                 .frame(maxWidth: formCap)
         case .models:
             ModelsSettingsView(settings: settings)
-                .frame(maxWidth: layout == .wide ? SliveTheme.generalGridWidth : formCap)
+                .frame(maxWidth: layout == .compact ? .infinity : SliveTheme.historyWidth)
         case .training:
             TrainingSettingsView(settings: settings, openModels: { page = .models })
                 .frame(maxWidth: trainingCap)
