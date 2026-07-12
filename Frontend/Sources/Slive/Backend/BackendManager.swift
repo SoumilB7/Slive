@@ -46,10 +46,16 @@ final class BackendManager: ObservableObject {
     /// who only dictates never pays for a resident Python process at all.
     func reapOrphans() {
         status = .offline
-        // PID-snapshot, then kill asynchronously. Killing by PATTERN later
-        // would race a server we spawn in the meantime (`pkill -f` matches our
-        // own child); killing by captured PID can never touch a process that
-        // didn't exist yet. Also keeps the fork/exec+wait off the launch path.
+        // PID-snapshot, then kill — far safer than killing by PATTERN later
+        // (`pkill -f` would match our own future child), and it keeps the
+        // fork/exec+wait off the launch path. Honest caveat: the snapshot is
+        // taken inside this background task, not at call time, so a server we
+        // spawn within the task's first ~100ms could theoretically be caught.
+        // That window is all but unhittable at launch (an assistant call needs
+        // user action first), and a caught server self-recovers — ensureHealthy
+        // re-spawns on the next probe. The ownPid filter below excludes any
+        // server we already own at call time.
+        let ownPid = process?.processIdentifier
         Task.detached(priority: .utility) {
             let pgrep = Process()
             pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
@@ -62,7 +68,7 @@ final class BackendManager: ObservableObject {
             let pids = String(data: data, encoding: .utf8)?
                 .split(whereSeparator: \.isNewline)
                 .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) } ?? []
-            for pid in pids { kill(pid, SIGTERM) }
+            for pid in pids where pid != ownPid { kill(pid, SIGTERM) }
             if !pids.isEmpty {
                 NSLog("Slive: reaped \(pids.count) orphan backend process(es).")
             }
