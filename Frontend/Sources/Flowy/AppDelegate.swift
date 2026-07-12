@@ -14,12 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// How long you must hold the key before recording begins. Brief taps under
     /// this do nothing. Tune to taste.
-    private let holdActivationDelay: TimeInterval = 1.5
+    private let holdActivationDelay: TimeInterval = 0.3
 
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)   // normal app: keep a Dock icon
+        NSApp.setActivationPolicy(.accessory)   // background agent: menu-bar only
 
         setupMenuBar()
         wireAudioAndHotkey()

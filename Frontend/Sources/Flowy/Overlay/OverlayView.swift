@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// A small, quiet pill that sits just above the bottom edge and shows a live
-/// waveform only while you're actually recording. No halo, no timer, no
-/// confirmation — it simply appears while you hold and fades when you release.
+/// A tiny, quiet black pill that sits just above the bottom edge and shows a
+/// live waveform only while recording. Roughly a third the previous size.
 struct OverlayView: View {
     @ObservedObject var model: AudioModel
 
@@ -12,27 +11,20 @@ struct OverlayView: View {
         pill
             .scaleEffect(visible ? 1 : 0.9)
             .opacity(visible ? 1 : 0)
-            .offset(y: visible ? 0 : 6)
-            .frame(width: 240, height: 64)              // container (shadow spill)
-            .animation(.spring(response: 0.30, dampingFraction: 0.82), value: model.phase)
+            .offset(y: visible ? 0 : 4)
+            .frame(width: 180, height: 56)              // container (shadow spill)
+            .animation(.spring(response: 0.28, dampingFraction: 0.85), value: model.phase)
             .allowsHitTesting(false)
     }
 
     private var pill: some View {
         WaveformView(levels: model.levels)
-            .frame(width: 148, height: 20)
-            .padding(.horizontal, 15)
-            .padding(.vertical, 9)
-            .background {
-                ZStack {
-                    Capsule().fill(.ultraThinMaterial)
-                    Capsule().fill(Color.black.opacity(0.22))
-                }
-            }
-            .overlay(
-                Capsule().strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
-            )
+            .frame(width: 92, height: 11)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.black.opacity(0.92)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
-            .shadow(color: .black.opacity(0.28), radius: 7, y: 3)
+            .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
     }
 }

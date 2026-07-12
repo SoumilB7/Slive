@@ -12,7 +12,7 @@ final class OverlayController {
     init(model: AudioModel) {
         self.model = model
 
-        let size = NSSize(width: 240, height: 64)
+        let size = NSSize(width: 180, height: 56)
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -53,7 +53,7 @@ final class OverlayController {
         guard let frame = screen?.visibleFrame else { return }
         let size = panel.frame.size
         let x = frame.midX - size.width / 2
-        let y = frame.minY + 24                        // just above the bottom edge
+        let y = frame.minY + 18                        // just above the bottom edge
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
