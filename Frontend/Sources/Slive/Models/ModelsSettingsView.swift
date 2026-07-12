@@ -328,10 +328,21 @@ private struct LocalProviderRow: View {
 
     private var downloading: String? { providers.localDownloading }
 
+    /// Only real models are shown. Most HF cache entries are tiny config-only
+    /// repos (tokenizers, adapters, other projects' leftovers) — hiding anything
+    /// under 50 MB keeps this to actual models without the noise.
+    private static let minModelBytes: Int64 = 50 * 1_048_576   // 50 MB
+
+    private var models: [LocalCachedModel] {
+        providers.localModels.filter { $0.size_bytes >= Self.minModelBytes }
+    }
+    private var hiddenSmallCount: Int {
+        providers.localModels.count - models.count
+    }
     private var filteredModels: [LocalCachedModel] {
         let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return providers.localModels }
-        return providers.localModels.filter { $0.repo_id.lowercased().contains(q) }
+        guard !q.isEmpty else { return models }
+        return models.filter { $0.repo_id.lowercased().contains(q) }
     }
 
     var body: some View {
@@ -381,12 +392,9 @@ private struct LocalProviderRow: View {
                         .foregroundStyle(SliveTheme.textSecondary)
                 }
                 Spacer(minLength: 8)
-                Text("RUNS · SOON")
-                    .font(SliveTheme.font(9, .bold))
-                    .tracking(0.6)
-                    .foregroundStyle(SliveTheme.textTertiary)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Capsule().fill(.white.opacity(0.06)))
+                if downloading != nil {
+                    ProgressView().controlSize(.small)
+                }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(SliveTheme.textTertiary)
@@ -399,8 +407,8 @@ private struct LocalProviderRow: View {
 
     private var subtitle: String {
         if let downloading { return "Downloading \(downloading)…" }
-        let n = providers.localModels.count
-        return n > 0 ? "\(n) models in your cache" : "Download models to this Mac"
+        let n = models.count
+        return n > 0 ? "\(n) model\(n == 1 ? "" : "s") on this Mac" : "Download models to this Mac"
     }
 
     // MARK: Detail
@@ -410,15 +418,21 @@ private struct LocalProviderRow: View {
             Text("Downloads land in your standard Hugging Face cache (shared with transformers / PyTorch) and run in the Python backend. Running downloaded models for the Assistant is the next milestone.")
                 .sliveCaption()
 
-            // Access token.
+            // Access token (saves as you type — the pill confirms it).
             VStack(alignment: .leading, spacing: 6) {
-                Text("Access token (for gated / private repos)")
-                    .font(SliveTheme.rowFont)
-                    .foregroundStyle(SliveTheme.textPrimary)
+                HStack {
+                    Text("Access token (for gated / private repos)")
+                        .font(SliveTheme.rowFont)
+                        .foregroundStyle(SliveTheme.textPrimary)
+                    Spacer()
+                    KeyStatusPill(hasKey: !tokenDraft.isEmpty)
+                }
                 SecureField("hf_…  (huggingface.co/settings/tokens)", text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .onChange(of: tokenDraft) { _, new in providers.setHuggingFaceToken(new) }
+                Text("Saved automatically to your Keychain — no button needed.")
+                    .sliveCaption()
             }
 
             CardDivider()
@@ -479,14 +493,14 @@ private struct LocalProviderRow: View {
                 .help("Re-read the Hugging Face cache")
             }
 
-            if providers.localModels.isEmpty {
-                Text(providers.localLoading ? "Reading cache…" : "Nothing downloaded yet.")
+            if models.isEmpty {
+                Text(providers.localLoading ? "Reading cache…" : "No models downloaded yet.")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textTertiary)
                     .padding(.vertical, 4)
             } else {
-                if providers.localModels.count > 8 {
-                    TextField("Filter \(providers.localModels.count) cached models…", text: $filter)
+                if models.count > 8 {
+                    TextField("Filter \(models.count) models…", text: $filter)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
                 }
@@ -499,6 +513,12 @@ private struct LocalProviderRow: View {
                     }
                 }
                 .frame(maxHeight: 240)
+            }
+
+            if hiddenSmallCount > 0 {
+                Text("\(hiddenSmallCount) small config-only repos under 50 MB hidden.")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textTertiary)
             }
         }
     }
