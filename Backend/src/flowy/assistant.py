@@ -567,10 +567,14 @@ TRANSCRIBE_PROMPT = (
     "English in Latin script: if any part of the speech is in another "
     "language, do not transcribe it in that language or its script — replace "
     "that part inline with its natural English translation, so the whole "
-    "output reads as one fluent English passage. Do not add anything that was "
-    "not said, do not describe the audio or the speaker, no quotation marks "
-    "around the output, no markdown. If nothing intelligible is spoken, "
-    "output an empty string."
+    "output reads as one fluent English passage. Disfluencies are not part of "
+    "the intended text: when the speaker stutters or accidentally repeats a "
+    "word or phrase back-to-back while composing (e.g. 'anything… anything "
+    "like that'), write it once; likewise drop abandoned false starts. Keep a "
+    "repetition only when it is clearly deliberate (emphasis, or quoted "
+    "speech). Do not add anything that was not said, do not describe the "
+    "audio or the speaker, no quotation marks around the output, no markdown. "
+    "If nothing intelligible is spoken, output an empty string."
 )
 
 
