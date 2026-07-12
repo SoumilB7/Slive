@@ -81,46 +81,49 @@ final class LiveTypist: @unchecked Sendable {
 
     // MARK: - Paced loop (queue only)
 
+    /// The recogniser delivers text in ~1s chunks, so a whole word or three lands
+    /// at once. To read as SMOOTH continuous typing (not a fast burst then a
+    /// pause), we spread the remaining characters evenly across roughly one chunk
+    /// interval: each forward keystroke's delay = `spread / charsRemaining`,
+    /// clamped so it never types faster than the chosen speed nor slower than a
+    /// gentle floor. Backspacing (correcting a revised tail) stays snappy so a
+    /// wrong word is undone quickly.
     private func tick() {
         guard running else { return }
-        if enabled, committed != target { stepOne() }
 
-        // Cruise at 1/cps between keystrokes, but never lag unbounded: when far
-        // behind, shrink the delay toward a fast ~0.008s floor so a burst drains
-        // quickly, easing back to the cruise delay as we catch up.
-        let cruise = cps > 0 ? 1.0 / cps : 0.035
-        let floor = 0.008
-        let backlog = abs(target.count - committed.count)
-        let delay: TimeInterval
-        switch backlog {
-        case 0:
-            delay = max(cruise, 0.030)     // idle poll for the next target
-        case 1...5:
-            delay = cruise                 // the smooth cruising speed
-        default:
-            // Scale from cruise (backlog 6) down to the floor (backlog ≥ 40).
-            let t = min(1, Double(backlog - 6) / Double(40 - 6))
-            delay = max(floor, cruise + (floor - cruise) * t)
+        var delay: TimeInterval = 0.030   // idle poll when caught up
+        if enabled {
+            let old = Array(committed), new = Array(target)
+            var common = 0
+            let maxCommon = min(old.count, new.count)
+            while common < maxCommon && old[common] == new[common] { common += 1 }
+
+            if old.count > common {
+                // Wrong tail character → backspace it quickly.
+                PasteEngine.postBackspace()
+                committed.removeLast()
+                delay = 0.012
+            } else if new.count > common {
+                // Type the next new character, paced to spread the remaining run
+                // smoothly over ~one chunk interval.
+                PasteEngine.postUnicode(String(new[common]))
+                committed.append(new[common])
+                let remaining = new.count - committed.count
+                delay = remaining <= 0 ? 0.030 : forwardDelay(remaining: remaining)
+            }
         }
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.tick() }
     }
 
-    /// Advance the field one keystroke toward `target`: keep the common prefix,
-    /// then backspace an outdated tail character or type the next new one.
-    private func stepOne() {
-        let old = Array(committed), new = Array(target)
-        var common = 0
-        let maxCommon = min(old.count, new.count)
-        while common < maxCommon && old[common] == new[common] { common += 1 }
-
-        if old.count > common {
-            PasteEngine.postBackspace()
-            committed.removeLast()
-        } else if new.count > common {
-            let ch = new[common]
-            PasteEngine.postUnicode(String(ch))
-            committed.append(ch)
-        }
+    /// Per-keystroke delay that spreads `remaining` characters evenly over a
+    /// window, so a whole chunk types continuously instead of bursting. The chosen
+    /// `cps` scales the window (higher = drains faster) AND caps the top rate; a
+    /// gentle floor keeps the tail from crawling.
+    private func forwardDelay(remaining: Int) -> TimeInterval {
+        let spread = min(1.5, max(0.35, 30.0 / max(cps, 1)))   // window ≈ one chunk at 30 cps
+        let fastest = cps > 0 ? 1.0 / cps : 0.033              // chosen speed caps the rate
+        let slowest = 0.10                                     // ~10 cps floor so it never crawls
+        return min(slowest, max(fastest, spread / Double(remaining)))
     }
 
     /// Apply the entire remaining diff at once (used on release so the field is
