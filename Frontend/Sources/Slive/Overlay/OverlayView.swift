@@ -191,9 +191,9 @@ struct OverlayView: View {
 
     private var continuousPill: some View {
         PenScribbleView(active: isLiveDictating)
-            .frame(width: 60, height: 20)
+            .frame(width: 66, height: 26)
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.vertical, 4)
             .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
