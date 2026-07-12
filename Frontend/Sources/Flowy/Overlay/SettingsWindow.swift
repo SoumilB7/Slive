@@ -4,8 +4,6 @@ import SwiftUI
 /// Owns the Settings/home window. Flowy is a normal app (persistent Dock icon),
 /// so closing this window just hides it — the app keeps running.
 final class SettingsWindowController: NSObject, NSWindowDelegate {
-    var audiosPath: String = ""
-    var onOpenAudios: () -> Void = {}
     var onRelaunch: () -> Void = {}
 
     private var window: NSWindow?
@@ -16,8 +14,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             let root = SettingsView(
                 settings: .shared,
                 permissions: permissions,
-                audiosPath: audiosPath,
-                onOpenAudios: onOpenAudios,
                 onRelaunch: onRelaunch
             )
             let hosting = NSHostingView(rootView: root)

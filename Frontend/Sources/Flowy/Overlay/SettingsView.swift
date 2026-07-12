@@ -8,8 +8,6 @@ struct SettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject var permissions: PermissionsModel
     @ObservedObject private var history = HistoryStore.shared
-    var audiosPath: String
-    var onOpenAudios: () -> Void
     var onRelaunch: () -> Void
 
     private let accent = Color(hue: 0.76, saturation: 0.7, brightness: 1.0)
@@ -201,22 +199,6 @@ struct SettingsView: View {
             }
             .toggleStyle(.switch)
             .tint(accent)
-            Divider().overlay(.white.opacity(0.08))
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Recordings folder")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.92))
-                    Text(audiosPath)
-                        .font(.system(size: 11, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
-                Button("Open", action: onOpenAudios)
-                    .controlSize(.small)
-            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
