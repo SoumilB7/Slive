@@ -67,7 +67,7 @@ struct AssistantClient {
     /// Fetch the provider's LIVE list of model ids (via the backend `/models`).
     func listModels(config: AssistantConfig, apiKey: String) async throws -> [String] {
         let provider = config.provider
-        guard !apiKey.isEmpty else { throw AssistantError.missingKey(provider.displayName) }
+        guard !apiKey.isEmpty || !provider.needsAPIKey else { throw AssistantError.missingKey(provider.displayName) }
 
         let body = ModelsBody(
             provider: provider.wire,
@@ -131,9 +131,17 @@ struct AssistantClient {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard !apiKey.isEmpty else {
+                    guard !apiKey.isEmpty || !config.provider.needsAPIKey else {
                         throw AssistantError.missingKey(config.provider.displayName)
                     }
+                    if config.provider.isLocal && config.model(for: .local).isEmpty {
+                        throw AssistantError.server(
+                            "No local model picked — choose one in Settings → Assistant.")
+                    }
+                    // A local model may need its first-use load (multi-GB
+                    // weights) before any tokens appear — allow far more
+                    // slack than a cloud call.
+                    let timeout = config.provider.isLocal ? max(self.timeout, 600) : self.timeout
                     var request = URLRequest(
                         url: URL(string: "http://127.0.0.1:50711/assistant/stream")!)
                     request.httpMethod = "POST"
@@ -175,7 +183,13 @@ struct AssistantClient {
     func ask(_ text: String, config: AssistantConfig, apiKey: String,
              images: [ImageInput]? = nil, history: [HistoryItem]? = nil) async throws -> String {
         let provider = config.provider
-        guard !apiKey.isEmpty else { throw AssistantError.missingKey(provider.displayName) }
+        guard !apiKey.isEmpty || !provider.needsAPIKey else { throw AssistantError.missingKey(provider.displayName) }
+        if provider.isLocal && config.model(for: .local).isEmpty {
+            throw AssistantError.server("No local model picked — choose one in Settings → Assistant.")
+        }
+        // A local model may need its first-use load (multi-GB weights) before
+        // it can answer — allow far more slack than a cloud call.
+        let timeout = provider.isLocal ? max(self.timeout, 600) : self.timeout
 
         let body = makeBody(text, config: config, apiKey: apiKey, images: images, history: history)
 

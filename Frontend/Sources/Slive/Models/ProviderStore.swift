@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The provider/model configuration module — one owner for everything about
 /// "which AI can Slive talk to": credentials (Keychain), the OpenAI-compatible
-/// base URL, live model lists, and the (upcoming) Local / Hugging Face
+/// base URL, live model lists, and the Local / Hugging Face
 /// provider's token. Surfaces that USE a model — Assistant, Training — only
 /// pick a provider and a model id; everything secret or provider-global is
 /// entered once in the Models page and read through this store.
@@ -39,9 +39,9 @@ final class ProviderStore: ObservableObject {
         !apiKey(for: provider).isEmpty
     }
 
-    // MARK: - Local (Hugging Face) — phase 1: the token slot
+    // MARK: - Local (Hugging Face) — the token slot
 
-    /// Keychain account for the Hugging Face access token used by the upcoming
+    /// Keychain account for the Hugging Face access token used by the
     /// Local provider (downloads models to run on this Mac).
     static let hfAccount = "provider.huggingface"
 
@@ -153,6 +153,22 @@ final class ProviderStore: ObservableObject {
         fetching.insert(raw)
         fetchErrors[raw] = nil
         defer { fetching.remove(raw) }
+
+        // Local "fetch" is a cache re-scan: the pickable models are whatever is
+        // downloaded on disk, above the same size floor the Models page shows.
+        if provider.isLocal {
+            await refreshLocalCache()
+            let ids = localModels
+                .filter { $0.size_bytes >= LocalCachedModel.minPickableBytes }
+                .map(\.repo_id)
+            settings.assistantConfig.fetchedModels[raw] = ids
+            if let err = localError {
+                fetchErrors[raw] = err
+            } else if ids.isEmpty {
+                fetchErrors[raw] = "No downloaded models yet — add one in Models → Local."
+            }
+            return
+        }
 
         guard await BackendManager.shared.ensureHealthy() else {
             fetchErrors[raw] = "Couldn't start the local backend."

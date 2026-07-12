@@ -3,6 +3,11 @@ import Foundation
 /// One model repo in the on-disk Hugging Face cache (the standard
 /// `~/.cache/huggingface/hub`, shared with transformers / PyTorch).
 struct LocalCachedModel: Identifiable, Decodable, Equatable {
+    /// Cached repos smaller than this are config/tokenizer-only noise, not
+    /// runnable models — the shared floor for the Models page and the
+    /// Assistant / Ground Truth model pickers.
+    static let minPickableBytes: Int64 = 50 * 1_048_576   // 50 MB
+
     let repo_id: String
     let size_bytes: Int64
     let nb_files: Int

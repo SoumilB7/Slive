@@ -75,12 +75,18 @@ struct AssistantSettingsView: View {
 
     private var providerCard: some View {
         SettingsCard("PROVIDER", trailing: {
-            // Key presence at a glance; tap to manage keys in Models.
+            // Key presence at a glance; tap to manage keys (or, for Local,
+            // downloaded models) in Models.
             Button(action: openModels) {
-                KeyStatusPill(hasKey: providers.hasKey(settings.assistantConfig.provider))
+                if settings.assistantConfig.provider.isLocal {
+                    OnDevicePill()
+                } else {
+                    KeyStatusPill(hasKey: providers.hasKey(settings.assistantConfig.provider))
+                }
             }
             .buttonStyle(.plain)
-            .help("Keys are managed in Models")
+            .help(settings.assistantConfig.provider.isLocal
+                  ? "Models are downloaded in Models" : "Keys are managed in Models")
         }) {
             HStack(spacing: 10) {
                 Text("Provider")
@@ -111,7 +117,9 @@ struct AssistantSettingsView: View {
                         Button {
                             Task { await providers.fetchModels(for: settings.assistantConfig.provider) }
                         } label: {
-                            Label("Fetch live models", systemImage: "arrow.clockwise")
+                            Label(settings.assistantConfig.provider.isLocal
+                                  ? "Refresh downloaded" : "Fetch live models",
+                                  systemImage: "arrow.clockwise")
                                 .font(SliveTheme.font(11, .semibold))
                         }
                         .buttonStyle(.plain)
@@ -124,6 +132,11 @@ struct AssistantSettingsView: View {
                         .font(SliveTheme.captionFont)
                         .foregroundStyle(.orange.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true)
+                } else if settings.assistantConfig.provider.isLocal {
+                    Text(currentFetched.isEmpty
+                         ? "Runs on this Mac — no key, no cloud. Download a model in Models, then refresh."
+                         : "\(currentFetched.count) downloaded — the model loads on your first ask (can take a minute).")
+                        .sliveCaption()
                 } else {
                     Text(currentFetched.isEmpty
                          ? "Fetch live models to pick from your provider, or type any id."
@@ -145,7 +158,9 @@ struct AssistantSettingsView: View {
     /// The single model control: a mono text field showing exactly the id that
     /// will be sent, with a trailing menu chip listing fetched models.
     private var modelField: some View {
-        TextField(settings.assistantConfig.provider.defaultModel, text: selectedModel)
+        TextField(settings.assistantConfig.provider.isLocal
+                  ? "pick a downloaded model" : settings.assistantConfig.provider.defaultModel,
+                  text: selectedModel)
             .textFieldStyle(.roundedBorder)
             .font(.system(size: 12, design: .monospaced))
             .overlay(alignment: .trailing) {
@@ -172,7 +187,14 @@ struct AssistantSettingsView: View {
     private var providerBinding: Binding<AssistantProvider> {
         Binding(
             get: { settings.assistantConfig.provider },
-            set: { settings.assistantConfig.provider = $0 }
+            set: {
+                settings.assistantConfig.provider = $0
+                // Picking Local is explicit intent — list what's downloaded
+                // right away instead of waiting for a manual refresh.
+                if $0.isLocal && currentFetched.isEmpty {
+                    Task { await ProviderStore.shared.fetchModels(for: .local) }
+                }
+            }
         )
     }
 

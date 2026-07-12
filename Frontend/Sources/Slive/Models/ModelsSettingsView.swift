@@ -329,12 +329,10 @@ private struct LocalProviderRow: View {
     private var downloading: String? { providers.localDownloading }
 
     /// Only real models are shown. Most HF cache entries are tiny config-only
-    /// repos (tokenizers, adapters, other projects' leftovers) — hiding anything
-    /// under 50 MB keeps this to actual models without the noise.
-    private static let minModelBytes: Int64 = 50 * 1_048_576   // 50 MB
-
+    /// repos (tokenizers, adapters, other projects' leftovers) — the shared
+    /// size floor keeps this to actual models without the noise.
     private var models: [LocalCachedModel] {
-        providers.localModels.filter { $0.size_bytes >= Self.minModelBytes }
+        providers.localModels.filter { $0.size_bytes >= LocalCachedModel.minPickableBytes }
     }
     private var hiddenSmallCount: Int {
         providers.localModels.count - models.count

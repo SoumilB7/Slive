@@ -19,6 +19,7 @@ enum SelfTest {
         print("Slive self-test\n===============")
         hotkeyModelChecks()
         hotkeyMatchingChecks()
+        providerChecks()
         textHygieneChecks()
         pacingChecks()
         wpmChecks()
@@ -179,6 +180,26 @@ enum SelfTest {
         let plain = CGEvent(keyboardEventSource: nil, virtualKey: 4, keyDown: true)!
         plain.flags = []
         check(!m.handle(type: .keyDown, event: plain), "plain key passes through")
+    }
+
+    // MARK: - Provider model (Local runs keyless, on-device)
+
+    private static func providerChecks() {
+        print("[Providers]")
+        equal(AssistantProvider.local.wire, "local", "local wire value")
+        check(!AssistantProvider.local.needsAPIKey && AssistantProvider.local.isLocal,
+              "local is keyless and flagged local")
+        check(AssistantProvider.allCases.filter { $0 != .local }.allSatisfy(\.needsAPIKey),
+              "every cloud provider needs a key")
+        check(!AssistantProvider.local.needsBaseURL, "local needs no base URL")
+        // The floor that separates runnable downloads from config-only repos —
+        // shared by the Models page and both model pickers.
+        equal(LocalCachedModel.minPickableBytes, 50 * 1_048_576, "local pickable size floor")
+        var config = AssistantConfig.default
+        config.provider = .local
+        equal(config.model(for: .local), "", "local has no default model — must be picked")
+        config.setModel("google/gemma-3n-E2B-it", for: .local)
+        equal(config.model(for: .local), "google/gemma-3n-E2B-it", "local model override sticks")
     }
 
     // MARK: - Text hygiene

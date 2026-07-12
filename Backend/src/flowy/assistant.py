@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+from fastapi.concurrency import run_in_threadpool
 
 logger = logging.getLogger("flowy.assistant")
 
@@ -166,6 +167,13 @@ async def answer(
     """
     if not text or not text.strip():
         raise ValueError("Empty prompt text")
+    if provider == "local":
+        from flowy import local_infer
+        return await run_in_threadpool(
+            local_infer.chat, model, api_key or None, system_prompt or "",
+            history or [], text, [img.get("data", "") for img in (images or [])],
+            max_tokens,
+        )
     if not api_key:
         raise ValueError("Missing api_key")
 
@@ -222,6 +230,16 @@ async def answer_stream(
     """
     if not text or not text.strip():
         raise ValueError("Empty prompt text")
+    if provider == "local":
+        from flowy import local_infer
+        reply = await run_in_threadpool(
+            local_infer.chat, model, api_key or None, system_prompt or "",
+            history or [], text, [img.get("data", "") for img in (images or [])],
+            max_tokens,
+        )
+        if reply:
+            yield reply
+        return
     if not api_key:
         raise ValueError("Missing api_key")
 
@@ -593,10 +611,15 @@ async def transcribe_audio(
     audio input are supported — Anthropic's API does not take audio, so it is
     rejected explicitly rather than failing confusingly upstream.
     """
-    if not api_key:
-        raise ValueError("Missing api_key")
     if not audio_b64:
         raise ValueError("Missing audio")
+    if provider == "local":
+        from flowy import local_infer
+        return await run_in_threadpool(
+            local_infer.transcribe, model, api_key or None, audio_b64, media_type,
+        )
+    if not api_key:
+        raise ValueError("Missing api_key")
 
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
         if provider == "gemini":

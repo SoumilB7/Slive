@@ -99,7 +99,9 @@ struct TrainingSettingsView: View {
     // MARK: - Ground truth
 
     /// Providers whose models accept audio input (Anthropic's API doesn't).
-    private let audioProviders: [AssistantProvider] = [.gemini, .openai, .openaiCompatible]
+    /// Local qualifies via audio-capable downloads (e.g. Gemma 3n) — a
+    /// non-audio pick fails loudly with a clear error, like any wrong model.
+    private let audioProviders: [AssistantProvider] = [.gemini, .openai, .openaiCompatible, .local]
 
     /// Default audio-capable model per provider. (OpenAI's `gpt-4o-audio-preview`
     /// was superseded — `gpt-audio` is the GA audio chat model; accounts without
@@ -130,12 +132,18 @@ struct TrainingSettingsView: View {
 
     private var groundTruthCard: some View {
         SettingsCard("GROUND TRUTH", trailing: {
-            // Key presence at a glance; tap to manage keys in Models.
+            // Key presence at a glance; tap to manage keys (or, for Local,
+            // downloaded models) in Models.
             Button(action: openModels) {
-                KeyStatusPill(hasKey: providers.hasKey(settings.groundTruthProvider))
+                if settings.groundTruthProvider.isLocal {
+                    OnDevicePill()
+                } else {
+                    KeyStatusPill(hasKey: providers.hasKey(settings.groundTruthProvider))
+                }
             }
             .buttonStyle(.plain)
-            .help("Keys are managed in Models")
+            .help(settings.groundTruthProvider.isLocal
+                  ? "Models are downloaded in Models" : "Keys are managed in Models")
         }) {
             Text("A model that can hear re-transcribes your audio into the Should-be column — the supervision signal for fine-tuning.")
                 .sliveCaption()
@@ -152,6 +160,11 @@ struct TrainingSettingsView: View {
                 .fixedSize()
                 .onChange(of: settings.groundTruthProvider) { _, p in
                     settings.groundTruthModel = defaultAudioModel(p)
+                    // Picking Local is explicit intent — list what's
+                    // downloaded right away.
+                    if p.isLocal && providers.models(for: p).isEmpty {
+                        Task { await providers.fetchModels(for: .local) }
+                    }
                 }
 
                 // The model id that will be sent, with a trailing chip listing
@@ -189,7 +202,9 @@ struct TrainingSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(SliveTheme.accent)
-                    .help("Fetch this provider's live model list")
+                    .help(settings.groundTruthProvider.isLocal
+                          ? "List your downloaded models"
+                          : "Fetch this provider's live model list")
                 }
             }
 

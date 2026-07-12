@@ -232,6 +232,26 @@ struct KeyStatusPill: View {
     }
 }
 
+/// KeyStatusPill's stand-in for the Local provider: there is no key to show —
+/// the model runs on this Mac.
+struct OnDevicePill: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 9, weight: .semibold))
+            Text("On-device")
+                .font(SliveTheme.font(10, .semibold))
+        }
+        .foregroundStyle(SliveTheme.accent)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+            Capsule().fill(.white.opacity(0.06))
+                .overlay(Capsule().strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
+        )
+    }
+}
+
 // MARK: - Steps ribbon
 
 /// One-line "how it works" strip inside a shortcut card: icon + word steps

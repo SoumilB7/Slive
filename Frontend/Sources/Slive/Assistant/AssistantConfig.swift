@@ -7,6 +7,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
     case openai
     case gemini
     case openaiCompatible
+    case local
 
     var id: String { rawValue }
 
@@ -17,6 +18,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .openai: return "openai"
         case .gemini: return "gemini"
         case .openaiCompatible: return "openai_compatible"
+        case .local: return "local"
         }
     }
 
@@ -26,6 +28,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .openai: return "OpenAI"
         case .gemini: return "Google Gemini"
         case .openaiCompatible: return "OpenAI-compatible"
+        case .local: return "Local (on-device)"
         }
     }
 
@@ -35,11 +38,20 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .openai: return "gpt-4o"
         case .gemini: return "gemini-2.5-flash"
         case .openaiCompatible: return ""
+        case .local: return ""
         }
     }
 
     /// Only the OpenAI-compatible provider needs a custom base URL.
     var needsBaseURL: Bool { self == .openaiCompatible }
+
+    /// Local runs a downloaded model on-device — it takes no API key (the model
+    /// is loaded straight from the HF cache; the token is only for downloading).
+    var needsAPIKey: Bool { self != .local }
+
+    /// True when the model is a downloaded local one, chosen from the cache
+    /// rather than typed/fetched from a provider's list.
+    var isLocal: Bool { self == .local }
 
     /// Where to find the API key hint / signup.
     var keyHint: String {
@@ -48,6 +60,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .openai: return "sk-…  (platform.openai.com)"
         case .gemini: return "AIza…  (aistudio.google.com)"
         case .openaiCompatible: return "provider key for your base URL"
+        case .local: return ""
         }
     }
 

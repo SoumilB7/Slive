@@ -44,8 +44,12 @@ struct GroundTruthClient {
                     model: String,
                     apiKey: String,
                     baseURL: String?) async throws -> String {
-        guard !apiKey.isEmpty else {
+        guard !apiKey.isEmpty || !provider.needsAPIKey else {
             throw GroundTruthError.missingKey(provider.displayName)
+        }
+        if provider.isLocal && model.trimmingCharacters(in: .whitespaces).isEmpty {
+            throw GroundTruthError.server(
+                "No local model picked — choose a downloaded audio-capable model.")
         }
         guard await BackendManager.shared.ensureHealthy() else {
             throw GroundTruthError.backendDown
@@ -64,7 +68,9 @@ struct GroundTruthClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        request.timeoutInterval = 120   // long clips + provider latency
+        // Long clips + provider latency; a local model may also need its
+        // first-use load (multi-GB weights) before it can transcribe.
+        request.timeoutInterval = provider.isLocal ? 600 : 120
 
         let (data, _) = try await URLSession.shared.data(for: request)
         let decoded = try JSONDecoder().decode(ResponseBody.self, from: data)
