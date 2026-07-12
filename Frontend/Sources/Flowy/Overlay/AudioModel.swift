@@ -27,6 +27,7 @@ final class AudioModel: ObservableObject {
 
     private var timer: Timer?
     private var startDate: Date?
+    private var noisePhase: Double = 0
 
     // Visualiser dial — the tallest the centre bar can reach.
     private let waveCeiling: Float = 0.92
@@ -112,6 +113,8 @@ final class AudioModel: ObservableObject {
     }
 
     private func tick() {
+        noisePhase += 0.05   // slow drift for the wobble (vertical, not sideways)
+
         // Ease overall loudness for smooth vertical growth/shrink.
         let gRate: Float = targetGlow > glow ? attack : decay
         glow = glow + (targetGlow - glow) * gRate
@@ -122,13 +125,18 @@ final class AudioModel: ObservableObject {
         if listening { amp = max(amp, 0.14) }
 
         // A SINGLE hump — tall in the centre, tapering to both edges — that
-        // grows vertically with volume. Static (does not travel).
+        // grows vertically with volume. Static (does not travel), but each bar
+        // gets a subtle drifting wobble so it feels organic, not mechanical.
         var newLevels = [Float](repeating: 0, count: bandCount)
         let n = bandCount
         for i in 0..<n {
             let p = n > 1 ? Double(i) / Double(n - 1) : 0.5
             let arch = Float(sin(.pi * p))          // 0 at edges → 1 at centre
-            newLevels[i] = amp * (0.16 + 0.84 * arch)
+            // Two incommensurate sines per bar → smooth, random-looking jitter.
+            let noise = sin(noisePhase * 1.7 + Double(i) * 1.3)
+                      + sin(noisePhase * 1.1 + Double(i) * 2.9)   // [-2, 2]
+            let wobble = 1 + 0.11 * Float(noise)                  // ≈ ±22%
+            newLevels[i] = amp * (0.16 + 0.84 * arch) * wobble
         }
         levels = newLevels
 
