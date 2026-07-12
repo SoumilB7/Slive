@@ -37,7 +37,9 @@ fi
 # relaunches. Falls back to ad-hoc otherwise (grants reset on each rebuild).
 # To create the identity, see: Frontend/setup-signing.sh
 SIGN_ID="Flowy Local Signing"
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+# Detect by certificate presence, not `find-identity -p codesigning` — the
+# latter hides untrusted self-signed certs even though codesign can use them.
+if security find-certificate -c "$SIGN_ID" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
     SIGN_ARGS=(--sign "$SIGN_ID")
     echo "▸ Signing with stable identity: $SIGN_ID"
 else

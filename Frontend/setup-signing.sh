@@ -5,19 +5,13 @@
 # WHY: macOS privacy (TCC) identifies an app by its code signature. Ad-hoc
 # signing produces a NEW signature on every rebuild, so macOS re-asks for
 # Microphone / Input Monitoring each time. A stable identity is signed the same
-# way every build, so you grant permissions ONCE and they persist forever —
-# exactly how a normal installed app behaves.
+# way every build, so you grant permissions ONCE and they persist forever.
 #
-# WHAT THIS DOES:
-#   1. Generates a self-signed cert + private key (valid 10 years).
-#   2. Imports it into YOUR login keychain as "Flowy Local Signing".
-#   3. Scopes key access to /usr/bin/codesign only (no "allow any app").
+# Local-only: a self-signed cert (NOT an Apple Developer cert), key scoped to
+# /usr/bin/codesign, imported into your login keychain. Safe to re-run — it
+# removes any previous copies first so duplicates can't pile up.
 #
-# It is local-only: nothing is uploaded, and it is NOT an Apple Developer cert
-# (that costs $99/yr and isn't needed for a personal app). You may be prompted
-# once by Keychain to "Always Allow" codesign to use the key.
-#
-# To undo later:  security delete-identity -c "Flowy Local Signing"
+# To undo entirely:  security delete-identity -c "Flowy Local Signing"
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -26,13 +20,19 @@ KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CN"; then
-    echo "✓ Signing identity '$CN' already exists — nothing to do."
-    exit 0
-fi
+# 0. Remove any existing copies so re-runs don't create duplicates (duplicates
+#    make codesign ambiguous and it silently falls back to ad-hoc).
+echo "▸ Clearing any existing '$CN' entries…"
+guard=0
+while security find-certificate -c "$CN" "$KEYCHAIN" >/dev/null 2>&1 && [ $guard -lt 10 ]; do
+    security delete-identity -c "$CN" "$KEYCHAIN" >/dev/null 2>&1 || {
+        echo "  ⚠️  Could not auto-delete. Open Keychain Access ▸ login, delete every"
+        echo "     'Flowy Local Signing' certificate, then re-run this script."
+        exit 1
+    }
+    guard=$((guard + 1))
+done
 
-# Prefer Homebrew openssl (3.x, supports -legacy). The -legacy PKCS#12 cipher
-# is REQUIRED, or macOS Keychain silently imports a key codesign can't use.
 OPENSSL=/opt/homebrew/bin/openssl
 [ -x "$OPENSSL" ] || OPENSSL="$(command -v openssl)"
 
@@ -48,7 +48,6 @@ echo "▸ Packaging (PKCS#12, legacy cipher for Keychain compatibility)…"
 if ! "$OPENSSL" pkcs12 -export -legacy -out "$TMP/flowy.p12" \
         -inkey "$TMP/flowy.key" -in "$TMP/flowy.crt" \
         -name "$CN" -passout pass:flowy 2>/dev/null; then
-    # LibreSSL / older openssl has no -legacy flag (already uses legacy cipher).
     "$OPENSSL" pkcs12 -export -out "$TMP/flowy.p12" \
         -inkey "$TMP/flowy.key" -in "$TMP/flowy.crt" \
         -name "$CN" -passout pass:flowy
@@ -57,12 +56,19 @@ fi
 echo "▸ Importing into your login keychain…"
 security import "$TMP/flowy.p12" -k "$KEYCHAIN" -P flowy -T /usr/bin/codesign
 
-echo ""
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CN"; then
-    echo "✓ Done. '$CN' is ready."
-    echo "  Now run:  ./build.sh install"
-    echo "  Grant Microphone + Input Monitoring one last time — they'll stick after that."
+# Verify by ACTUALLY signing a throwaway binary. (find-identity -p codesigning
+# hides untrusted self-signed certs, so testing real signing is the honest check.)
+echo "▸ Verifying the identity can sign…"
+cp /bin/echo "$TMP/echo-test"
+if codesign --force --options runtime --sign "$CN" "$TMP/echo-test" >/dev/null 2>&1; then
+    echo ""
+    echo "✓ Done. '$CN' is ready and can sign."
+    echo "  Next:  ./build.sh install   (should say 'Signing with stable identity')"
 else
-    echo "✗ Something went wrong — the identity isn't listed. Check the output above."
+    echo ""
+    echo "✗ Imported, but codesign couldn't use it (likely a keychain prompt was"
+    echo "  denied, or leftover duplicates). Open Keychain Access ▸ login, delete"
+    echo "  every 'Flowy Local Signing' entry, then re-run this script and click"
+    echo "  'Always Allow' if prompted."
     exit 1
 fi
