@@ -17,6 +17,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var backendStatusItem: NSMenuItem?
     private var statusCancellable: AnyCancellable?
     private var recordStart: Date?
+    /// Seconds spent speaking in the last dictation — used to compute WPM after
+    /// the text is written (never in the hot path). Set when recording stops.
+    private var lastSpeechDuration: TimeInterval = 0
+    /// When the current continuous session began speaking (post hold-delay), so
+    /// its pace can be measured on release.
+    private var liveStart: Date?
     private var armWorkItem: DispatchWorkItem?
     private var activityToken: NSObjectProtocol?   // holds off App Nap
     private var transcribeTask: Task<Void, Never>? // in-flight encode + transcribe
@@ -205,6 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopRecording() {
         guard recorder.isRecording else { return }
         let duration = recordStart.map { Date().timeIntervalSince($0) } ?? 0
+        lastSpeechDuration = duration   // for the post-write WPM measurement
         let wavURL = recorder.stop()
 
         guard let wavURL else {
@@ -283,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         model.beginLiveDictation()
         overlay.show()   // same small waveform pill as normal dictation
+        liveStart = Date()   // for the post-release WPM measurement
         FeedbackPlayer.shared.playActivation(for: .stream)
 
         if !continuous.start() {
@@ -299,11 +307,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// dictation — so the words are never silently lost.
     private func stopLiveDictation() {
         guard continuous.isActive else { return }
+        // Timestamp the release now (before the final pass) so the measured pace
+        // reflects speaking time, not the final-pass latency.
+        let heldSeconds = liveStart.map { Date().timeIntervalSince($0) } ?? 0
+        liveStart = nil
         model.beginTranscribing()
         Task { @MainActor in
             let outcome = await continuous.stop()
             let text = outcome.text
-            if !text.isEmpty { HistoryStore.shared.add(text) }
+            if !text.isEmpty {
+                HistoryStore.shared.add(text)
+                SpeakingStats.shared.record(text: text, seconds: heldSeconds)  // after write
+            }
             if !outcome.typed && !text.isEmpty {
                 model.showResult(text)
                 overlay.resize(to: OverlayMetrics.panelSize(for: text))
@@ -467,6 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // If auto-insert is on and a text field is focused, paste straight there
         // and skip the copy box entirely.
         if Settings.shared.autoInsert, PasteEngine.insertIfPossible(trimmed) {
+            SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)  // after write
             model.finishListening()
             hideOverlaySoon()
             return
@@ -476,6 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.showResult(trimmed)
         overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
         overlay.setInteractive(true)              // let the copy button be clicked
+        SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)      // after write
         scheduleCollapse(after: resultDisplayDuration)
     }
 
