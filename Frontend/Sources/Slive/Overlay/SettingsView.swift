@@ -15,11 +15,12 @@ struct SettingsView: View {
 
     private let accent = Color(hue: 0.50, saturation: 0.68, brightness: 0.86)
 
-    /// Top-level sections: dictation (which now houses continuous as a sub-tab)
-    /// vs. the LLM assistant.
+    /// Top-level sections: dictation (which houses continuous as a sub-tab), the
+    /// LLM assistant, and the captured training data.
     private enum Section: String, CaseIterable, Identifiable {
         case dictation = "Dictation"
         case assistant = "Assistant"
+        case training = "Training"
         var id: String { rawValue }
     }
 
@@ -73,6 +74,8 @@ struct SettingsView: View {
                 }
             case .assistant:
                 AssistantSettingsView(settings: settings, accent: accent)
+            case .training:
+                TrainingSettingsView(settings: settings, accent: accent)
             }
 
             footer
@@ -84,8 +87,8 @@ struct SettingsView: View {
         .onDisappear { permissions.stopWatching() }
     }
 
-    /// The top-level Dictation ↔ Assistant switch. Styled a touch larger than
-    /// the sub-tab bar so the hierarchy reads clearly.
+    /// The top-level Dictation / Assistant / Training switch. Styled a touch
+    /// larger than the sub-tab bar so the hierarchy reads clearly.
     private var sectionSwitcher: some View {
         Picker("", selection: $section) {
             ForEach(Section.allCases) { s in

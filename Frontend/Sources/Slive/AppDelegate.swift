@@ -515,8 +515,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // and skip the copy box entirely.
         if Settings.shared.autoInsert {
             // Snapshot the field BEFORE typing so the training capture has clean
-            // pre-insertion context (only when capture is enabled).
-            let pre = Settings.shared.captureEdits ? EditCapture.shared.capturePre() : nil
+            // pre-insertion context (only when capture is on and under the cap).
+            let canCapture = Settings.shared.captureEdits && !TrainingStore.shared.isOverLimit
+            let pre = canCapture ? EditCapture.shared.capturePre() : nil
             if PasteEngine.insertIfPossible(trimmed) {
                 if let pre {
                     EditCapture.shared.begin(pre: pre, transcript: trimmed, audioURL: audioURL)
