@@ -9,6 +9,14 @@ final class OverlayController {
     let model: AudioModel
     private let panel: NSPanel
 
+    /// While the pill is on screen, this re-asserts the top-most level on a slow
+    /// cadence. A long-running session (especially continuous dictation, which
+    /// can stay up for minutes while you work in another app) is exactly when the
+    /// window server quietly demotes the panel — the pill "vanishes" even though
+    /// nothing hid it. Space-change / wake notifications don't cover every such
+    /// case, so a low-frequency heartbeat keeps it reliably on top.
+    private var topmostTimer: Timer?
+
     init(model: AudioModel) {
         self.model = model
 
@@ -36,8 +44,15 @@ final class OverlayController {
         // Re-assert the top-most level when the environment changes underneath a
         // long-running session: a Space switch, or a wake from sleep, can leave
         // the panel below the frontmost app. See `applyTopmostLevel`.
+        // Space switch / wake / another app coming to the front can each leave the
+        // panel below the frontmost app. `didActivateApplicationNotification`
+        // fires whenever any app activates — the most common trigger for the pill
+        // slipping behind while you work elsewhere — so we reassert immediately
+        // rather than waiting for the heartbeat.
         let nc = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didWakeNotification] {
+        for name in [NSWorkspace.activeSpaceDidChangeNotification,
+                     NSWorkspace.didWakeNotification,
+                     NSWorkspace.didActivateApplicationNotification] {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 self?.reassertTopmost()
             }
@@ -82,13 +97,36 @@ final class OverlayController {
         setPanelSize(OverlayMetrics.pillSize)
         reposition()
         panel.orderFrontRegardless()
+        startTopmostHeartbeat()
     }
 
     func hide() {
+        stopTopmostHeartbeat()
         panel.orderOut(nil)
         panel.ignoresMouseEvents = true              // reset to click-through
         // Reset for the next appearance so it never flashes at the grown size.
         setPanelSize(OverlayMetrics.pillSize)
+    }
+
+    /// Re-assert the top-most level periodically while the pill is visible so a
+    /// long session can't leave it demoted behind the frontmost app. Ordering the
+    /// panel front again is a visual no-op when it's already on top and never
+    /// steals focus (non-activating panel), so this is safe to run on a loop.
+    private func startTopmostHeartbeat() {
+        guard topmostTimer == nil else { return }
+        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard self.panel.isVisible else { self.stopTopmostHeartbeat(); return }
+            self.applyTopmostLevel()
+            self.panel.orderFrontRegardless()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        topmostTimer = t
+    }
+
+    private func stopTopmostHeartbeat() {
+        topmostTimer?.invalidate()
+        topmostTimer = nil
     }
 
     /// Opt-in interactivity. The overlay is click-through by default; the app
