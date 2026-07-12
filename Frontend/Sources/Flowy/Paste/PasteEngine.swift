@@ -44,11 +44,13 @@ enum PasteEngine {
             return true
         }
 
-        // Strategy 2: ⌘V fallback. This is what reaches Electron / VS Code /
-        // terminal editors (e.g. the Claude Code extension's Monaco view) whose
-        // custom text areas don't expose a settable AX value. Something is
-        // focused and it isn't secure, so the paste lands in the right place.
-        return pasteViaClipboard(text)
+        // Strategy 2: type it out with synthetic key events — the universal
+        // path. Reaches Electron / VS Code / terminal editors (Monaco, the
+        // Claude Code extension) that ignore ⌘V and expose no settable AX value,
+        // because this *is* keyboard input, not a paste. Runs async so the
+        // per-character pacing never blocks the UI.
+        DispatchQueue.global(qos: .userInitiated).async { typeOut(text) }
+        return true
     }
 
     // MARK: - Focus discovery
@@ -125,58 +127,30 @@ enum PasteEngine {
         return err == .success
     }
 
-    // MARK: - Strategy 2: clipboard paste fallback
+    // MARK: - Strategy 2: type it out
 
-    /// Save the clipboard, put our text on it, synthesize ⌘V into the frontmost
-    /// app, then restore the clipboard after a short delay so the paste lands.
-    private static func pasteViaClipboard(_ text: String) -> Bool {
-        let pasteboard = NSPasteboard.general
-        let saved = pasteboard.string(forType: .string)
-
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        guard postCommandV() else {
-            // Couldn't post the paste — restore immediately and bail.
-            restoreClipboard(saved)
-            return false
+    /// Type `text` into the frontmost app one character at a time via synthetic
+    /// Unicode key events. Works anywhere a keyboard works — Electron, VS Code,
+    /// terminals — because it *is* keyboard input, not a paste, and it never
+    /// touches the clipboard. Flowy's overlay is non-activating, so the user's
+    /// app stays frontmost and receives the keystrokes.
+    private static func typeOut(_ text: String) {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
+        for character in text {
+            let utf16 = Array(String(character).utf16)
+            utf16.withUnsafeBufferPointer { buffer in
+                if let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) {
+                    down.keyboardSetUnicodeString(stringLength: buffer.count,
+                                                  unicodeString: buffer.baseAddress)
+                    down.post(tap: .cghidEventTap)
+                }
+                if let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
+                    up.keyboardSetUnicodeString(stringLength: buffer.count,
+                                                unicodeString: buffer.baseAddress)
+                    up.post(tap: .cghidEventTap)
+                }
+            }
+            usleep(1200)   // ~1.2ms pacing so fast apps don't drop characters
         }
-
-        // Give the frontmost app time to consume ⌘V before we restore.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            restoreClipboard(saved)
-        }
-        return true
-    }
-
-    private static func restoreClipboard(_ saved: String?) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        if let saved {
-            pasteboard.setString(saved, forType: .string)
-        }
-    }
-
-    /// Synthesize ⌘V via CGEvent (keycode 9 = 'v'), posted to the HID tap so it
-    /// reaches whatever app is frontmost. Flowy's overlay is non-activating, so
-    /// the user's app stays frontmost and receives the paste.
-    private static func postCommandV() -> Bool {
-        let vKeyCode: CGKeyCode = 9  // kVK_ANSI_V
-        guard let source = CGEventSource(stateID: .combinedSessionState) else {
-            return false
-        }
-        guard
-            let keyDown = CGEvent(
-                keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
-            let keyUp = CGEvent(
-                keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
-        else {
-            return false
-        }
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
-        return true
     }
 }
