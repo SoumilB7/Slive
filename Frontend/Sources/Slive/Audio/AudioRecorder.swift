@@ -17,6 +17,19 @@ final class AudioRecorder {
 
     let bandCount = 14
 
+    /// Everything is recorded in this canonical format — 16 kHz mono Float32,
+    /// what Whisper actually consumes — regardless of what the hardware hands
+    /// us. The input node's format is a moving target (voice processing flips
+    /// it to a multichannel voice-chat mode: 7ch/48k in practice), and writing
+    /// the node's format verbatim produced WAVs the transcriber choked on.
+    /// Converting in the tap decouples the file from the device forever.
+    private let targetFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+    /// Live converter from the node's current format to `targetFormat` (nil →
+    /// fall back to writing the native format, the pre-conversion behavior).
+    private var converter: AVAudioConverter?
+    private var loggedWriteError = false
+
     /// Whether the input node currently has the system voice-processing chain
     /// (echo cancellation) attached — tracked so we only toggle on change.
     private var voiceProcessingOn = false
@@ -60,13 +73,20 @@ final class AudioRecorder {
             return false
         }
 
-        fft = FFTProcessor(fftSize: 1024, bandCount: bandCount, sampleRate: format.sampleRate)
+        // Convert to the canonical format in the tap; if the converter can't be
+        // built (exotic device format) fall back to writing the native format.
+        converter = AVAudioConverter(from: format, to: targetFormat)
+        if converter == nil {
+            NSLog("Slive: no converter for \(format) — recording in native format")
+        }
+        let fileFormat = converter != nil ? targetFormat : format
+        fft = FFTProcessor(fftSize: 1024, bandCount: bandCount, sampleRate: fileFormat.sampleRate)
+        loggedWriteError = false
 
-        // Temp WAV in the input's native format; lame downsamples later.
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("flowy-\(UUID().uuidString).wav")
         do {
-            file = try AVAudioFile(forWriting: tmp, settings: format.settings)
+            file = try AVAudioFile(forWriting: tmp, settings: fileFormat.settings)
             tempURL = tmp
         } catch {
             NSLog("Slive: could not open temp file: \(error)")
@@ -111,16 +131,45 @@ final class AudioRecorder {
     }
 
     private func handle(buffer: AVAudioPCMBuffer) {
-        // Persist to disk in the native format.
-        if let file = file {
-            try? file.write(from: buffer)
+        // Canonicalize (downmix + resample) before anything touches the data.
+        let out: AVAudioPCMBuffer
+        if let conv = converter {
+            let ratio = targetFormat.sampleRate / buffer.format.sampleRate
+            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+            guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
+            var fed = false
+            var convError: NSError?
+            conv.convert(to: converted, error: &convError) { _, status in
+                if fed { status.pointee = .noDataNow; return nil }
+                fed = true
+                status.pointee = .haveData
+                return buffer
+            }
+            if let convError, !loggedWriteError {
+                loggedWriteError = true
+                NSLog("Slive: audio conversion failed: \(convError)")
+            }
+            out = converted
+        } else {
+            out = buffer
         }
 
-        guard let channelData = buffer.floatChannelData else { return }
-        let frames = Int(buffer.frameLength)
+        if let file = file {
+            do { try file.write(from: out) } catch {
+                // A silent write failure here is how recordings break invisibly
+                // — say so once per recording.
+                if !loggedWriteError {
+                    loggedWriteError = true
+                    NSLog("Slive: WAV write failed: \(error)")
+                }
+            }
+        }
+
+        guard let channelData = out.floatChannelData else { return }
+        let frames = Int(out.frameLength)
         guard frames > 0 else { return }
 
-        // Downmix to mono (channel 0 is plenty for a level meter).
+        // Mono channel 0 of the canonical buffer feeds the meters.
         let mono = Array(UnsafeBufferPointer(start: channelData[0], count: frames))
 
         let bands = fft?.process(mono) ?? []

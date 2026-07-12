@@ -347,7 +347,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(accent)
-                Text("Keeps what your speakers are playing (music, videos) out of the mic while you dictate — the same canceller FaceTime uses. Turn off if your mic sounds odd.")
+                Text("Keeps what your speakers are playing (music, videos) out of the mic while you dictate — the same canceller FaceTime uses. May pop/crackle briefly when recording starts on some Macs; leave off unless speaker bleed is hurting your transcripts.")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.5))
                     .fixedSize(horizontal: false, vertical: true)

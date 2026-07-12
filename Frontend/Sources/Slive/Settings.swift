@@ -246,12 +246,10 @@ final class Settings: ObservableObject {
         } else {
             captureMaxGB = UserDefaults.standard.double(forKey: Keys.captureMaxGB)
         }
-        // Default TRUE: open-mic dictation with speakers is the common case.
-        if UserDefaults.standard.object(forKey: Keys.echoCancellation) == nil {
-            echoCancellation = true
-        } else {
-            echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
-        }
+        // Default FALSE (opt-in): the voice-processing chain audibly pops on
+        // some Macs when the device flips into voice-chat mode at recording
+        // start. Worth it when dictating over speaker audio; not as a default.
+        echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.
         Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"
