@@ -6,6 +6,7 @@ import IOKit.hid
 enum HotkeyAction {
     case dictate   // transcribe speech and type/insert it
     case assist    // transcribe speech, send to an LLM, show the answer
+    case stream    // live-transcribe speech and type it into the field as you talk
 }
 
 /// Global hold-to-talk monitor for up to two user-recorded shortcuts: the
@@ -32,6 +33,11 @@ final class HotkeyMonitor {
         didSet { hotkeysChanged() }
     }
 
+    /// Optional live-streaming dictation shortcut (nil = streaming mode off).
+    var streamHotkey: Hotkey? = Settings.shared.streamHotkey {
+        didSet { hotkeysChanged() }
+    }
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var pollTimer: Timer?
@@ -49,6 +55,7 @@ final class HotkeyMonitor {
     private var targets: [Target] {
         var t = [Target(hotkey: hotkey, action: .dictate)]
         if let a = assistantHotkey { t.append(Target(hotkey: a, action: .assist)) }
+        if let s = streamHotkey { t.append(Target(hotkey: s, action: .stream)) }
         return t
     }
 
@@ -175,6 +182,13 @@ final class HotkeyMonitor {
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return false
+        }
+        // Ignore the synthetic keystrokes Slive itself types (live dictation types
+        // into the field WHILE the stream key is held). They carry no modifiers, so
+        // without this the modifier-only matcher would read them as "key released"
+        // and stop the stream. PasteEngine tags them with this marker.
+        if event.getIntegerValueField(.eventSourceUserData) == PasteEngine.syntheticMarker {
             return false
         }
         markActive()

@@ -51,6 +51,13 @@ final class TranscriptionModel: ObservableObject {
     private var loadedModel: String?
     private var loadingModel: String?  // model being prepared in the background
 
+    // Live streaming dictation (separate path from file transcription).
+    private var liveTranscriber: AudioStreamTranscriber?
+
+    /// Whether a model is loaded and ready to transcribe right now (streaming
+    /// needs one already in memory — it can't wait on a first-time load).
+    var isReady: Bool { pipe != nil }
+
     // MARK: - Storage (one basket in the app's data dir)
 
     private var basket: URL {
@@ -107,9 +114,58 @@ final class TranscriptionModel: ObservableObject {
     /// deterministically frees its Core ML / Neural Engine resources first, and
     /// abandons any in-flight background load so nothing lingers.
     func shutdown() {
+        stopLiveDictation()
         pipe = nil
         loadedModel = nil
         loadingModel = nil
+    }
+
+    // MARK: - Live streaming dictation
+
+    /// Start real-time transcription from the mic. `onUpdate` fires on the main
+    /// actor as speech is recognised, with:
+    ///  - `confirmed`: text that has stabilised and won't change (safe to type),
+    ///  - `hypothesis`: the still-forming tail (may still be revised),
+    ///  - `energy`: recent mic energy (0…~1) for the waveform.
+    /// Returns false if no model is loaded yet. Runs until `stopLiveDictation()`.
+    func startLiveDictation(
+        onUpdate: @escaping @MainActor (_ confirmed: String, _ hypothesis: String, _ energy: Float) -> Void
+    ) -> Bool {
+        guard let pipe, let tokenizer = pipe.tokenizer else { return false }
+        stopLiveDictation()   // never run two at once
+
+        let transcriber = AudioStreamTranscriber(
+            audioEncoder: pipe.audioEncoder,
+            featureExtractor: pipe.featureExtractor,
+            segmentSeeker: pipe.segmentSeeker,
+            textDecoder: pipe.textDecoder,
+            tokenizer: tokenizer,
+            audioProcessor: pipe.audioProcessor,
+            decodingOptions: DecodingOptions(language: "en"),
+            useVAD: true,
+            stateChangeCallback: { _, state in
+                let confirmed = state.confirmedSegments.map { $0.text }.joined()
+                var hypothesis = state.unconfirmedSegments.map { $0.text }.joined()
+                // While a fresh chunk is decoding there may be no unconfirmed
+                // segment yet — fall back to the in-progress decode text.
+                if hypothesis.isEmpty { hypothesis = state.currentText }
+                let energy = state.bufferEnergy.last ?? 0
+                Task { @MainActor in onUpdate(confirmed, hypothesis, energy) }
+            }
+        )
+        liveTranscriber = transcriber
+        Task {
+            do { try await transcriber.startStreamTranscription() }
+            catch { NSLog("Slive: live dictation error — \(error)") }
+        }
+        return true
+    }
+
+    /// Stop the live stream (ends its mic capture + realtime loop).
+    func stopLiveDictation() {
+        guard let t = liveTranscriber else { return }
+        liveTranscriber = nil
+        Task { await t.stopStreamTranscription() }
     }
 
     // MARK: - Selection / loading

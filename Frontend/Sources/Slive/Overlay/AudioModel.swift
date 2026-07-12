@@ -48,6 +48,11 @@ final class AudioModel: ObservableObject {
     @Published private(set) var priorTurns: [ChatTurn] = []
     /// The current question being answered — shown as a user bubble in chat mode.
     @Published private(set) var currentQuestion: String = ""
+    /// True while live-streaming dictation is running (a distinct listening pill
+    /// with a caption of the words about to land).
+    @Published private(set) var liveDictating = false
+    /// The still-forming tail shown as a caption during live dictation.
+    @Published private(set) var liveTail = ""
 
     /// Whether to render the box as a multi-turn transcript.
     var isChat: Bool { !priorTurns.isEmpty }
@@ -80,15 +85,42 @@ final class AudioModel: ObservableObject {
     func beginListening(assistant: Bool = false) {
         streaming = false
         assistantListening = assistant
+        liveDictating = false
+        liveTail = ""
         phase = .listening
         elapsed = 0
         startDate = Date()
         startTimerIfNeeded()
     }
 
+    /// Start live-streaming dictation: a listening pill with a caption showing
+    /// the words that are about to land in your text field.
+    func beginLiveDictation() {
+        streaming = false
+        assistantListening = false
+        liveDictating = true
+        liveTail = ""
+        phase = .listening
+        elapsed = 0
+        startDate = Date()
+        startTimerIfNeeded()
+    }
+
+    /// Update the caption of not-yet-committed words during live dictation.
+    func updateLiveTail(_ text: String) {
+        liveTail = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Drive the waveform from the live stream's mic energy (0…~1).
+    func pushStreamEnergy(_ energy: Float) {
+        targetGlow = powf(min(1, max(0, energy) * 4), 0.5)
+    }
+
     /// Stop showing the pill: bars ease down and it fades out. No confirmation.
     func finishListening() {
         phase = .idle
+        liveDictating = false
+        liveTail = ""
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
     }
@@ -163,6 +195,8 @@ final class AudioModel: ObservableObject {
         streaming = false
         assistantListening = false
         assistantResult = false
+        liveDictating = false
+        liveTail = ""
         priorTurns = []
         currentQuestion = ""
         startDate = nil
