@@ -77,6 +77,11 @@ final class Settings: ObservableObject {
         didSet { applyLaunchAtLogin(launchAtLogin) }
     }
 
+    /// Ground truth: true once the event tap has actually delivered a keystroke.
+    /// Proof that Input Monitoring is genuinely working, regardless of the
+    /// cache-prone IOHIDCheckAccess API.
+    @Published var hotkeyActive = false
+
     private init() {
         let raw = UserDefaults.standard.string(forKey: Keys.hotkey)
         hotkey = raw.flatMap(HotkeyChoice.init(rawValue:)) ?? .fn

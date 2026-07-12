@@ -28,6 +28,15 @@ final class HotkeyMonitor {
     private var pollTimer: Timer?
     private var healthTimer: Timer?
     private var isDown = false
+    private var hasReceivedEvent = false
+
+    /// Mark Input Monitoring as genuinely working the first time the tap
+    /// delivers any event — a truthful signal the cache-prone API can't give.
+    private func markActive() {
+        guard !hasReceivedEvent else { return }
+        hasReceivedEvent = true
+        DispatchQueue.main.async { Settings.shared.hotkeyActive = true }
+    }
 
     func start() {
         // A keyboard CGEventTap is gated by *Input Monitoring*, not Accessibility.
@@ -133,6 +142,9 @@ final class HotkeyMonitor {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return
         }
+        // Any delivered event is proof Input Monitoring is genuinely working.
+        markActive()
+
         // Only react to the physical key the user chose.
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
         guard keycode == choice.keycode else { return }
