@@ -44,10 +44,36 @@ final class TranscriptionModel: ObservableObject {
     private var pipe: WhisperKit?
     private var loadedModel: String?
 
-    /// WhisperKit's default download location (HubApi): ~/Documents/huggingface/…
+    /// One basket for every downloaded model + tokenizer, in the app's own data
+    /// dir (not scattered in ~/Documents/huggingface). Passed to WhisperKit as
+    /// its `downloadBase` / `tokenizerFolder`.
+    private var basket: URL {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Slive/Models", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Where WhisperKit models land under the basket (HubApi layout).
     private var modelsRoot: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml")
+        basket.appendingPathComponent("models/argmaxinc/whisperkit-coreml")
+    }
+
+    /// One-time: move any models WhisperKit previously downloaded to
+    /// ~/Documents/huggingface into the basket, so nothing re-downloads.
+    func migrateOldDownloadsIfNeeded() {
+        let old = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/huggingface/models")
+        let new = basket.appendingPathComponent("models")
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: old.path), !fm.fileExists(atPath: new.path) else { return }
+        do {
+            try fm.moveItem(at: old, to: new)
+            NSLog("Slive: migrated model downloads into \(new.path)")
+        } catch {
+            NSLog("Slive: model migration skipped — \(error)")
+        }
     }
 
     // MARK: - Bundled model (ships in the app; no download, fully offline)
@@ -112,7 +138,7 @@ final class TranscriptionModel: ObservableObject {
         if !isDownloaded(model) {
             status = .downloading(0)
             do {
-                _ = try await WhisperKit.download(variant: model) { [weak self] progress in
+                _ = try await WhisperKit.download(variant: model, downloadBase: basket) { [weak self] progress in
                     Task { @MainActor in self?.status = .downloading(progress.fractionCompleted) }
                 }
             } catch {
@@ -139,7 +165,12 @@ final class TranscriptionModel: ObservableObject {
                                       load: true,
                                       download: false)
         } else {
-            config = WhisperKitConfig(model: model, load: true, download: true)
+            // Download + store models AND tokenizers in the one basket.
+            config = WhisperKitConfig(model: model,
+                                      downloadBase: basket,
+                                      tokenizerFolder: basket,
+                                      load: true,
+                                      download: true)
         }
 
         // Large models can take a couple of minutes to specialize the first time;
