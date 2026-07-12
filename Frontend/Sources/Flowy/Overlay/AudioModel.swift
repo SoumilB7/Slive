@@ -111,8 +111,12 @@ final class AudioModel: ObservableObject {
     func pushLevels(_ bands: [Float], rms: Float) {
         guard bands.count == bandCount else { return }
         targetLevels = bands
-        // Drives the wave amplitude — stronger so normal audible speech reads high.
-        targetGlow = min(1, rms * 18)
+        // Perceptual loudness curve. Raw RMS is linear, so quiet speech barely
+        // moves the bars while loud speech slams them. A gamma < 1 (here ≈ sqrt)
+        // lifts the low end a lot and eases off up top, so the wave grows on a
+        // smooth curve: clearly alive when soft, still tall when loud.
+        let gain: Float = 15
+        targetGlow = powf(min(1, rms * gain), 0.55)
     }
 
     // MARK: - 60 fps easing
@@ -139,9 +143,10 @@ final class AudioModel: ObservableObject {
         glow = glow + (targetGlow - glow) * gRate
 
         let listening = phase == .listening
-        // Grows with your voice and reaches high; soft-capped near the top.
-        var amp = waveCeiling * tanhf(glow / 0.5)
-        if listening { amp = max(amp, 0.14) }
+        // `glow` is already loudness-shaped, so map it near-linearly here — a
+        // second compression (the old tanh) would flatten the curve back out.
+        var amp = waveCeiling * glow
+        if listening { amp = max(amp, 0.16) }
 
         // A SINGLE hump — tall in the centre, tapering to both edges — that
         // grows vertically with volume. Static (does not travel), but each bar

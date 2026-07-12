@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from flowy.transcribe import load_model, transcribe
+from flowy.transcribe import load_model, transcribe, warm_up
 
 HOST = "127.0.0.1"
 PORT = 50711
@@ -37,6 +37,9 @@ def _startup() -> None:
     # Load the STT model ONCE at startup, not per request.
     logger.info("Loading STT model...")
     load_model()
+    # Prime the compute kernels so the user's first dictation is instant.
+    logger.info("Warming up...")
+    warm_up()
     logger.info("STT model ready.")
 
 
