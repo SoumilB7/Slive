@@ -154,10 +154,13 @@ struct SettingsView: View {
             historyCard
                 .frame(maxWidth: layout == .compact ? .infinity : SliveTheme.historyWidth)
         case .assistant:
-            AssistantSettingsView(settings: settings)
+            AssistantSettingsView(settings: settings, openModels: { page = .models })
                 .frame(maxWidth: formCap)
+        case .models:
+            ModelsSettingsView(settings: settings)
+                .frame(maxWidth: layout == .wide ? SliveTheme.generalGridWidth : formCap)
         case .training:
-            TrainingSettingsView(settings: settings)
+            TrainingSettingsView(settings: settings, openModels: { page = .models })
                 .frame(maxWidth: trainingCap)
         }
     }

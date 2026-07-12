@@ -1,17 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// The Assistant page: one top-down setup flow — shortcut, provider/keys,
-/// prompt. Renders just its stack of cards — the host supplies the scroll
-/// container, padding, and width.
+/// The Assistant page: one top-down setup flow — shortcut, brain (provider +
+/// model only; credentials live in the Models page), prompt. Renders just its
+/// stack of cards — the host supplies the scroll container, padding, and width.
 struct AssistantSettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject private var backend = BackendManager.shared
+    @ObservedObject private var providers = ProviderStore.shared
+    /// Navigates to the Models page (key entry lives there).
+    var openModels: () -> Void = {}
 
-    @State private var apiKeyDraft: String = ""
     @State private var promptNames: [String] = []
-    @State private var loadingModels = false
-    @State private var modelsError: String?
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -23,7 +23,6 @@ struct AssistantSettingsView: View {
             promptCard
         }
         .onAppear {
-            apiKeyDraft = settings.apiKey(for: settings.assistantConfig.provider)
             promptNames = PromptLibrary.available()
         }
     }
@@ -75,14 +74,19 @@ struct AssistantSettingsView: View {
     // MARK: - Provider
 
     private var providerCard: some View {
-        SettingsCard("PROVIDER") {
-            // Zone A — provider + key presence at a glance.
+        SettingsCard("PROVIDER", trailing: {
+            // Key presence at a glance; tap to manage keys in Models.
+            Button(action: openModels) {
+                KeyStatusPill(hasKey: providers.hasKey(settings.assistantConfig.provider))
+            }
+            .buttonStyle(.plain)
+            .help("Keys are managed in Models")
+        }) {
             HStack(spacing: 10) {
                 Text("Provider")
                     .font(SliveTheme.rowFont)
                     .foregroundStyle(SliveTheme.textPrimary)
                 Spacer()
-                KeyStatusPill(hasKey: !apiKeyDraft.isEmpty)
                 Picker("", selection: providerBinding) {
                     ForEach(AssistantProvider.allCases) { p in
                         Text(p.displayName).tag(p)
@@ -94,17 +98,19 @@ struct AssistantSettingsView: View {
                 .fixedSize()
             }
 
-            // Zone B — one model field: type any id, or pick a fetched one.
+            // One model field: type any id, or pick a fetched one.
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Model")
                         .font(SliveTheme.rowFont)
                         .foregroundStyle(SliveTheme.textPrimary)
                     Spacer()
-                    if loadingModels {
+                    if providers.isFetching(settings.assistantConfig.provider) {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button { fetchModels() } label: {
+                        Button {
+                            Task { await providers.fetchModels(for: settings.assistantConfig.provider) }
+                        } label: {
                             Label("Fetch live models", systemImage: "arrow.clockwise")
                                 .font(SliveTheme.font(11, .semibold))
                         }
@@ -113,7 +119,7 @@ struct AssistantSettingsView: View {
                     }
                 }
                 modelField
-                if let err = modelsError {
+                if let err = providers.fetchError(for: settings.assistantConfig.provider) {
                     Text(err)
                         .font(SliveTheme.captionFont)
                         .foregroundStyle(.orange.opacity(0.9))
@@ -124,34 +130,6 @@ struct AssistantSettingsView: View {
                          : "\(currentFetched.count) live models saved — refetch to update.")
                         .sliveCaption()
                 }
-            }
-
-            // Zone C — secrets.
-            if settings.assistantConfig.provider.needsBaseURL {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Base URL")
-                        .font(SliveTheme.rowFont)
-                        .foregroundStyle(SliveTheme.textPrimary)
-                    TextField("https://…/v1", text: $settings.assistantConfig.baseURL)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                    Text("OpenRouter, Groq, Ollama, LM Studio — anything that speaks the OpenAI API.")
-                        .sliveCaption()
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("API key")
-                    .font(SliveTheme.rowFont)
-                    .foregroundStyle(SliveTheme.textPrimary)
-                SecureField(settings.assistantConfig.provider.keyHint, text: $apiKeyDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .onChange(of: apiKeyDraft) { _, new in
-                        settings.setAPIKey(new, for: settings.assistantConfig.provider)
-                    }
-                Text("Kept in your macOS Keychain — never on disk.")
-                    .sliveCaption()
             }
 
             CardDivider()
@@ -189,16 +167,12 @@ struct AssistantSettingsView: View {
             }
     }
 
-    /// Reloads the key draft when the provider changes. The stored model list is
-    /// per-provider, so switching just shows that provider's remembered list.
+    /// The stored model list is per-provider, so switching just shows that
+    /// provider's remembered list (and its own key pill / fetch state).
     private var providerBinding: Binding<AssistantProvider> {
         Binding(
             get: { settings.assistantConfig.provider },
-            set: { newValue in
-                settings.assistantConfig.provider = newValue
-                apiKeyDraft = settings.apiKey(for: newValue)
-                modelsError = nil
-            }
+            set: { settings.assistantConfig.provider = $0 }
         )
     }
 
@@ -215,39 +189,6 @@ struct AssistantSettingsView: View {
             get: { settings.assistantConfig.model(for: settings.assistantConfig.provider) },
             set: { settings.assistantConfig.setModel($0, for: settings.assistantConfig.provider) }
         )
-    }
-
-    private func fetchModels() {
-        loadingModels = true
-        modelsError = nil
-        let config = settings.assistantConfig
-        let key = settings.apiKey(for: config.provider)
-        Task {
-            // The backend serves /models and starts lazily — make sure it's up
-            // so a fetch never fails just because nothing asked it to spawn yet.
-            let healthy = await BackendManager.shared.ensureHealthy()
-            guard healthy else {
-                await MainActor.run {
-                    modelsError = "Couldn't start the local backend."
-                    loadingModels = false
-                }
-                return
-            }
-            do {
-                let models = try await AssistantClient().listModels(config: config, apiKey: key)
-                await MainActor.run {
-                    // Persist per provider — only updated on an explicit fetch.
-                    settings.assistantConfig.fetchedModels[config.provider.rawValue] = models
-                    loadingModels = false
-                    if models.isEmpty { modelsError = "No models returned for this provider." }
-                }
-            } catch {
-                await MainActor.run {
-                    modelsError = String(describing: error)
-                    loadingModels = false
-                }
-            }
-        }
     }
 
     // MARK: - Prompt

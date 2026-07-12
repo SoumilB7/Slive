@@ -9,7 +9,10 @@ struct TrainingSettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject private var store = TrainingStore.shared
     @ObservedObject private var player = AudioPreviewPlayer.shared
+    @ObservedObject private var providers = ProviderStore.shared
     @Environment(\.sliveLayout) private var layout
+    /// Navigates to the Models page (key entry lives there).
+    var openModels: () -> Void = {}
 
     // Ground-truth transcription state.
     @State private var fetching: Set<String> = []      // sample ids in flight
@@ -17,9 +20,7 @@ struct TrainingSettingsView: View {
     @State private var bulkDone = 0
     @State private var bulkTotal = 0
     @State private var gtError: String?
-    @State private var keyDraft: String = ""
     @State private var confirmClear = false
-    @State private var loadingModels = false
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -112,35 +113,11 @@ struct TrainingSettingsView: View {
     }
 
     /// Models fetched live for the current ground-truth provider — the FULL
-    /// list, unfiltered, from the assistant's shared per-provider cache. The
-    /// user decides what's audio-capable (a non-audio pick fails loudly with
-    /// the provider's own error, which beats us guessing wrong by name).
+    /// list, unfiltered, from the shared per-provider cache (ProviderStore).
+    /// The user decides what's audio-capable (a non-audio pick fails loudly
+    /// with the provider's own error, which beats us guessing wrong by name).
     private var fetchedGTModels: [String] {
-        settings.assistantConfig.fetchedModels[settings.groundTruthProvider.rawValue] ?? []
-    }
-
-    /// Fetch the provider's live model list (same backend route the assistant
-    /// uses), stored in the shared per-provider cache so both UIs benefit.
-    private func fetchModels() {
-        loadingModels = true
-        gtError = nil
-        var config = settings.assistantConfig
-        config.provider = settings.groundTruthProvider
-        config.baseURL = settings.groundTruthBaseURL
-        let key = settings.apiKey(for: settings.groundTruthProvider)
-        Task { @MainActor in
-            defer { loadingModels = false }
-            guard await BackendManager.shared.ensureHealthy() else {
-                gtError = "Couldn't start the local backend."
-                return
-            }
-            do {
-                let models = try await AssistantClient().listModels(config: config, apiKey: key)
-                settings.assistantConfig.fetchedModels[settings.groundTruthProvider.rawValue] = models
-            } catch {
-                gtError = error.localizedDescription
-            }
-        }
+        providers.models(for: settings.groundTruthProvider)
     }
 
     private var missingCount: Int {
@@ -152,7 +129,14 @@ struct TrainingSettingsView: View {
     }
 
     private var groundTruthCard: some View {
-        SettingsCard("GROUND TRUTH") {
+        SettingsCard("GROUND TRUTH", trailing: {
+            // Key presence at a glance; tap to manage keys in Models.
+            Button(action: openModels) {
+                KeyStatusPill(hasKey: providers.hasKey(settings.groundTruthProvider))
+            }
+            .buttonStyle(.plain)
+            .help("Keys are managed in Models")
+        }) {
             Text("A model that can hear re-transcribes your audio into the Should-be column — the supervision signal for fine-tuning.")
                 .sliveCaption()
 
@@ -168,7 +152,6 @@ struct TrainingSettingsView: View {
                 .fixedSize()
                 .onChange(of: settings.groundTruthProvider) { _, p in
                     settings.groundTruthModel = defaultAudioModel(p)
-                    keyDraft = settings.apiKey(for: p)
                 }
 
                 // The model id that will be sent, with a trailing chip listing
@@ -195,10 +178,12 @@ struct TrainingSettingsView: View {
                         }
                     }
 
-                if loadingModels {
+                if providers.isFetching(settings.groundTruthProvider) {
                     ProgressView().controlSize(.small)
                 } else {
-                    Button { fetchModels() } label: {
+                    Button {
+                        Task { await providers.fetchModels(for: settings.groundTruthProvider) }
+                    } label: {
                         Label("Fetch", systemImage: "arrow.clockwise")
                             .font(SliveTheme.font(11, .semibold))
                     }
@@ -206,29 +191,6 @@ struct TrainingSettingsView: View {
                     .foregroundStyle(SliveTheme.accent)
                     .help("Fetch this provider's live model list")
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("API key")
-                        .font(SliveTheme.rowFont)
-                        .foregroundStyle(SliveTheme.textPrimary)
-                    Spacer()
-                    KeyStatusPill(hasKey: !keyDraft.isEmpty)
-                }
-                SecureField(settings.groundTruthProvider.keyHint, text: $keyDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .onChange(of: keyDraft) { _, new in
-                        settings.setAPIKey(new, for: settings.groundTruthProvider)
-                    }
-                    .onAppear { keyDraft = settings.apiKey(for: settings.groundTruthProvider) }
-            }
-
-            if settings.groundTruthProvider.needsBaseURL {
-                TextField("base URL (https://…/v1)", text: $settings.groundTruthBaseURL)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
             }
 
             HStack(spacing: 10) {
@@ -257,8 +219,8 @@ struct TrainingSettingsView: View {
                 Spacer(minLength: 0)
             }
 
-            if let gtError {
-                Text(gtError)
+            if let err = gtError ?? providers.fetchError(for: settings.groundTruthProvider) {
+                Text(err)
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.95))
                     .fixedSize(horizontal: false, vertical: true)
@@ -273,8 +235,8 @@ struct TrainingSettingsView: View {
         gtError = nil
         let provider = settings.groundTruthProvider
         let model = settings.groundTruthModel
-        let key = settings.apiKey(for: provider)
-        let baseURL = settings.groundTruthBaseURL
+        let key = providers.apiKey(for: provider)
+        let baseURL = providers.baseURL(for: provider)
         Task { @MainActor in
             defer { fetching.remove(sample.id) }
             do {
@@ -297,8 +259,8 @@ struct TrainingSettingsView: View {
         gtError = nil
         let provider = settings.groundTruthProvider
         let model = settings.groundTruthModel
-        let key = settings.apiKey(for: provider)
-        let baseURL = settings.groundTruthBaseURL
+        let key = providers.apiKey(for: provider)
+        let baseURL = providers.baseURL(for: provider)
         let todo = store.samples.filter { $0.llmTranscript == nil && store.audioURL($0) != nil }
         bulkTotal = todo.count
         bulkDone = 0

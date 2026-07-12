@@ -7,6 +7,7 @@ import SwiftUI
 enum SettingsSection: String, CaseIterable, Identifiable {
     case dictation = "Dictation"
     case assistant = "Assistant"
+    case models = "Models"
     case training = "Training"
     var id: String { rawValue }
 }
@@ -21,6 +22,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     case vocabulary = "Vocabulary"
     case history = "History"
     case assistant = "Assistant"
+    case models = "Models"
     case training = "Training"
     var id: String { rawValue }
 
@@ -28,6 +30,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .general, .continuous, .permissions, .vocabulary, .history: return .dictation
         case .assistant: return .assistant
+        case .models: return .models
         case .training: return .training
         }
     }
@@ -40,6 +43,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .vocabulary: return "character.book.closed.fill"
         case .history: return "clock.fill"
         case .assistant: return "sparkles"
+        case .models: return "cpu.fill"
         case .training: return "tray.full.fill"
         }
     }
@@ -48,6 +52,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch section {
         case .dictation: return .general
         case .assistant: return .assistant
+        case .models: return .models
         case .training: return .training
         }
     }
