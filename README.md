@@ -90,8 +90,9 @@ requires. To undo: `security delete-identity -c "Flowy Local Signing"`.
 
 ### Security posture
 
-- **No network code** — Flowy cannot send audio or keystrokes anywhere (verified:
-  no `URLSession`/sockets/HTTP anywhere in the source).
+- **Network is localhost-only** — Flowy POSTs recorded audio to its own backend
+  at `http://127.0.0.1:50711` for transcription. There is no other networking; it
+  never sends audio or keystrokes off the machine.
 - **Hardened Runtime** (`codesign --options runtime`) — blocks other local
   processes from injecting code into Flowy to ride its permissions.
 - **Stable signature** — TCC only honors the grant for a binary carrying *your*
@@ -119,14 +120,25 @@ requires. To undo: `security delete-identity -c "Flowy Local Signing"`.
 
 ---
 
-## Backend — Gemma 4 E2B speech
+## Backend — local transcription server
 
-Python project (managed with `uv`). See [Backend/README.md](Backend/README.md).
+Python project (managed with `uv`). Serves speech-to-text at
+`127.0.0.1:50711` (`POST /transcribe`, MP3 bytes → `{"text": ...}`). Uses
+faster-whisper for now, behind a swappable `transcribe()` — **Gemma 4 E2B slots
+in here later**.
+
+**Flowy starts and stops this backend automatically** — the Swift app launches
+`Backend/.venv/bin/python -m flowy.server` on startup (reusing it if already up)
+and shuts it down on quit. You don't run it by hand. First launch downloads the
+whisper model (~150 MB, one time); server log at `/tmp/flowy-backend.log`.
+
+Run it manually (optional, for debugging):
 
 ```bash
 cd Backend
-uv sync --extra dev      # install deps incl. dev tools
-uv run pytest -q         # run tests
+uv sync --extra dev              # install deps incl. dev tools
+uv run python -m flowy.server    # start the server on :50711
+uv run pytest -q                 # run tests
 ```
 
 MP3s in `/Audios` (16 kHz mono) are exactly the format Gemma 4 E2B's audio tower
