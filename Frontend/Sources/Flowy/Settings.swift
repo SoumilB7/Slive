@@ -9,6 +9,8 @@ final class Settings: ObservableObject {
 
     private enum Keys {
         static let hotkey = "hotkey"
+        static let assistantHotkey = "assistantHotkey"
+        static let assistantConfig = "assistantConfig"
         static let launchAtLogin = "launchAtLogin"
         static let autoInsert = "autoInsert"
         static let hotwords = "hotwords"
@@ -16,8 +18,10 @@ final class Settings: ObservableObject {
         static let didFirstRun = "didFirstRun"
     }
 
-    /// Fired whenever the hotkey changes, so the monitor can re-target.
+    /// Fired whenever the dictation hotkey changes, so the monitor can re-target.
     var onHotkeyChange: ((Hotkey) -> Void)?
+    /// Fired whenever the assistant hotkey changes (nil = disabled).
+    var onAssistantHotkeyChange: ((Hotkey?) -> Void)?
 
     /// The user-recorded push-to-talk shortcut. Persisted as JSON.
     @Published var hotkey: Hotkey {
@@ -26,6 +30,29 @@ final class Settings: ObservableObject {
                 UserDefaults.standard.set(data, forKey: Keys.hotkey)
             }
             onHotkeyChange?(hotkey)
+        }
+    }
+
+    /// Optional second shortcut that routes your speech through an LLM instead of
+    /// typing it back. nil = assistant mode disabled. Persisted as JSON.
+    @Published var assistantHotkey: Hotkey? {
+        didSet {
+            if let hk = assistantHotkey, let data = try? JSONEncoder().encode(hk) {
+                UserDefaults.standard.set(data, forKey: Keys.assistantHotkey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Keys.assistantHotkey)
+            }
+            onAssistantHotkeyChange?(assistantHotkey)
+        }
+    }
+
+    /// Non-secret assistant settings (provider, model, base URL, system prompt).
+    /// API keys are stored separately in the Keychain. Persisted as JSON.
+    @Published var assistantConfig: AssistantConfig {
+        didSet {
+            if let data = try? JSONEncoder().encode(assistantConfig) {
+                UserDefaults.standard.set(data, forKey: Keys.assistantConfig)
+            }
         }
     }
 
@@ -62,6 +89,18 @@ final class Settings: ObservableObject {
         } else {
             hotkey = .fnDefault
         }
+        if let data = UserDefaults.standard.data(forKey: Keys.assistantHotkey),
+           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
+            assistantHotkey = decoded
+        } else {
+            assistantHotkey = nil
+        }
+        if let data = UserDefaults.standard.data(forKey: Keys.assistantConfig),
+           let decoded = try? JSONDecoder().decode(AssistantConfig.self, from: data) {
+            assistantConfig = decoded
+        } else {
+            assistantConfig = .default
+        }
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         // Default TRUE: absent key means the user hasn't opted out yet.
         if UserDefaults.standard.object(forKey: Keys.autoInsert) == nil {
@@ -71,6 +110,20 @@ final class Settings: ObservableObject {
         }
         hotwords = UserDefaults.standard.string(forKey: Keys.hotwords) ?? ""
         contextPrompt = UserDefaults.standard.string(forKey: Keys.contextPrompt) ?? ""
+    }
+
+    // MARK: - Assistant API keys (Keychain-backed)
+
+    /// Read a provider's stored API key (nil/empty if none).
+    func apiKey(for provider: AssistantProvider) -> String {
+        KeychainStore.get(provider.keychainAccount) ?? ""
+    }
+
+    /// Store (or clear, when empty) a provider's API key. Also nudges observers
+    /// so the settings UI reflects the change.
+    func setAPIKey(_ key: String, for provider: AssistantProvider) {
+        KeychainStore.set(key, for: provider.keychainAccount)
+        objectWillChange.send()
     }
 
     var isFirstRun: Bool {

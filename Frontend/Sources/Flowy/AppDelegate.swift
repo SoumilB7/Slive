@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = HotkeyMonitor()
     private let settingsWindow = SettingsWindowController()
     private let transcriber = TranscriptionClient()
+    private let assistant = AssistantClient()
     private let backend = BackendManager()
 
     private var statusItem: NSStatusItem?
@@ -20,9 +21,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityToken: NSObjectProtocol?   // holds off App Nap
     private var transcribeTask: Task<Void, Never>? // in-flight encode + transcribe
     private var collapseWorkItem: DispatchWorkItem? // pending result auto-dismiss
+    private var currentAction: HotkeyAction = .dictate  // which shortcut is recording
 
     /// How long a result box stays on screen before collapsing.
     private let resultDisplayDuration: TimeInterval = 6.0
+    /// Assistant answers stay up longer — you need time to read them.
+    private let assistantDisplayDuration: TimeInterval = 30.0
 
     /// How long you must hold the key before recording begins. Brief taps under
     /// this do nothing. Tune to taste.
@@ -54,7 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Settings window + live hotkey switching.
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         Settings.shared.onHotkeyChange = { [weak self] hk in self?.hotkey.hotkey = hk }
+        Settings.shared.onAssistantHotkeyChange = { [weak self] hk in self?.hotkey.assistantHotkey = hk }
         hotkey.hotkey = Settings.shared.hotkey
+        hotkey.assistantHotkey = Settings.shared.assistantHotkey
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
@@ -88,15 +94,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.onLevels = { [weak self] bands, rms in
             self?.model.pushLevels(bands, rms: rms)
         }
-        hotkey.onStart = { [weak self] in self?.keyDown() }
-        hotkey.onStop = { [weak self] in self?.keyUp() }
+        hotkey.onStart = { [weak self] action in self?.keyDown(action) }
+        hotkey.onStop = { [weak self] _ in self?.keyUp() }
     }
 
     // MARK: - Hold-to-talk flow
 
-    private func keyDown() {
+    private func keyDown(_ action: HotkeyAction) {
         // Arm: recording begins only if the key is still held after the delay.
         armWorkItem?.cancel()
+        currentAction = action
         let work = DispatchWorkItem { [weak self] in
             self?.armWorkItem = nil
             self?.beginRecording()
@@ -155,6 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Captured on the main thread; sent as vocabulary hints to the backend.
         let hotwords = Settings.shared.hotwords
         let prompt = Settings.shared.contextPrompt
+        // Which shortcut started this recording decides what we do with the text.
+        let action = currentAction
 
         transcribeTask?.cancel()
         // Strong `self` capture: the task always returns (breaking any cycle),
@@ -188,23 +197,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // 3. Transcribe. If it fails (server may have died mid-flight), bring
             //    the backend back and retry once before surfacing an error.
+            var transcript: String?
             do {
-                let text = try await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt)
-                if Task.isCancelled { return }
-                await MainActor.run { self.finishTranscription(text: text) }
+                transcript = try await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt)
             } catch {
                 NSLog("Flowy: transcription failed — \(error); retrying after ensuring backend")
                 if Task.isCancelled { return }
-                if await self.backend.ensureHealthy(),
-                   let text = try? await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt) {
-                    if Task.isCancelled { return }
-                    await MainActor.run { self.finishTranscription(text: text) }
-                } else {
-                    if Task.isCancelled { return }
-                    await MainActor.run { self.showBackendError() }
+                if await self.backend.ensureHealthy() {
+                    transcript = try? await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt)
                 }
             }
+            if Task.isCancelled { return }
+            guard let text = transcript else {
+                await MainActor.run { self.showBackendError() }
+                return
+            }
+
+            // 4. Route the transcript: plain dictation types/shows it; the
+            //    assistant shortcut sends it to the LLM and shows the answer.
+            switch action {
+            case .dictate:
+                await MainActor.run { self.finishTranscription(text: text) }
+            case .assist:
+                await self.runAssistant(on: text)
+            }
         }
+    }
+
+    /// Assistant path: send the transcript to the LLM (keeping the loading dots
+    /// up), then show the answer in the floating box.
+    private func runAssistant(on transcript: String) async {
+        let question = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else {
+            await MainActor.run { self.model.finishListening(); self.hideOverlaySoon() }
+            return
+        }
+        let config = Settings.shared.assistantConfig
+        let key = Settings.shared.apiKey(for: config.provider)
+        do {
+            let answer = try await assistant.ask(question, config: config, apiKey: key)
+            if Task.isCancelled { return }
+            await MainActor.run { self.finishAssist(answer: answer) }
+        } catch {
+            if Task.isCancelled { return }
+            await MainActor.run { self.finishAssist(error: String(describing: error)) }
+        }
+    }
+
+    /// Show an assistant answer in the box (kept up longer so it can be read).
+    @MainActor private func finishAssist(answer: String) {
+        guard model.phase == .transcribing else { return }
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            model.finishListening(); hideOverlaySoon(); return
+        }
+        HistoryStore.shared.add(trimmed)
+        model.showResult(trimmed)
+        overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
+        overlay.setInteractive(true)
+        scheduleCollapse(after: assistantDisplayDuration)
+    }
+
+    /// Surface an assistant failure in the box instead of an empty result.
+    @MainActor private func finishAssist(error: String) {
+        guard model.phase == .transcribing else { return }
+        model.showResult(error)
+        overlay.resize(to: OverlayMetrics.panelSize(for: error))
+        overlay.setInteractive(true)
+        scheduleCollapse(after: 6.0)
     }
 
     /// Encode on a background queue without blocking a cooperative-pool thread on

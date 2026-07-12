@@ -21,7 +21,10 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+from flowy.assistant import answer as assistant_answer
+from flowy.assistant import list_models as assistant_list_models
 from flowy.transcribe import load_model, transcribe, warm_up
 
 HOST = "127.0.0.1"
@@ -79,6 +82,58 @@ async def transcribe_endpoint(request: Request) -> JSONResponse:
         logger.exception("Transcription failed")
         return JSONResponse(status_code=500, content={"error": str(exc)})
     return JSONResponse(status_code=200, content={"text": text})
+
+
+class AssistantRequest(BaseModel):
+    text: str
+    provider: str
+    model: str
+    api_key: str
+    base_url: str | None = None
+    system_prompt: str | None = None
+    max_tokens: int = 1024
+
+
+@app.post("/assistant")
+async def assistant_endpoint(req: AssistantRequest) -> JSONResponse:
+    try:
+        # Already async — awaited directly so the event loop stays responsive.
+        reply = await assistant_answer(
+            text=req.text,
+            provider=req.provider,
+            model=req.model,
+            api_key=req.api_key,
+            base_url=req.base_url,
+            system_prompt=req.system_prompt,
+            max_tokens=req.max_tokens,
+        )
+    except ValueError as exc:
+        # Bad input or a provider error we could parse — client's problem.
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
+        logger.exception("Assistant request failed")
+        return JSONResponse(status_code=502, content={"error": str(exc)})
+    return JSONResponse(status_code=200, content={"text": reply})
+
+
+class ModelsRequest(BaseModel):
+    provider: str
+    api_key: str
+    base_url: str | None = None
+
+
+@app.post("/models")
+async def models_endpoint(req: ModelsRequest) -> JSONResponse:
+    try:
+        models = await assistant_list_models(
+            provider=req.provider, api_key=req.api_key, base_url=req.base_url
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
+        logger.exception("Model list request failed")
+        return JSONResponse(status_code=502, content={"error": str(exc)})
+    return JSONResponse(status_code=200, content={"models": models})
 
 
 def main() -> None:

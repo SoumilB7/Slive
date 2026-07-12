@@ -10,6 +10,7 @@ enum OverlayMetrics {
 
     static let fontSize: CGFloat = 14
     static let maxBoxWidth: CGFloat = 420      // widest the result box may grow
+    static let maxBoxHeight: CGFloat = 340     // tallest before the text scrolls
     static let hInset: CGFloat = 14            // text padding inside the box
     static let vInset: CGFloat = 10
     static let margin: CGFloat = 14            // transparent container padding (shadow room)
@@ -45,7 +46,9 @@ enum OverlayMetrics {
         // +1 guards against SwiftUI/AppKit rounding disagreements that would clip
         // the last glyph and force an unwanted extra wrap.
         let w = min(maxBoxWidth, ceil(bounds.width) + hInset * 2 + copyReserve + 1)
-        let h = max(minBoxHeight, ceil(bounds.height) + vInset * 2)
+        // Cap the height: taller answers scroll inside the box instead of growing
+        // off-screen.
+        let h = min(maxBoxHeight, max(minBoxHeight, ceil(bounds.height) + vInset * 2))
         return CGSize(width: w, height: h)
     }
 
@@ -142,21 +145,25 @@ struct OverlayView: View {
         // Text column is the box minus its padding, the button, and the gap.
         let textWidth = box.width - OverlayMetrics.hInset * 2
             - OverlayMetrics.copyReserve
-        return HStack(alignment: .top, spacing: OverlayMetrics.copyGap) {
+        return ScrollView(.vertical, showsIndicators: true) {
             Text(text)
                 .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
                 .foregroundStyle(.white.opacity(0.95))
                 .multilineTextAlignment(.leading)
                 .lineSpacing(1)
+                .textSelection(.enabled)
                 .frame(width: textWidth, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-
-            CopyButton(text: text)
-                .frame(width: OverlayMetrics.copyButtonWidth, alignment: .top)
+                .padding(.horizontal, OverlayMetrics.hInset)
+                .padding(.vertical, OverlayMetrics.vInset)
         }
-            .padding(.horizontal, OverlayMetrics.hInset)
-            .padding(.vertical, OverlayMetrics.vInset)
             .frame(width: box.width, height: box.height, alignment: .topLeading)
+            // Copy button pinned to the top-right so it stays put as text scrolls.
+            .overlay(alignment: .topTrailing) {
+                CopyButton(text: text)
+                    .padding(.top, OverlayMetrics.vInset)
+                    .padding(.trailing, OverlayMetrics.hInset)
+            }
             .background(
                 RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous)
                     .fill(Color.black.opacity(0.92))
