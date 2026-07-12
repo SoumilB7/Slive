@@ -15,7 +15,7 @@ final class AudioRecorder {
     private(set) var isRecording = false
     private(set) var startTime: Date?
 
-    let bandCount = 28
+    let bandCount = 20
 
     /// Begin recording. Returns false if the engine failed to start.
     @discardableResult

@@ -19,9 +19,9 @@ struct OverlayView: View {
 
     private var pill: some View {
         WaveformView(levels: model.levels)
-            .frame(width: 92, height: 11)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
+            .frame(width: 70, height: 26)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(Capsule().fill(Color.black.opacity(0.92)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
