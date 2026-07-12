@@ -113,6 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
+        // Pre-build the feedback tones off-main so the FIRST hold doesn't pay
+        // the ~20ms synthesis + engine graph setup on the hot path.
+        Task.detached(priority: .utility) { _ = FeedbackPlayer.shared }
+
         // First launch, or a missing permission → show the home window so the
         // user sees what Slive does and can grant permissions in place.
         if Settings.shared.isFirstRun || !HotkeyMonitor.inputMonitoringGranted {
@@ -258,6 +262,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseWorkItem = nil
 
         model.beginListening(assistant: currentAction == .assist)
+        if currentAction == .assist {
+            // Boot the lazy backend NOW, overlapped with the user speaking —
+            // by release it's healthy and the answer path skips the
+            // multi-second first-use spawn entirely.
+            Task { _ = await backend.ensureHealthy() }
+        }
         overlay.show()
         recordStart = Date()
         if !recorder.start() {
@@ -267,14 +277,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // Subtle audio cue that a call activated — distinct per call type.
-        FeedbackPlayer.shared.playActivation(for: currentAction)
+        // Posted on the NEXT runloop turn: its engine restart (auto-shutdown
+        // wake) is a few ms of main-thread work that shouldn't sit between
+        // key-down and the pill/mic being live.
+        let cueAction = currentAction
+        DispatchQueue.main.async { FeedbackPlayer.shared.playActivation(for: cueAction) }
     }
 
     private func stopRecording() {
         guard recorder.isRecording else { return }
         let duration = recordStart.map { Date().timeIntervalSince($0) } ?? 0
         lastSpeechDuration = duration   // for the post-write WPM measurement
-        let wavURL = recorder.stop()
+        let capture = recorder.stop()
+        let wavURL = capture.url
+        let samples = capture.samples
 
         guard let wavURL else {
             model.finishListening()
@@ -297,12 +313,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("Slive: captured \(String(format: "%.1f", duration))s of audio")
             if Task.isCancelled { return }
 
+            // Assistant: capture the screenshot IN PARALLEL with transcription —
+            // both happen post-release, and the screencapture subprocess used to
+            // sit serially (~200-500ms) in front of the HTTP request.
+            let screenshotTask: Task<(mediaType: String, data: String)?, Never>? =
+                (action == .assist && Settings.shared.assistantConfig.attachScreenshot)
+                ? Task.detached(priority: .userInitiated) { ScreenCapture.fullScreenBase64() }
+                : nil
+
             // 1. Transcribe ON-DEVICE with WhisperKit (Neural Engine) — no backend
-            //    needed for STT. Returns nil if the model isn't ready (not
-            //    downloaded / still preparing) — we then tell the user instead of
-            //    hanging on the spinner.
+            //    needed for STT. Prefer the in-memory canonical samples the
+            //    recorder accumulated (skips the WAV reopen/read); fall back to
+            //    the file when they're unavailable (native-format fallback, or
+            //    the model needs a load — the file path loads it).
             let tTranscribe = Date()
-            let transcript = await whisper.transcribe(wavURL, model: whisperModel)
+            var transcript: String?
+            if samples.count > 16_000 / 3 {
+                transcript = await whisper.transcribeSamples(samples, model: whisperModel)
+            }
+            if transcript == nil {
+                transcript = await whisper.transcribe(wavURL, model: whisperModel)
+            }
             Log.stt(String(format: "transcribed %.1fs audio in %.2fs (%@)",
                            duration, Date().timeIntervalSince(tTranscribe), whisperModel))
             if Task.isCancelled { return }
@@ -322,8 +353,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .assist:
                 if await self.backend.ensureHealthy() {
                     if Task.isCancelled { return }
-                    await self.runAssistant(on: text)
+                    await self.runAssistant(on: text, screenshot: screenshotTask)
                 } else {
+                    screenshotTask?.cancel()
                     await MainActor.run { self.showBackendError() }
                 }
             }
@@ -356,7 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.beginLiveDictation()
         overlay.show()   // same small waveform pill as normal dictation
         liveStart = Date()   // for the post-release WPM measurement
-        FeedbackPlayer.shared.playActivation(for: .stream)
+        DispatchQueue.main.async { FeedbackPlayer.shared.playActivation(for: .stream) }
 
         if !continuous.start() {
             model.finishListening()
@@ -398,7 +430,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Assistant path: stream the LLM's answer into a fixed-size box, growing
     /// the text as tokens arrive, then settle the box to the final size.
-    @MainActor private func runAssistant(on transcript: String) async {
+    @MainActor private func runAssistant(
+        on transcript: String,
+        screenshot screenshotTask: Task<(mediaType: String, data: String)?, Never>? = nil
+    ) async {
         let question = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else {
             model.finishListening(); hideOverlaySoon(); return
@@ -413,13 +448,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !continuing { conversation.removeAll() }
         let history = conversation.isEmpty ? nil : conversation
 
-        // Optionally attach a full-screen screenshot (captured off the main
-        // thread so the blocking subprocess doesn't stall the UI).
+        // The screenshot was kicked off in parallel with transcription (see
+        // stopRecording); by now it's usually already done — awaiting it here is
+        // ~free instead of a serial ~200-500ms subprocess before the request.
         var images: [AssistantClient.ImageInput]? = nil
         if config.attachScreenshot {
-            if let shot = await Task.detached(priority: .userInitiated, operation: {
-                ScreenCapture.fullScreenBase64()
-            }).value {
+            let shot: (mediaType: String, data: String)?
+            if let screenshotTask {
+                shot = await screenshotTask.value
+            } else {
+                // No pre-capture (e.g. setting flipped mid-flight) — capture now.
+                shot = await Task.detached(priority: .userInitiated, operation: {
+                    ScreenCapture.fullScreenBase64()
+                }).value
+            }
+            if let shot {
                 images = [AssistantClient.ImageInput(media_type: shot.mediaType, data: shot.data)]
             }
         }

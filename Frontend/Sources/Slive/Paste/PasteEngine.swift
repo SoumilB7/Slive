@@ -172,7 +172,7 @@ enum PasteEngine {
         // so long transcripts land almost instantly. A short pause between
         // chunks keeps fast apps from dropping input.
         let chars = Array(text)
-        let chunkSize = 12
+        let chunkSize = 24   // was 12: half the events + half the pacing sleeps
         var i = 0
         while i < chars.count {
             let chunk = String(chars[i..<min(i + chunkSize, chars.count)])
@@ -197,7 +197,7 @@ enum PasteEngine {
                 }
             }
             i += chunkSize
-            usleep(1200)   // brief pacing between chunks
+            usleep(800)    // brief pacing between chunks (keeps fast apps from dropping input)
         }
     }
 }

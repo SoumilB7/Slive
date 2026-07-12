@@ -43,6 +43,8 @@ final class LiveTypist: @unchecked Sendable {
     private var cps: Double = 30   // characters/sec the forward frontier advances
     private var instant = false    // cps >= instantThreshold → reveal everything at once
     private var frozenLen = 0      // committed[0..<frozenLen] is settled; never backspaced
+    private var pendingTick: DispatchWorkItem?   // the scheduled next tick
+    private var waitingIdle = false              // that tick is just the idle poll
 
     /// Begin a session. `allowed` (from `PasteEngine.canStreamType()`, checked on
     /// the main thread) gates whether we actually post keystrokes this session.
@@ -62,7 +64,16 @@ final class LiveTypist: @unchecked Sendable {
 
     /// Move the goal. The tick loop reveals/reconciles toward it.
     func setTarget(_ text: String) {
-        queue.async { self.target = text }
+        queue.async {
+            self.target = text
+            // Wake the loop NOW if it's just idle-polling — otherwise a freshly
+            // recognised word waits up to 30ms before its first keystroke. A
+            // mid-reveal (paced) delay is left alone so cps pacing stays exact.
+            if self.running, self.waitingIdle {
+                self.pendingTick?.cancel()
+                self.tick()
+            }
+        }
     }
 
     /// Stop pacing, snap the field to the full final target at once, and return it.
@@ -70,6 +81,7 @@ final class LiveTypist: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             queue.async {
                 self.running = false
+                self.pendingTick?.cancel(); self.pendingTick = nil
                 if self.enabled {
                     self.revealed = self.target.count
                     self.reconcile(to: Array(self.target))
@@ -85,6 +97,7 @@ final class LiveTypist: @unchecked Sendable {
     func cancel() {
         queue.async {
             self.running = false
+            self.pendingTick?.cancel(); self.pendingTick = nil
             self.committed = ""; self.target = ""; self.revealed = 0; self.frozenLen = 0
         }
     }
@@ -110,8 +123,13 @@ final class LiveTypist: @unchecked Sendable {
 
             let remaining = t.count - revealed
             delay = remaining <= 0 ? 0.030 : forwardDelay(remaining: remaining)
+            waitingIdle = remaining <= 0
+        } else {
+            waitingIdle = true
         }
-        queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.tick() }
+        let item = DispatchWorkItem { [weak self] in self?.tick() }
+        pendingTick = item
+        queue.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     /// Make the field exactly match `desired` in a single instant step: backspace
