@@ -1,8 +1,8 @@
 import AppKit
 
-// Flowy — a hold-to-talk mic overlay. Runs as a menu-bar agent (no Dock icon).
+// Flowy — a hold-to-talk mic overlay. A normal app: Dock icon + menu-bar item.
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.regular)
 app.run()
