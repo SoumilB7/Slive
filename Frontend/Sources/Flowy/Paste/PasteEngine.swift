@@ -28,19 +28,26 @@ enum PasteEngine {
     // MARK: - Core
 
     private static func performInsert(_ text: String) -> Bool {
+        let trusted = AXIsProcessTrusted()
+        diag("insertIfPossible len=\(text.count) AXTrusted=\(trusted)")
         // No Accessibility permission → we can't read focus or post events.
-        guard AXIsProcessTrusted() else { return false }
+        guard trusted else { return false }
 
         // Something must have keyboard focus, else we'd paste into nowhere — let
         // the caller fall back to the copy box instead.
-        guard let element = focusedElement() else { return false }
+        guard let element = focusedElement() else { diag("no focused element"); return false }
+
+        let role = stringAttribute(element, kAXRoleAttribute as String) ?? "?"
+        let subrole = stringAttribute(element, kAXSubroleAttribute as String) ?? "-"
+        diag("focused role=\(role) subrole=\(subrole)")
 
         // Never insert into a secure/password field.
-        guard !isSecure(element) else { return false }
+        guard !isSecure(element) else { diag("secure field → skip"); return false }
 
         // Strategy 1: clean AX insert when the field exposes an editable text
         // role (native fields, most web inputs) — no clipboard involved.
         if isEditableTextField(element), setSelectedText(element, text) {
+            diag("strategy 1: AX insert OK")
             return true
         }
 
@@ -49,8 +56,24 @@ enum PasteEngine {
         // Claude Code extension) that ignore ⌘V and expose no settable AX value,
         // because this *is* keyboard input, not a paste. Runs async so the
         // per-character pacing never blocks the UI.
+        diag("strategy 2: typing \(text.count) chars")
         DispatchQueue.global(qos: .userInitiated).async { typeOut(text) }
         return true
+    }
+
+    /// Append a diagnostic line to /tmp/flowy-paste.log (temporary, for debugging).
+    private static func diag(_ msg: String) {
+        NSLog("Flowy paste: \(msg)")
+        let line = "\(msg)\n"
+        let url = URL(fileURLWithPath: "/tmp/flowy-paste.log")
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
     }
 
     // MARK: - Focus discovery
@@ -135,7 +158,10 @@ enum PasteEngine {
     /// touches the clipboard. Flowy's overlay is non-activating, so the user's
     /// app stays frontmost and receives the keystrokes.
     private static func typeOut(_ text: String) {
-        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            diag("typeOut: no CGEventSource"); return
+        }
+        diag("typeOut: posting \(text.count) chars")
         for character in text {
             let utf16 = Array(String(character).utf16)
             utf16.withUnsafeBufferPointer { buffer in
