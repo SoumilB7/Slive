@@ -49,6 +49,18 @@ final class AudioRecorder {
     private var levelCallbackCount = 0
     private var windowMaxRMS: Float = 0
 
+    /// The session's canonical (16k mono) samples, accumulated in the tap so the
+    /// release path can transcribe FROM MEMORY — skipping the WAV close/flush →
+    /// reopen → read → (re)parse round-trip (~5-30ms per dictation). The WAV is
+    /// still written alongside for training capture. Only filled on the
+    /// canonical-converter path (native-format fallback → empty → callers use
+    /// the file). Guarded by a lock: the tap thread appends while stop() reads.
+    private var sessionSamples: [Float] = []
+    private let samplesLock = NSLock()
+    /// FFT is rebuilt only when the analysis rate changes (device switch), not
+    /// per hold.
+    private var fftRate: Double = 0
+
     init() {
         // A device change — AirPods connecting, headphones un/plugged, a
         // sample-rate switch — makes AVAudioEngine reconfigure: the engine
@@ -131,16 +143,28 @@ final class AudioRecorder {
 
         // Convert to the canonical format in the tap; if the converter can't be
         // built (exotic device format) fall back to writing the native format.
-        converter = AVAudioConverter(from: format, to: targetFormat)
-        if converter == nil {
-            NSLog("Slive: no converter for \(format) — recording in native format")
+        // Converter + FFT are REUSED across holds (rebuilt only on a format
+        // change) — building them fresh each hold cost a few ms on key-down.
+        if let conv = converter, conv.inputFormat.isEqual(format) {
+            conv.reset()   // drop resampler state from the previous session
+        } else {
+            converter = AVAudioConverter(from: format, to: targetFormat)
+            if converter == nil {
+                NSLog("Slive: no converter for \(format) — recording in native format")
+            }
         }
         let fileFormat = converter != nil ? targetFormat : format
         self.fileFormat = fileFormat
-        fft = FFTProcessor(fftSize: 1024, bandCount: bandCount, sampleRate: fileFormat.sampleRate)
+        if fft == nil || fftRate != fileFormat.sampleRate {
+            fft = FFTProcessor(fftSize: 1024, bandCount: bandCount, sampleRate: fileFormat.sampleRate)
+            fftRate = fileFormat.sampleRate
+        }
         loggedWriteError = false
         levelCallbackCount = 0
         windowMaxRMS = 0
+        samplesLock.lock()
+        sessionSamples.removeAll(keepingCapacity: true)
+        samplesLock.unlock()
 
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("flowy-\(UUID().uuidString).wav")
@@ -171,10 +195,12 @@ final class AudioRecorder {
         return true
     }
 
-    /// Stop recording and return the finalized WAV URL (nil on failure).
+    /// Stop recording. Returns the finalized WAV URL (nil on failure) plus the
+    /// session's canonical in-memory samples (empty on the native-format
+    /// fallback path — transcribe from the file then).
     @discardableResult
-    func stop() -> URL? {
-        guard isRecording else { return nil }
+    func stop() -> (url: URL?, samples: [Float]) {
+        guard isRecording else { return (nil, []) }
         isRecording = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
@@ -191,7 +217,11 @@ final class AudioRecorder {
         // resources now, off the hot path, so the next engine.start() (key-down
         // → mic live) skips that work.
         engine.prepare()
-        return url
+        samplesLock.lock()
+        let samples = sessionSamples
+        sessionSamples = []
+        samplesLock.unlock()
+        return (url, samples)
     }
 
     private func handle(buffer: AVAudioPCMBuffer) {
@@ -244,6 +274,12 @@ final class AudioRecorder {
         guard let channelData = out.floatChannelData else { return }
         let frames = Int(out.frameLength)
         guard frames > 0 else { return }
+
+        if converter != nil {   // canonical 16k mono — safe to hand to Whisper
+            samplesLock.lock()
+            sessionSamples.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frames))
+            samplesLock.unlock()
+        }
 
         // RMS every callback (cheap vDSP, no copy) — it feeds voice-activity
         // detection, whose fidelity we keep at full rate via the running max.
