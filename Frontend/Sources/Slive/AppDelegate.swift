@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// How long the mic stays open AFTER the key is released. Releasing the key
     /// usually overlaps the last word — stopping instantly clips its tail and
     /// the transcript loses the final word or two. A short grace captures it.
-    private let releaseTail: TimeInterval = 0.35
+    private let releaseTail: TimeInterval = 0.20
     /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
     private var pendingStop: DispatchWorkItem?
 
