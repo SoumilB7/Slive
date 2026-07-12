@@ -45,8 +45,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wireAudioAndHotkey()
 
         // Settings window + live hotkey switching.
-        settingsWindow.audiosPath = audiosDirectory().path
-        settingsWindow.onOpenAudios = { [weak self] in self?.openAudios() }
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         Settings.shared.onHotkeyChange = { [weak self] choice in self?.hotkey.choice = choice }
         hotkey.choice = Settings.shared.hotkey
@@ -238,26 +236,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Paths
-
-    private func audiosDirectory() -> URL {
-        let fm = FileManager.default
-        if let env = ProcessInfo.processInfo.environment["FLOWY_AUDIOS_DIR"], !env.isEmpty {
-            return URL(fileURLWithPath: env)
-        }
-        if let baked = Bundle.main.object(forInfoDictionaryKey: "FlowyAudiosPath") as? String,
-           !baked.isEmpty, !baked.contains("__AUDIOS_DIR__") {
-            return URL(fileURLWithPath: baked)
-        }
-        return fm.homeDirectoryForCurrentUser.appendingPathComponent("Flowy Audios")
-    }
-
-    private func makeFilename() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyyMMdd-HHmmss"
-        return "flowy-\(f.string(from: Date())).mp3"
-    }
-
     // MARK: - Main menu (standard app shortcuts)
 
     private func setupMainMenu() {
@@ -324,11 +302,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        let openItem = NSMenuItem(title: "Open Recordings Folder",
-                                  action: #selector(openAudios), keyEquivalent: "o")
-        openItem.target = self
-        menu.addItem(openItem)
-
         menu.addItem(.separator())
         // Quit has no explicit target: it travels the responder chain to NSApp.
         menu.addItem(NSMenuItem(title: "Quit Flowy",
@@ -338,14 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSettings() {
-        settingsWindow.audiosPath = audiosDirectory().path
         settingsWindow.show()
-    }
-
-    @objc private func openAudios() {
-        let dir = audiosDirectory()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(dir)
     }
 
     /// Quit and reopen Flowy. Required after granting Input Monitoring, because
