@@ -205,9 +205,6 @@ struct SettingsView: View {
                 }
 
                 if hasData {
-                    Text("Faster than \(SpeakingStats.percentile(forWPM: stats.lastWPM))% of speakers")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.8))
                     Text("avg \(Int(stats.averageWPM.rounded())) · best \(Int(stats.bestWPM.rounded())) · \(stats.sampleCount) dictation\(stats.sampleCount == 1 ? "" : "s")")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.45))
