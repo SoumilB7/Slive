@@ -1,19 +1,29 @@
 import Foundation
 
-/// Starts and stops the local Python transcription backend so you never have to
-/// launch it from a terminal. It runs the existing uv virtualenv's Python
-/// (`Backend/.venv/bin/python -m flowy.server`) as a child process, and kills it
-/// when Flowy quits.
+/// Owns the local Python transcription backend end-to-end:
+/// - starts it on launch (reusing an already-running one instead of duplicating),
+/// - keeps it alive with a watchdog that restarts it if it dies,
+/// - brings it up **on demand** before a transcription so we never return an
+///   empty result just because it wasn't running,
+/// - publishes a `status` the UI can show.
 ///
-/// Only ever one backend runs: if something is already listening on the port
-/// (e.g. an orphan from a force-quit, or a manually started server), we reuse it
-/// instead of spawning a duplicate.
-final class BackendManager {
+/// Everything runs on the main actor; health probes are async (never block).
+@MainActor
+final class BackendManager: ObservableObject {
+    enum Status: String {
+        case offline = "Offline"
+        case starting = "Starting…"
+        case running = "Running"
+    }
+
+    @Published private(set) var status: Status = .offline
+
     private let port = 50711
     private let healthURL = URL(string: "http://127.0.0.1:50711/health")!
     private var process: Process?
+    private var watchdog: Timer?
 
-    /// Absolute path to the repo's Backend/ directory (baked at build time).
+    /// Absolute path to the repo's Backend/ dir (baked at build time).
     private var backendDir: URL? {
         if let env = ProcessInfo.processInfo.environment["FLOWY_BACKEND_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: env)
@@ -27,50 +37,84 @@ final class BackendManager {
 
     // MARK: - Lifecycle
 
-    /// Launch the backend if it isn't already up. Non-blocking (runs the check +
-    /// spawn off the main thread).
+    /// Start the backend (reuse if one is already up) and begin the watchdog.
     func start() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self else { return }
-            if self.isHealthy() {
-                NSLog("Flowy: backend already running on :\(self.port) — reusing it.")
-                return
+        Task {
+            if await probeHealth() {
+                status = .running          // reuse an already-running server
+            } else {
+                spawnIfNeeded()
             }
-            self.spawn()
+            startWatchdog()
         }
     }
 
-    /// Terminate the backend on quit. Terminates the process we started, AND
-    /// pkills any `flowy.server` we merely *reused* (didn't spawn) — so ⌘Q always
-    /// leaves nothing running on the port.
+    /// Terminate the backend on quit — the one we started, plus any reused/orphan
+    /// `flowy.server`, so ⌘Q always leaves nothing on the port.
     func stop() {
-        if let p = process, p.isRunning {
-            NSLog("Flowy: stopping backend (pid \(p.processIdentifier))")
-            p.terminate()
-        }
+        watchdog?.invalidate(); watchdog = nil
+        if let p = process, p.isRunning { p.terminate() }
         process = nil
         pkillServer()
+        status = .offline
     }
 
-    /// Kill any lingering `flowy.server` process (the reused-orphan case).
-    private func pkillServer() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        task.arguments = ["-f", "flowy.server"]
-        try? task.run()
-        task.waitUntilExit()
+    /// Ensure the backend answers `/health`, starting it and polling until it
+    /// does (up to `timeout`). Returns whether it came up. Async sleeps between
+    /// probes, so the main thread stays responsive (the overlay keeps its dots).
+    func ensureHealthy(timeout: TimeInterval = 25) async -> Bool {
+        if await probeHealth() { status = .running; return true }
+        status = .starting
+        spawnIfNeeded()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 400_000_000)   // 0.4s
+            if await probeHealth() { status = .running; return true }
+            // If our process died while we waited, bring it back.
+            if !(process?.isRunning ?? false) { spawnIfNeeded() }
+        }
+        status = .offline
+        return false
     }
 
-    // MARK: - Internals
+    // MARK: - Watchdog
+
+    private func startWatchdog() {
+        watchdog?.invalidate()
+        let t = Timer(timeInterval: 6, repeats: true) { [weak self] _ in
+            Task { await self?.watchdogTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        watchdog = t
+    }
+
+    private func watchdogTick() async {
+        if await probeHealth() {
+            status = .running
+        } else if !(process?.isRunning ?? false) {
+            // No live server and nothing answering → (re)start it. If our process
+            // IS alive but not answering yet, it's still loading — leave it be.
+            status = .starting
+            spawnIfNeeded()
+        }
+    }
+
+    // MARK: - Spawn
+
+    private func spawnIfNeeded() {
+        if let p = process, p.isRunning { return }   // already ours
+        spawn()
+    }
 
     private func spawn() {
         guard let dir = backendDir else {
-            NSLog("Flowy: backend dir not configured — cannot auto-start the server.")
+            NSLog("Flowy: backend dir not configured — cannot start the server.")
             return
         }
         let python = dir.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            NSLog("Flowy: venv python not found at \(python.path) — run `uv sync` in Backend/.")
+            NSLog("Flowy: venv python missing at \(python.path) — run `uv sync` in Backend/.")
             return
         }
 
@@ -79,7 +123,6 @@ final class BackendManager {
         p.arguments = ["-m", "flowy.server"]
         p.currentDirectoryURL = dir
 
-        // Route the server's output to a log file so we can debug without a terminal.
         let logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("flowy-backend.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
@@ -88,33 +131,42 @@ final class BackendManager {
             p.standardError = handle
         }
 
-        // If the server dies on its own, drop our reference so a later start()
-        // will spawn a fresh one.
         p.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async { self?.process = nil }
+            Task { @MainActor in
+                self?.process = nil
+                self?.status = .offline
+            }
         }
 
         do {
             try p.run()
             process = p
-            NSLog("Flowy: backend started (pid \(p.processIdentifier)). Log: \(logURL.path)")
+            status = .starting
+            NSLog("Flowy: backend starting (pid \(p.processIdentifier)). Log: \(logURL.path)")
         } catch {
             NSLog("Flowy: failed to start backend — \(error)")
         }
     }
 
-    /// Quick, blocking health probe (called off the main thread).
-    private func isHealthy() -> Bool {
+    // MARK: - Health
+
+    private func probeHealth() async -> Bool {
         var request = URLRequest(url: healthURL)
         request.timeoutInterval = 1.5
-        let sem = DispatchSemaphore(value: 0)
-        var ok = false
-        let task = URLSession.shared.dataTask(with: request) { _, response, _ in
-            if let http = response as? HTTPURLResponse, http.statusCode == 200 { ok = true }
-            sem.signal()
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
         }
-        task.resume()
-        _ = sem.wait(timeout: .now() + 2.0)
-        return ok
+    }
+
+    private func pkillServer() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        task.arguments = ["-f", "flowy.server"]
+        try? task.run()
+        task.waitUntilExit()
     }
 }
