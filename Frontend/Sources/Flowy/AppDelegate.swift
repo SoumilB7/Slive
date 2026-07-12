@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = HotkeyMonitor()
     private let settingsWindow = SettingsWindowController()
     private let transcriber = TranscriptionClient()
+    private let backend = BackendManager()
 
     private var statusItem: NSStatusItem?
     private var recordStart: Date?
@@ -35,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reason: "Global push-to-talk listener"
         )
 
+        // Auto-start the local transcription backend so it's ready by the time
+        // you record — no terminal needed. Stopped again in applicationWillTerminate.
+        backend.start()
+
         setupMainMenu()
         setupMenuBar()
         wireAudioAndHotkey()
@@ -58,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkey.stop()
+        backend.stop()   // shut the Python server down with the app
     }
 
     /// Clicking the Dock icon (no windows open) reopens the home window.
