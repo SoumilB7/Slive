@@ -66,12 +66,14 @@ if [[ "${1:-}" == "install" ]]; then
     cp -R "$APP" "$DEST"
     # Re-sign the installed copy with the same identity + Hardened Runtime.
     codesign --force --deep --options runtime "${SIGN_ARGS[@]}" "$DEST" >/dev/null 2>&1 || true
-    # Evict the throwaway build/ copy from LaunchServices so it doesn't appear
-    # as a duplicate app beside the installed one.
+    # Remove the throwaway build/ bundle entirely so it can never appear as a
+    # duplicate app. (LaunchServices re-discovers any .app bundle on disk, so
+    # unregistering isn't enough — the bundle itself must go.)
     LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
     "$LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
+    rm -rf "$APP"
     LAUNCH_TARGET="$DEST"
-    echo "✓ Installed: $DEST"
+    echo "✓ Installed: $DEST (single copy — no duplicates)"
 fi
 
 if [[ "${1:-}" == "run" || "${1:-}" == "install" ]]; then
