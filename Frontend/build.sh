@@ -40,7 +40,9 @@ SIGN_ID="Flowy Local Signing"
 ENTITLEMENTS="Flowy.entitlements"   # audio-input entitlement (mic under Hardened Runtime)
 # Detect by certificate presence, not `find-identity -p codesigning` — the
 # latter hides untrusted self-signed certs even though codesign can use them.
-if security find-certificate -c "$SIGN_ID" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
+# Try the default search list AND the login keychain explicitly (more robust).
+if security find-certificate -c "$SIGN_ID" >/dev/null 2>&1 \
+   || security find-certificate -c "$SIGN_ID" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
     SIGN_ARGS=(--sign "$SIGN_ID")
     echo "▸ Signing with stable identity: $SIGN_ID"
 else

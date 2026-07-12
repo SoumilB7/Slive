@@ -123,7 +123,7 @@ struct SettingsView: View {
             permissionRow(
                 title: "Input Monitoring",
                 detail: "Detect your push-to-talk key",
-                granted: permissions.inputMonitoringGranted,
+                granted: permissions.inputMonitoringGranted || settings.hotkeyActive,
                 action: { permissions.requestInputMonitoring() }
             )
             Divider().overlay(.white.opacity(0.08))
