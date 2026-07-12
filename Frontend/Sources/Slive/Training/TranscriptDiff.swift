@@ -42,14 +42,18 @@ enum TranscriptDiff {
         return mask
     }
 
-    /// The ground-truth string with corrected words emphasized, or nil when
-    /// either side exceeds `maxWords` (caller falls back to whole-string color).
+    /// The ground-truth string with corrected words emphasized, or nil when the
+    /// caller should fall back to whole-string coloring: either side exceeds
+    /// `maxWords`, or the correction is a pure DELETION (output has extra words,
+    /// every truth word matches — nothing truth-side to highlight, yet the pair
+    /// differs; all-white here would read as "no correction").
     static func attributed(output: String, truth: String,
                            base: Color, changed: Color) -> AttributedString? {
         let out = words(output)
         let tru = words(truth)
         guard out.count <= maxWords, tru.count <= maxWords else { return nil }
         let mask = matchMask(output: out, truth: tru)
+        if out != tru && !mask.contains(false) { return nil }
         var result = AttributedString()
         for (index, word) in tru.enumerated() {
             var piece = AttributedString(word)
@@ -64,4 +68,27 @@ enum TranscriptDiff {
         }
         return result
     }
+}
+
+/// Row-render memo for the diff: the audio player republishes position at 10Hz
+/// during playback, re-rendering every table row — without this each redraw
+/// recomputes an up-to-200×200 LCS table per row. Keyed by sample id, validated
+/// against the truth text (an id's transcript can only ever be set once, but
+/// cheap to be safe). Main-actor only — touched exclusively from row rendering.
+@MainActor
+enum TranscriptDiffCache {
+    /// `styled` may legitimately be nil (the whole-string fallback) — a
+    /// dictionary hit distinguishes "cached nil" from "not computed yet".
+    private static var cache: [String: (truth: String, styled: AttributedString?)] = [:]
+
+    static func styled(id: String, output: String, truth: String,
+                       base: Color, changed: Color) -> AttributedString? {
+        if let hit = cache[id], hit.truth == truth { return hit.styled }
+        let styled = TranscriptDiff.attributed(
+            output: output, truth: truth, base: base, changed: changed)
+        cache[id] = (truth, styled)
+        return styled
+    }
+
+    static func clear() { cache.removeAll() }
 }

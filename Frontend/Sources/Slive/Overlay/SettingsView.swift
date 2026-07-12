@@ -18,7 +18,19 @@ struct SettingsView: View {
     /// Remembered so compact-mode section switching restores the last-visited
     /// Dictation sub-tab.
     @State private var lastDictationPage: SettingsPage = .general
-    @State private var width: CGFloat = SliveTheme.windowDefault.width
+    /// Seeded from the autosaved window frame so the first frame renders in the
+    /// right tier (a compact-restored window shouldn't flash one sidebar frame
+    /// before onGeometryChange reports). Format: "x y w h screenX …" — width is
+    /// the third token; any parse failure falls back to the default size.
+    @State private var width: CGFloat = {
+        if let frame = UserDefaults.standard.string(forKey: "NSWindow Frame SliveSettings") {
+            let tokens = frame.split(separator: " ")
+            if tokens.count > 2, let w = Double(tokens[2]), w > 0 {
+                return CGFloat(w)
+            }
+        }
+        return SliveTheme.windowDefault.width
+    }()
 
     private var layout: SliveLayout { SliveLayout.tier(for: width) }
 

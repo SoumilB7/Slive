@@ -332,6 +332,17 @@ enum SelfTest {
             truth: ["WhisperKit", "engine"])
         check(replace == [false, true], "replacement (incl. case change) marks the corrected word")
 
+        // Deletion (output hallucinated an extra word): every truth word is on
+        // the LCS, so truth-side coloring has nothing to mark — attributed()
+        // must fall back to whole-string styling, not render all-white.
+        let deletion = TranscriptDiff.matchMask(
+            output: ["the", "the", "cat"], truth: ["the", "cat"])
+        check(deletion == [true, true], "deletion case matches every truth word")
+        let deletionStyled = TranscriptDiff.attributed(
+            output: "the the cat", truth: "the cat", base: .white, changed: .orange)
+        check(deletionStyled == nil,
+              "deletion-only correction falls back to whole-string styling (nil)")
+
         let emptyOut = TranscriptDiff.matchMask(output: [], truth: ["a", "b"])
         check(emptyOut == [false, false], "empty output marks all truth words changed")
 
