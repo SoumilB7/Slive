@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// How long you must hold the key before recording begins. Brief taps under
     /// this do nothing. Tune to taste.
-    private let holdActivationDelay: TimeInterval = 0.3
+    private let holdActivationDelay: TimeInterval = 0.2
 
     // MARK: - Lifecycle
 
