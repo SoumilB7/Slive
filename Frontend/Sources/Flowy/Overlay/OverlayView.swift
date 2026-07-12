@@ -16,6 +16,12 @@ enum OverlayMetrics {
     static let minBoxHeight: CGFloat = 30
     static let cornerRadius: CGFloat = 14
 
+    static let copyButtonWidth: CGFloat = 16   // width reserved for the copy button
+    static let copyGap: CGFloat = 8            // gap between text and copy button
+
+    /// Total horizontal room the copy button (plus its gap) claims inside the box.
+    static let copyReserve: CGFloat = copyButtonWidth + copyGap
+
     /// Font used for both rendering (SwiftUI) and measurement (AppKit).
     static func roundedFont(size: CGFloat) -> NSFont {
         let base = NSFont.systemFont(ofSize: size)
@@ -28,7 +34,9 @@ enum OverlayMetrics {
     /// The black box's own size for a given transcript, wrapped at `maxBoxWidth`.
     static func boxSize(for text: String) -> CGSize {
         let font = roundedFont(size: fontSize)
-        let maxTextW = maxBoxWidth - hInset * 2
+        // The copy button (plus its gap) eats into the text column, so measure
+        // the text against the narrower width and add the reserve back below.
+        let maxTextW = maxBoxWidth - hInset * 2 - copyReserve
         let bounds = (text as NSString).boundingRect(
             with: CGSize(width: maxTextW, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
@@ -36,7 +44,7 @@ enum OverlayMetrics {
         )
         // +1 guards against SwiftUI/AppKit rounding disagreements that would clip
         // the last glyph and force an unwanted extra wrap.
-        let w = min(maxBoxWidth, ceil(bounds.width) + hInset * 2 + 1)
+        let w = min(maxBoxWidth, ceil(bounds.width) + hInset * 2 + copyReserve + 1)
         let h = max(minBoxHeight, ceil(bounds.height) + vInset * 2)
         return CGSize(width: w, height: h)
     }
@@ -93,7 +101,9 @@ struct OverlayView: View {
         }
         .frame(width: containerSize.width, height: containerSize.height)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.phase)
-        .allowsHitTesting(false)
+        // Click-through everywhere except while the result box is showing, so its
+        // copy button can be clicked; the pill/transcribing states stay passive.
+        .allowsHitTesting(isResult)
         .onChange(of: model.phase) { _, newPhase in
             if case .result(let t) = newPhase { displayText = t }
         }
@@ -129,16 +139,24 @@ struct OverlayView: View {
 
     private func resultBox(_ text: String) -> some View {
         let box = OverlayMetrics.boxSize(for: text)
-        return Text(text)
-            .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
-            .foregroundStyle(.white.opacity(0.95))
-            .multilineTextAlignment(.leading)
-            .lineSpacing(1)
-            .frame(width: box.width - OverlayMetrics.hInset * 2, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
+        // Text column is the box minus its padding, the button, and the gap.
+        let textWidth = box.width - OverlayMetrics.hInset * 2
+            - OverlayMetrics.copyReserve
+        return HStack(alignment: .top, spacing: OverlayMetrics.copyGap) {
+            Text(text)
+                .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
+                .foregroundStyle(.white.opacity(0.95))
+                .multilineTextAlignment(.leading)
+                .lineSpacing(1)
+                .frame(width: textWidth, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            CopyButton(text: text)
+                .frame(width: OverlayMetrics.copyButtonWidth, alignment: .top)
+        }
             .padding(.horizontal, OverlayMetrics.hInset)
             .padding(.vertical, OverlayMetrics.vInset)
-            .frame(width: box.width, height: box.height, alignment: .leading)
+            .frame(width: box.width, height: box.height, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous)
                     .fill(Color.black.opacity(0.92))
@@ -149,6 +167,35 @@ struct OverlayView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous))
             .shadow(color: .black.opacity(0.40), radius: 8, y: 3)
+    }
+}
+
+/// A small, subtle copy affordance beside the transcript. Copies the text to
+/// the general pasteboard and briefly flips to a checkmark to confirm. Uses a
+/// plain SwiftUI `Button`, which — inside a non-activating panel — copies
+/// without stealing focus from the app the user is dictating into.
+private struct CopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(copied ? 0.9 : 0.7))
+                .frame(width: OverlayMetrics.copyButtonWidth, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Copy")
     }
 }
 

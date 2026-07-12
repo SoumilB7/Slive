@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Flowy's home / settings screen. Doubles as the "what is this" surface:
@@ -6,6 +7,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject var permissions: PermissionsModel
+    @ObservedObject private var history = HistoryStore.shared
     var audiosPath: String
     var onOpenAudios: () -> Void
     var onRelaunch: () -> Void
@@ -20,6 +22,7 @@ struct SettingsView: View {
                 keyPicker
                 permissionsSection
                 generalSection
+                historySection
                 footer
             }
             .padding(24)
@@ -64,7 +67,7 @@ struct SettingsView: View {
             arrow
             step(icon: "waveform", title: "Speak", detail: "Live waveform")
             arrow
-            step(icon: "checkmark.circle.fill", title: "Release", detail: "Saved as MP3")
+            step(icon: "checkmark.circle.fill", title: "Release", detail: "Transcribed")
         }
     }
 
@@ -218,6 +221,106 @@ struct SettingsView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(card)
+    }
+
+    // MARK: - History
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                sectionTitle("HISTORY")
+                Spacer()
+                if !history.entries.isEmpty {
+                    Button("Clear history") { history.clearAll() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(accent)
+                }
+            }
+
+            if history.entries.isEmpty {
+                Text("No transcripts yet.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(.vertical, 6)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(history.entries.enumerated()), id: \.element.id) { index, entry in
+                            if index > 0 {
+                                Divider().overlay(.white.opacity(0.06))
+                            }
+                            historyRow(entry)
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card)
+    }
+
+    private func historyRow(_ entry: HistoryEntry) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.text)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Text(relativeAge(entry.createdAt))
+                        .foregroundStyle(.white.opacity(0.5))
+                    Text("· expires in \(expiresInHours(entry.expiresAt))")
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+            }
+            Spacer(minLength: 6)
+            Button {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(entry.text, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+            .help("Copy")
+            Button {
+                history.remove(entry.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            .buttonStyle(.plain)
+            .help("Delete")
+        }
+        .padding(.vertical, 10)
+    }
+
+    /// Coarse "2m ago" / "3h ago" style label.
+    private func relativeAge(_ date: Date) -> String {
+        let seconds = max(0, Date().timeIntervalSince(date))
+        if seconds < 60 { return "just now" }
+        let minutes = Int(seconds / 60)
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = Int(seconds / 3600)
+        if hours < 24 { return "\(hours)h ago" }
+        return "\(Int(seconds / 86_400))d ago"
+    }
+
+    /// Hours remaining until expiry, rounded up, floored at 1h.
+    private func expiresInHours(_ expiry: Date) -> String {
+        let remaining = expiry.timeIntervalSince(Date())
+        if remaining <= 0 { return "soon" }
+        let hours = Int(ceil(remaining / 3600))
+        return "\(max(1, hours))h"
     }
 
     // MARK: - Footer

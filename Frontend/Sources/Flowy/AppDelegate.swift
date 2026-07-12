@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var collapseWorkItem: DispatchWorkItem? // pending result auto-dismiss
 
     /// How long a result box stays on screen before collapsing.
-    private let resultDisplayDuration: TimeInterval = 4.0
+    private let resultDisplayDuration: TimeInterval = 6.0
 
     /// How long you must hold the key before recording begins. Brief taps under
     /// this do nothing. Tune to taste.
@@ -142,26 +142,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the overlay up and show a loading state while we save + transcribe.
         model.beginTranscribing()
 
-        let destination = audiosDirectory().appendingPathComponent(makeFilename())
+        // Encode to a TEMP MP3 that we delete right after — recordings are not
+        // persisted; the audio only exists long enough to reach the backend.
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flowy-\(UUID().uuidString).mp3")
         let transcriber = self.transcriber
 
         transcribeTask?.cancel()
         // Strong `self` capture: the task always returns (breaking any cycle),
         // and a new recording cancels it so a stale UI update never lands.
         transcribeTask = Task {
-            // 1. Encode the WAV → MP3 (off the main thread). The file is always
-            //    saved, even if the transcription step later fails.
+            // 1. Encode the WAV → MP3 (off the main thread).
             let mp3: URL
             do {
                 mp3 = try await Self.encodeMp3(wavURL: wavURL, to: destination)
-                NSLog("Flowy: saved \(mp3.path) (\(String(format: "%.1f", duration))s)")
+                NSLog("Flowy: encoded \(String(format: "%.1f", duration))s of audio")
             } catch {
-                NSLog("Flowy: save failed — \(error)")
+                NSLog("Flowy: encode failed — \(error)")
                 try? FileManager.default.removeItem(at: wavURL)
                 await MainActor.run { self.finishTranscription(text: nil) }
                 return
             }
             try? FileManager.default.removeItem(at: wavURL)
+            defer { try? FileManager.default.removeItem(at: mp3) }   // never persisted
 
             if Task.isCancelled { return }
 
@@ -206,8 +209,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        HistoryStore.shared.add(trimmed)          // save to the 24h catalogue
         model.showResult(trimmed)
         overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
+        overlay.setInteractive(true)              // let the copy button be clicked
         scheduleCollapse(after: resultDisplayDuration)
     }
 
