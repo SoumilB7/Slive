@@ -26,6 +26,10 @@ struct EditSample: Codable, Identifiable {
     let confidence: String
     /// Relative path (within the store) of the captured audio, if any.
     let audioFile: String?
+    /// Ground-truth transcription from an audio-capable LLM (the "should be"
+    /// column), and which model produced it. nil until fetched.
+    var llmTranscript: String?
+    var llmModel: String?
 }
 
 /// Local, append-only store for captured edit samples + their audio. Everything
@@ -118,7 +122,35 @@ final class TrainingStore: ObservableObject {
             id: id, createdAt: Date(),
             app: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
             transcript: transcript, finalText: "",
-            edited: false, confidence: "audio", audioFile: audioFile))
+            edited: false, confidence: "audio", audioFile: audioFile,
+            llmTranscript: nil, llmModel: nil))
+    }
+
+    /// Attach a ground-truth transcription to a stored sample and persist.
+    /// Rewrites the JSONL index (samples are small; simplicity over cleverness).
+    func setLLMTranscript(id: String, text: String, model: String) {
+        guard let idx = samples.firstIndex(where: { $0.id == id }) else { return }
+        samples[idx].llmTranscript = text
+        samples[idx].llmModel = model
+        if samples[idx].id == latest?.id { latest = samples[idx] }
+        rewriteIndex()
+    }
+
+    /// Rewrite the whole JSONL index from `samples` (used after in-place edits).
+    private func rewriteIndex() {
+        var blob = Data()
+        for sample in samples {
+            guard let line = try? JSONEncoder.iso.encode(sample) else { continue }
+            blob.append(line)
+            blob.append(0x0A)
+        }
+        let oldSize = fileSize(indexFile)
+        do {
+            try blob.write(to: indexFile, options: .atomic)
+            totalBytes += Int64(blob.count) - oldSize
+        } catch {
+            Log.training("index rewrite failed: \(error)")
+        }
     }
 
     /// Append a finished sample to the index.

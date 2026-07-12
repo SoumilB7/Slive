@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsWindow = SettingsWindowController()
     private let whisper = TranscriptionModel.shared   // on-device STT (Neural Engine)
     private let assistant = AssistantClient()
-    private let backend = BackendManager()
+    private let backend = BackendManager.shared
 
     private var statusItem: NSStatusItem?
     private var backendStatusItem: NSMenuItem?

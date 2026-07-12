@@ -286,15 +286,29 @@ enum SelfTest {
             check(false, "sample round-trips with ISO dates", "encode/decode threw")
         }
 
-        // Legacy lines (edit-tracking era) must still decode.
+        // Legacy lines (edit-tracking era, no llm fields) must still decode.
         let legacy = """
         {"id":"x","createdAt":"2026-07-16T10:00:00Z","app":"com.a.b","transcript":"t",\
         "finalText":"t2","edited":true,"confidence":"high","audioFile":null}
         """
         if let s = try? decoder.decode(EditSample.self, from: legacy.data(using: .utf8)!) {
-            check(s.edited && s.finalText == "t2" && s.audioFile == nil, "legacy sample decodes")
+            check(s.edited && s.finalText == "t2" && s.audioFile == nil
+                    && s.llmTranscript == nil && s.llmModel == nil,
+                  "legacy sample decodes (llm fields nil)")
         } else {
-            check(false, "legacy sample decodes", "decode threw")
+            check(false, "legacy sample decodes (llm fields nil)", "decode threw")
+        }
+
+        // Ground-truth fields must round-trip.
+        var withLLM = sample
+        withLLM.llmTranscript = "hello world."
+        withLLM.llmModel = "gemini-2.5-flash"
+        if let data = try? encoder.encode(withLLM),
+           let back = try? decoder.decode(EditSample.self, from: data) {
+            check(back.llmTranscript == "hello world." && back.llmModel == "gemini-2.5-flash",
+                  "ground-truth fields round-trip")
+        } else {
+            check(false, "ground-truth fields round-trip", "encode/decode threw")
         }
     }
 }

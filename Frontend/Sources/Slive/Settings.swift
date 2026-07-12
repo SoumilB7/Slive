@@ -25,6 +25,9 @@ final class Settings: ObservableObject {
         static let captureEdits = "captureEdits"
         static let captureMaxGB = "captureMaxGB"
         static let echoCancellation = "echoCancellation"
+        static let groundTruthProvider = "groundTruthProvider"
+        static let groundTruthModel = "groundTruthModel"
+        static let groundTruthBaseURL = "groundTruthBaseURL"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -179,6 +182,21 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(echoCancellation, forKey: Keys.echoCancellation) }
     }
 
+    /// Which provider the Training section's ground-truth transcription uses.
+    /// Only audio-capable providers are offered (Anthropic takes no audio).
+    /// API keys come from the same Keychain slots the assistant uses.
+    @Published var groundTruthProvider: AssistantProvider {
+        didSet { UserDefaults.standard.set(groundTruthProvider.rawValue, forKey: Keys.groundTruthProvider) }
+    }
+    /// Model for ground-truth transcription (must accept audio input).
+    @Published var groundTruthModel: String {
+        didSet { UserDefaults.standard.set(groundTruthModel, forKey: Keys.groundTruthModel) }
+    }
+    /// Base URL when the ground-truth provider is OpenAI-compatible.
+    @Published var groundTruthBaseURL: String {
+        didSet { UserDefaults.standard.set(groundTruthBaseURL, forKey: Keys.groundTruthBaseURL) }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -250,6 +268,10 @@ final class Settings: ObservableObject {
         // some Macs when the device flips into voice-chat mode at recording
         // start. Worth it when dictating over speaker audio; not as a default.
         echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
+        groundTruthProvider = UserDefaults.standard.string(forKey: Keys.groundTruthProvider)
+            .flatMap(AssistantProvider.init(rawValue:)) ?? .gemini
+        groundTruthModel = UserDefaults.standard.string(forKey: Keys.groundTruthModel) ?? "gemini-2.5-flash"
+        groundTruthBaseURL = UserDefaults.standard.string(forKey: Keys.groundTruthBaseURL) ?? ""
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.
         Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"
