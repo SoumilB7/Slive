@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import ApplicationServices
 import IOKit.hid
 
 /// Live view of the two permissions Flowy needs, so the Settings window can
@@ -7,6 +8,7 @@ import IOKit.hid
 final class PermissionsModel: ObservableObject {
     @Published var micGranted = false
     @Published var inputMonitoringGranted = false
+    @Published var accessibilityGranted = false
 
     private var timer: Timer?
 
@@ -25,6 +27,7 @@ final class PermissionsModel: ObservableObject {
     func refresh() {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         inputMonitoringGranted = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+        accessibilityGranted = AXIsProcessTrusted()
     }
 
     // MARK: - Requests
@@ -61,5 +64,12 @@ final class PermissionsModel: ObservableObject {
             NSWorkspace.shared.open(url)
         }
         refresh()
+    }
+
+    func requestAccessibility() {
+        // Surface the system prompt, then take the user to the exact pane.
+        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        openPane("Privacy_Accessibility")
     }
 }

@@ -60,6 +60,7 @@ final class Settings: ObservableObject {
     private enum Keys {
         static let hotkey = "hotkey"
         static let launchAtLogin = "launchAtLogin"
+        static let autoInsert = "autoInsert"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -77,6 +78,12 @@ final class Settings: ObservableObject {
         didSet { applyLaunchAtLogin(launchAtLogin) }
     }
 
+    /// When enabled, transcripts are inserted straight into the focused editable
+    /// text field (when possible) instead of surfacing the copy box.
+    @Published var autoInsert: Bool {
+        didSet { UserDefaults.standard.set(autoInsert, forKey: Keys.autoInsert) }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -86,6 +93,12 @@ final class Settings: ObservableObject {
         let raw = UserDefaults.standard.string(forKey: Keys.hotkey)
         hotkey = raw.flatMap(HotkeyChoice.init(rawValue:)) ?? .fn
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
+        // Default TRUE: absent key means the user hasn't opted out yet.
+        if UserDefaults.standard.object(forKey: Keys.autoInsert) == nil {
+            autoInsert = true
+        } else {
+            autoInsert = UserDefaults.standard.bool(forKey: Keys.autoInsert)
+        }
     }
 
     var isFirstRun: Bool {

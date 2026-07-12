@@ -207,7 +207,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        HistoryStore.shared.add(trimmed)          // save to the 24h catalogue
+        HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
+
+        // If auto-insert is on and a text field is focused, paste straight there
+        // and skip the copy box entirely.
+        if Settings.shared.autoInsert, PasteEngine.insertIfPossible(trimmed) {
+            model.finishListening()
+            hideOverlaySoon()
+            return
+        }
+
+        // Otherwise, surface the copy box.
         model.showResult(trimmed)
         overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
         overlay.setInteractive(true)              // let the copy button be clicked

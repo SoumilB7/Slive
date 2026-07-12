@@ -135,12 +135,19 @@ struct SettingsView: View {
                 action: { permissions.requestMic() }
             )
             Divider().overlay(.white.opacity(0.08))
+            permissionRow(
+                title: "Accessibility",
+                detail: "Paste transcripts into text fields",
+                granted: permissions.accessibilityGranted,
+                action: { permissions.requestAccessibility() }
+            )
+            Divider().overlay(.white.opacity(0.08))
             HStack(spacing: 10) {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .foregroundStyle(accent)
                     .font(.system(size: 16))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Just enabled Input Monitoring?")
+                    Text("Just changed a permission?")
                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.9))
                     Text("macOS only applies it after a relaunch.")
@@ -194,6 +201,13 @@ struct SettingsView: View {
             sectionTitle("GENERAL")
             Toggle(isOn: $settings.launchAtLogin) {
                 Text("Launch at login")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .toggleStyle(.switch)
+            .tint(accent)
+            Toggle(isOn: $settings.autoInsert) {
+                Text("Auto-insert into text fields")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.92))
             }
