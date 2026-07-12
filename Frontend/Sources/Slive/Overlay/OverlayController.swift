@@ -212,6 +212,7 @@ final class OverlayController {
                 self.panel.orderFrontRegardless()
             }
         }
+        t.tolerance = 0.5   // let macOS coalesce the wakeup (battery)
         RunLoop.main.add(t, forMode: .common)
         topmostTimer = t
     }

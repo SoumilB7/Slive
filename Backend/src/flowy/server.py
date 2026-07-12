@@ -27,7 +27,7 @@ from pydantic import BaseModel, field_validator
 from flowy.assistant import answer as assistant_answer
 from flowy.assistant import answer_stream as assistant_answer_stream
 from flowy.assistant import list_models as assistant_list_models
-from flowy.transcribe import load_model, transcribe, warm_up
+from flowy.transcribe import transcribe
 
 HOST = "127.0.0.1"
 PORT = 50711
@@ -37,15 +37,11 @@ logger = logging.getLogger("flowy.server")
 app = FastAPI(title="Flowy STT", version="0.1.0")
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    # Load the STT model ONCE at startup, not per request.
-    logger.info("Loading STT model...")
-    load_model()
-    # Prime the compute kernels so the user's first dictation is instant.
-    logger.info("Warming up...")
-    warm_up()
-    logger.info("STT model ready.")
+# NOTE: no model loading at startup. Dictation STT runs on-device (WhisperKit)
+# in the app; this server exists for the assistant proxy, which needs no local
+# model. The legacy /transcribe endpoint still works — its model loads lazily
+# (and stays loaded) on the first call — so an idle backend costs a few tens of
+# MB instead of holding a warmed STT model in RAM for nothing.
 
 
 @app.get("/health")
