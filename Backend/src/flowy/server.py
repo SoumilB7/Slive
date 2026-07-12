@@ -86,6 +86,11 @@ async def transcribe_endpoint(request: Request) -> JSONResponse:
     return JSONResponse(status_code=200, content={"text": text})
 
 
+class ImageItem(BaseModel):
+    media_type: str
+    data: str
+
+
 class AssistantRequest(BaseModel):
     text: str
     provider: str
@@ -94,6 +99,7 @@ class AssistantRequest(BaseModel):
     base_url: str | None = None
     system_prompt: str | None = None
     max_tokens: int = 1024
+    images: list[ImageItem] | None = None
 
 
 @app.post("/assistant")
@@ -108,6 +114,7 @@ async def assistant_endpoint(req: AssistantRequest) -> JSONResponse:
             base_url=req.base_url,
             system_prompt=req.system_prompt,
             max_tokens=req.max_tokens,
+            images=[img.model_dump() for img in req.images] if req.images else None,
         )
     except ValueError as exc:
         # Bad input or a provider error we could parse — client's problem.
@@ -135,6 +142,9 @@ async def assistant_stream_endpoint(req: AssistantRequest) -> StreamingResponse:
                 base_url=req.base_url,
                 system_prompt=req.system_prompt,
                 max_tokens=req.max_tokens,
+                images=(
+                    [img.model_dump() for img in req.images] if req.images else None
+                ),
             ):
                 yield json.dumps({"delta": delta}) + "\n"
         except Exception as exc:  # noqa: BLE001 - report any failure inline
