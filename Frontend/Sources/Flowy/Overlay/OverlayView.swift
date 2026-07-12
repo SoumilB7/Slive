@@ -111,6 +111,7 @@ struct OverlayView: View {
     private var containerSize: CGSize {
         if model.streaming { return OverlayMetrics.streamingPanelSize }
         if case .result(let t) = model.phase {
+            if model.isChat { return OverlayMetrics.assistantStreamingPanelSize }
             return model.assistantResult ? OverlayMetrics.assistantPanelSize(for: t)
                                           : OverlayMetrics.panelSize(for: t)
         }
@@ -210,31 +211,63 @@ struct OverlayView: View {
         }
     }
 
+    /// A single conversation turn: user messages sit right in a teal chip,
+    /// assistant messages read as plain left-aligned text.
+    private func bubble(_ role: String, _ text: String) -> some View {
+        let isUser = role == "user"
+        return Text(text)
+            .font(.system(size: OverlayMetrics.fontSize - 1, design: .rounded))
+            .foregroundStyle(.white.opacity(isUser ? 0.82 : 0.95))
+            .multilineTextAlignment(.leading)
+            .lineSpacing(1)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, isUser ? 10 : 0)
+            .padding(.vertical, isUser ? 6 : 0)
+            .background {
+                if isUser {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(teal.opacity(0.20))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+    }
+
     private func answerBox(_ text: String) -> some View {
-        // While streaming, use a fixed box (no per-token resize); otherwise size
-        // to the final text.
-        let box = model.streaming ? OverlayMetrics.streamingBoxSize
-                                  : OverlayMetrics.boxSize(for: text)
+        // Streaming or a multi-turn chat uses the fixed scrolling box; a fresh
+        // single answer sizes to its text.
+        let box = (model.streaming || model.isChat) ? OverlayMetrics.streamingBoxSize
+                                                     : OverlayMetrics.boxSize(for: text)
         // Text column is the box minus its padding, the button, and the gap.
         let textWidth = box.width - OverlayMetrics.hInset * 2
             - OverlayMetrics.copyReserve
         return ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                Text(text)
-                    .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .multilineTextAlignment(.leading)
-                    .lineSpacing(1)
-                    .textSelection(.enabled)
-                    .frame(width: textWidth, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, OverlayMetrics.hInset)
-                    // Reserve the copy button's column on the right so text can't
-                    // run under it.
-                    .padding(.trailing, OverlayMetrics.hInset + OverlayMetrics.copyReserve)
-                    .padding(.vertical, OverlayMetrics.vInset)
-                // Anchor so we can keep the newest text in view while streaming.
-                Color.clear.frame(height: 1).id("streamEnd")
+                VStack(alignment: .leading, spacing: model.isChat ? 9 : 0) {
+                    if model.isChat {
+                        // Prior turns, then the new question, then this answer.
+                        ForEach(model.priorTurns) { bubble($0.role, $0.text) }
+                        if !model.currentQuestion.isEmpty {
+                            bubble("user", model.currentQuestion)
+                        }
+                        bubble("assistant", text)
+                    } else {
+                        Text(text)
+                            .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.95))
+                            .multilineTextAlignment(.leading)
+                            .lineSpacing(1)
+                            .textSelection(.enabled)
+                            .frame(width: textWidth, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    // Anchor so we can keep the newest text in view while streaming.
+                    Color.clear.frame(height: 1).id("streamEnd")
+                }
+                .padding(.leading, OverlayMetrics.hInset)
+                // Reserve the button column on the right so text can't run under it.
+                .padding(.trailing, OverlayMetrics.hInset + OverlayMetrics.copyReserve)
+                .padding(.vertical, OverlayMetrics.vInset)
             }
             .onChange(of: text) { _, _ in
                 if model.streaming { proxy.scrollTo("streamEnd", anchor: .bottom) }
