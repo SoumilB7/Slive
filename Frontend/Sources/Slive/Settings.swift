@@ -135,10 +135,9 @@ final class Settings: ObservableObject {
         } else {
             holdActivationDelay = UserDefaults.standard.double(forKey: Keys.holdActivationDelay)
         }
-        // Default to the WhisperKit-recommended turbo model — accurate and fast
-        // on the Neural Engine, ~600 MB.
-        whisperModel = UserDefaults.standard.string(forKey: Keys.whisperModel)
-            ?? "large-v3-v20240930_626MB"
+        // Default to the bundled tiny model so the first launch works instantly
+        // and fully offline — the user can switch to a bigger one in Settings.
+        whisperModel = UserDefaults.standard.string(forKey: Keys.whisperModel) ?? "tiny.en"
     }
 
     // MARK: - Assistant API keys (Keychain-backed)
