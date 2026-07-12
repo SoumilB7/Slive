@@ -28,25 +28,19 @@ enum PasteEngine {
     // MARK: - Core
 
     private static func performInsert(_ text: String) -> Bool {
-        let trusted = AXIsProcessTrusted()
-        diag("insertIfPossible len=\(text.count) AXTrusted=\(trusted)")
         // No Accessibility permission → we can't read focus or post events.
-        guard trusted else { return false }
+        guard AXIsProcessTrusted() else { return false }
 
-        // Something must have keyboard focus, else we'd paste into nowhere — let
+        // Something must have keyboard focus, else we'd type into nowhere — let
         // the caller fall back to the copy box instead.
-        guard let element = focusedElement() else { diag("no focused element"); return false }
-
-        let role = stringAttribute(element, kAXRoleAttribute as String) ?? "?"
-        let subrole = stringAttribute(element, kAXSubroleAttribute as String) ?? "-"
-        diag("focused role=\(role) subrole=\(subrole)")
+        guard let element = focusedElement() else { return false }
 
         // Never insert into a secure/password field.
-        guard !isSecure(element) else { diag("secure field → skip"); return false }
+        guard !isSecure(element) else { return false }
 
         // Must be a focused editable text field (avoid typing into non-text
         // contexts, where characters could trigger shortcuts).
-        guard isEditableTextField(element) else { diag("not an editable field → skip"); return false }
+        guard isEditableTextField(element) else { return false }
 
         // Type it out with synthetic key events. We deliberately do NOT use the
         // AX insert (kAXSelectedText): Electron/Monaco (VS Code, the Claude Code
@@ -54,24 +48,8 @@ enum PasteEngine {
         // Synthetic typing IS keyboard input, so it lands reliably everywhere —
         // native fields, browsers, Electron, terminals. Async so pacing never
         // blocks the UI.
-        diag("typing \(text.count) chars")
         DispatchQueue.global(qos: .userInitiated).async { typeOut(text) }
         return true
-    }
-
-    /// Append a diagnostic line to /tmp/flowy-paste.log (temporary, for debugging).
-    private static func diag(_ msg: String) {
-        NSLog("Flowy paste: \(msg)")
-        let line = "\(msg)\n"
-        let url = URL(fileURLWithPath: "/tmp/flowy-paste.log")
-        guard let data = line.data(using: .utf8) else { return }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            try? handle.close()
-        } else {
-            try? data.write(to: url)
-        }
     }
 
     // MARK: - Focus discovery
@@ -146,10 +124,7 @@ enum PasteEngine {
     /// touches the clipboard. Flowy's overlay is non-activating, so the user's
     /// app stays frontmost and receives the keystrokes.
     private static func typeOut(_ text: String) {
-        guard let source = CGEventSource(stateID: .combinedSessionState) else {
-            diag("typeOut: no CGEventSource"); return
-        }
-        diag("typeOut: posting \(text.count) chars")
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
         for character in text {
             let utf16 = Array(String(character).utf16)
             utf16.withUnsafeBufferPointer { buffer in
