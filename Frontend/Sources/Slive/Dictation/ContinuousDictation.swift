@@ -79,13 +79,39 @@ final class ContinuousDictation {
         guard active else { return Outcome(text: "", typed: typing) }
         active = false
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
+        let confirmedText = Self.normalize(whisper.liveConfirmedText)
+        let confirmedEnd = whisper.liveConfirmedEndSeconds
         whisper.stopLiveDictation()
+        let duration = Double(snapshot.count) / 16_000.0
         Log.live(String(format: "RELEASE  audio=%.1fs  typing=%@  running final pass…",
-                        Double(snapshot.count) / 16_000.0, typing ? "yes" : "no"))
+                        duration, typing ? "yes" : "no"))
         let t0 = Date()
-        let final = await whisper.transcribeSamples(snapshot, model: model)
+
+        // Long holds: a from-scratch decode of the WHOLE utterance on release
+        // costs seconds-to-minutes. The streamed confirmed prefix is already
+        // final text — re-decode only [confirmedEnd - preRoll … end] (the
+        // trailing sub-second the stream never processed, plus the unconfirmed
+        // span) and stitch it on, de-duplicating the deliberately-overlapped
+        // seam. Short holds keep the exact full-decode path: it's already fast
+        // there and immune to seam artifacts.
+        var final: String?
+        if duration > Self.stitchedReleaseThreshold,
+           !confirmedText.isEmpty,
+           confirmedEnd > 1, confirmedEnd < duration {
+            let tailStart = max(0, Int((confirmedEnd - Self.seamPreRollSeconds) * 16_000.0))
+            let tailSamples = Array(snapshot[tailStart...])
+            if let tailText = await whisper.transcribeSamples(tailSamples, model: model) {
+                final = Self.stitchTranscripts(confirmed: confirmedText,
+                                               tail: Self.normalize(tailText))
+                Log.live(String(format: "stitched release: tail %.1fs of %.1fs",
+                                Double(tailSamples.count) / 16_000.0, duration))
+            }
+        }
+        if final == nil {
+            final = (await whisper.transcribeSamples(snapshot, model: model)).map(Self.normalize)
+        }
         // Fall back to the last streamed transcript if the final pass fails.
-        let finalText = final.map(Self.normalize) ?? lastTranscript
+        let finalText = final ?? lastTranscript
 
         let result: String
         if typing {
@@ -107,6 +133,37 @@ final class ContinuousDictation {
         active = false
         whisper.stopLiveDictation()
         typist.cancel()
+    }
+
+    // MARK: - Stitched release
+
+    /// Holds longer than this get the stitched (tail-only) release decode.
+    private static let stitchedReleaseThreshold: TimeInterval = 60
+    /// Re-decode this much audio BEFORE the confirmed boundary so the tail
+    /// decode has context at the seam; the stitcher drops the duplicate words.
+    private static let seamPreRollSeconds: Double = 0.3
+
+    /// Merge the confirmed streamed text with a freshly-decoded tail that
+    /// deliberately overlaps the seam: drop the tail's leading words that
+    /// repeat the confirmed suffix. Words are compared case- and
+    /// punctuation-insensitively ("Report." matches "report"); the confirmed
+    /// side's rendering wins. No overlap found → plain join (never drops text).
+    static func stitchTranscripts(confirmed: String, tail: String) -> String {
+        let cw = confirmed.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let tw = tail.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !cw.isEmpty else { return tail }
+        guard !tw.isEmpty else { return confirmed }
+        func norm(_ w: String) -> String {
+            w.lowercased().trimmingCharacters(in: .punctuationCharacters)
+        }
+        var overlap = 0
+        for k in stride(from: min(12, cw.count, tw.count), through: 1, by: -1) {
+            if zip(cw.suffix(k), tw.prefix(k)).allSatisfy({ norm($0.0) == norm($0.1) }) {
+                overlap = k
+                break
+            }
+        }
+        return (cw + tw.dropFirst(overlap)).joined(separator: " ")
     }
 
     // MARK: - Text hygiene

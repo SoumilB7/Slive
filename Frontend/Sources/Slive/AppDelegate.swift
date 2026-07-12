@@ -258,6 +258,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseWorkItem = nil
 
         model.beginListening(assistant: currentAction == .assist)
+        if currentAction == .assist {
+            // Boot the lazy backend NOW, overlapped with the user speaking —
+            // by release it's healthy and the answer path skips the
+            // multi-second first-use spawn entirely.
+            Task { _ = await backend.ensureHealthy() }
+        }
         overlay.show()
         recordStart = Date()
         if !recorder.start() {

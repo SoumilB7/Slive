@@ -162,6 +162,8 @@ final class TranscriptionModel: ObservableObject {
         guard let pipe = pipes[model], let tokenizer = pipe.tokenizer else { return false }
         stopLiveDictation()   // never run two at once
         liveModel = model
+        liveConfirmedText = ""
+        liveConfirmedEndSeconds = 0
         // Fresh buffer per session — otherwise the shared audioProcessor would
         // still hold the previous utterance and re-transcribe it from the top.
         pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
@@ -219,7 +221,15 @@ final class TranscriptionModel: ObservableObject {
                 lastChange = now
                 lastBeat = now
                 lastTranscript = transcript
-                Task { @MainActor in onUpdate(transcript, 0) }
+                let confirmedEnd = Double(state.lastConfirmedSegmentEndSeconds)
+                Task { @MainActor in
+                    // Confirmed-progress snapshot for the stitched release decode:
+                    // on a long hold, release re-decodes only [confirmedEnd-0.3s…]
+                    // and stitches onto this text instead of the whole utterance.
+                    self.liveConfirmedText = confirmed
+                    self.liveConfirmedEndSeconds = confirmedEnd
+                    onUpdate(transcript, 0)
+                }
             }
         )
         liveTranscriber = transcriber
@@ -241,6 +251,12 @@ final class TranscriptionModel: ObservableObject {
     /// `model`'s audioProcessor. `model` is passed explicitly (not read from
     /// `liveModel`) so it stays valid across `stopLiveDictation()`, which clears
     /// `liveModel`. Grab this BEFORE stopping to keep the trailing audio.
+    /// The stream's confirmed transcript + how many seconds of audio it covers,
+    /// maintained by the live callback. Reset at session start; read at release
+    /// by the stitched (tail-only) final pass for long holds.
+    private(set) var liveConfirmedText: String = ""
+    private(set) var liveConfirmedEndSeconds: Double = 0
+
     func liveSamplesSnapshot(model: String) -> [Float] {
         guard let pipe = pipes[model] else { return [] }
         return Array(pipe.audioProcessor.audioSamples)
