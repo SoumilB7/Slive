@@ -1,6 +1,8 @@
 import AppKit
 import AVFoundation
+import Combine
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AudioModel()
     private lazy var overlay = OverlayController(model: model)
@@ -11,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backend = BackendManager()
 
     private var statusItem: NSStatusItem?
+    private var backendStatusItem: NSMenuItem?
+    private var statusCancellable: AnyCancellable?
     private var recordStart: Date?
     private var armWorkItem: DispatchWorkItem?
     private var activityToken: NSObjectProtocol?   // holds off App Nap
@@ -39,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Auto-start the local transcription backend so it's ready by the time
         // you record — no terminal needed. Stopped again in applicationWillTerminate.
         backend.start()
+        statusCancellable = backend.$status.sink { [weak self] status in
+            self?.updateBackendStatusUI(status)
+        }
 
         setupMainMenu()
         setupMenuBar()
@@ -169,15 +176,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if Task.isCancelled { return }
 
-            // 2. Send it to the backend and await the transcript.
+            // 2. Make sure the backend is actually up — start it and wait if it
+            //    isn't — so a not-running server never yields an empty result.
+            //    (The overlay keeps its loading dots during the wait.)
+            let up = await self.backend.ensureHealthy()
+            if Task.isCancelled { return }
+            guard up else {
+                await MainActor.run { self.showBackendError() }
+                return
+            }
+
+            // 3. Transcribe. If it fails (server may have died mid-flight), bring
+            //    the backend back and retry once before surfacing an error.
             do {
                 let text = try await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt)
                 if Task.isCancelled { return }
                 await MainActor.run { self.finishTranscription(text: text) }
             } catch {
-                NSLog("Flowy: transcription failed — \(error)")
+                NSLog("Flowy: transcription failed — \(error); retrying after ensuring backend")
                 if Task.isCancelled { return }
-                await MainActor.run { self.finishTranscription(text: nil) }
+                if await self.backend.ensureHealthy(),
+                   let text = try? await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt) {
+                    if Task.isCancelled { return }
+                    await MainActor.run { self.finishTranscription(text: text) }
+                } else {
+                    if Task.isCancelled { return }
+                    await MainActor.run { self.showBackendError() }
+                }
             }
         }
     }
@@ -308,6 +333,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let header = NSMenuItem(title: "Flowy", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
+
+        // Live backend status (updated via the Combine subscription).
+        let statusLine = NSMenuItem(title: "Backend: …", action: nil, keyEquivalent: "")
+        statusLine.isEnabled = false
+        menu.addItem(statusLine)
+        backendStatusItem = statusLine
+        updateBackendStatusUI(backend.status)
+
         menu.addItem(.separator())
 
         let settingsItem = NSMenuItem(title: "Settings…",
@@ -325,6 +358,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settingsWindow.show()
+    }
+
+    /// Reflect the backend status in the menu-bar item (tooltip + menu line).
+    private func updateBackendStatusUI(_ status: BackendManager.Status) {
+        statusItem?.button?.toolTip = "Flowy — backend: \(status.rawValue)"
+        backendStatusItem?.title = "Backend: \(status.rawValue)"
+    }
+
+    /// Shown when the backend couldn't be brought up in time — a clear message
+    /// instead of an empty result.
+    @MainActor private func showBackendError() {
+        let msg = "Backend is still starting — hold and try again in a moment."
+        model.showResult(msg)
+        overlay.resize(to: OverlayMetrics.panelSize(for: msg))
+        overlay.setInteractive(true)
+        scheduleCollapse(after: 3.5)
     }
 
     /// Quit and reopen Flowy. Required after granting Input Monitoring, because
