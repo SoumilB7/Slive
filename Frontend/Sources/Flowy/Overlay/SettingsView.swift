@@ -10,24 +10,47 @@ struct SettingsView: View {
     @ObservedObject private var history = HistoryStore.shared
     var onRelaunch: () -> Void
 
-    private let accent = Color(hue: 0.76, saturation: 0.7, brightness: 1.0)
+    private let accent = Color(hue: 0.50, saturation: 0.68, brightness: 0.86)
+
+    private enum Tab: String, CaseIterable, Identifiable {
+        case general = "General"
+        case permissions = "Permissions"
+        case vocabulary = "Vocabulary"
+        case history = "History"
+        var id: String { rawValue }
+    }
+
+    @State private var tab: Tab = .general
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 22) {
-                hero
-                steps
-                keyPicker
-                permissionsSection
-                generalSection
-                vocabularySection
-                historySection
-                footer
+        VStack(spacing: 0) {
+            brandHeader
+            tabBar
+                .padding(.horizontal, 24)
+                .padding(.bottom, 4)
+            ScrollView {
+                VStack(spacing: 22) {
+                    switch tab {
+                    case .general:
+                        steps
+                        keyPicker
+                        generalSection
+                    case .permissions:
+                        permissionsSection
+                    case .vocabulary:
+                        vocabularySection
+                    case .history:
+                        historySection
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity)
             }
-            .padding(24)
-            .frame(maxWidth: .infinity)
+            footer
+                .padding(.bottom, 16)
         }
-        .frame(width: 460, height: 640)
+        .frame(minWidth: 460, maxWidth: .infinity, minHeight: 520, maxHeight: .infinity)
         .background(background)
         .onAppear { permissions.startWatching() }
         .onDisappear { permissions.stopWatching() }
@@ -35,26 +58,43 @@ struct SettingsView: View {
 
     private var background: some View {
         LinearGradient(
-            colors: [Color(hue: 0.72, saturation: 0.10, brightness: 0.16),
-                     Color(hue: 0.80, saturation: 0.14, brightness: 0.10)],
+            colors: [Color(hue: 0.53, saturation: 0.08, brightness: 0.15),
+                     Color(hue: 0.53, saturation: 0.10, brightness: 0.09)],
             startPoint: .top, endPoint: .bottom
         )
         .ignoresSafeArea()
     }
 
-    // MARK: - Hero
+    // MARK: - Brand header
 
-    private var hero: some View {
-        VStack(spacing: 12) {
-            BrandMark(size: 76)
-            Text("Flowy")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-            Text("Hold a key. Speak. It's saved.")
-                .font(.system(size: 14, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.6))
+    private var brandHeader: some View {
+        HStack(spacing: 12) {
+            BrandMark(size: 44)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Flowy")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("Hold a key. Speak. It's saved.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            Spacer()
         }
-        .padding(.top, 6)
+        .padding(.horizontal, 24)
+        .padding(.top, 20)
+        .padding(.bottom, 14)
+    }
+
+    // MARK: - Tab bar
+
+    private var tabBar: some View {
+        Picker("", selection: $tab) {
+            ForEach(Tab.allCases) { t in
+                Text(t.rawValue).tag(t)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
     }
 
     // MARK: - How it works

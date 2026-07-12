@@ -204,7 +204,7 @@ private struct CopyButton: View {
 private struct LoadingDots: View {
     var active: Bool
 
-    private let dotColor = Color(hue: 0.58, saturation: 0.45, brightness: 0.9)
+    private let dotColor = Color(hue: 0.52, saturation: 0.55, brightness: 0.9)
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !active)) { timeline in

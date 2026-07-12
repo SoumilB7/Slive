@@ -12,9 +12,8 @@ struct BrandMark: View {
             .fill(
                 LinearGradient(
                     colors: [
-                        Color(hue: 0.60, saturation: 0.85, brightness: 1.0),
-                        Color(hue: 0.76, saturation: 0.80, brightness: 1.0),
-                        Color(hue: 0.90, saturation: 0.75, brightness: 1.0)
+                        Color(hue: 0.56, saturation: 0.82, brightness: 1.0),
+                        Color(hue: 0.48, saturation: 0.72, brightness: 0.95)
                     ],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 )
@@ -25,7 +24,7 @@ struct BrandMark: View {
                     .strokeBorder(.white.opacity(0.18), lineWidth: max(0.5, size * 0.01))
             )
             .frame(width: size, height: size)
-            .shadow(color: Color(hue: 0.78, saturation: 0.6, brightness: 0.7).opacity(0.45),
+            .shadow(color: Color(hue: 0.50, saturation: 0.6, brightness: 0.7).opacity(0.45),
                     radius: size * 0.16, y: size * 0.06)
     }
 
