@@ -40,11 +40,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingTurn: (question: String, answer: String)?
 
     /// How long the mic stays open AFTER the key is released. Releasing the key
-    /// usually overlaps the last word — stopping instantly clips its tail and
+    /// often overlaps the last word — stopping instantly clips its tail and
     /// the transcript loses the final word or two. A short grace captures it.
     private let releaseTail: TimeInterval = 0.20
     /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
     private var pendingStop: DispatchWorkItem?
+    /// Last time the mic heard something voice-like (RMS above a floor). Lets
+    /// `keyUp` skip the release tail when you already finished speaking — the
+    /// tail only pays off when the release overlaps speech, so a quiet mic means
+    /// the stop (and thus transcription) can start immediately.
+    private var lastVoiceAt = Date.distantPast
 
     /// How long a result box stays on screen before collapsing.
     private let resultDisplayDuration: TimeInterval = 6.0
@@ -148,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func wireAudioAndHotkey() {
         recorder.onLevels = { [weak self] bands, rms in
             self?.model.pushLevels(bands, rms: rms)
+            // Voice-activity note for the adaptive release tail. The floor sits
+            // above room noise but below quiet speech.
+            if rms > 0.03 { self?.lastVoiceAt = Date() }
         }
         hotkey.onStart = { [weak self] action in self?.keyDown(action) }
         hotkey.onStop = { [weak self] _ in self?.keyUp() }
@@ -195,10 +203,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // Don't stop the instant the key lifts — keep listening for a beat so
-        // the tail of the last word makes it into the audio. The overlay keeps
-        // its listening pill for that beat; the stop then proceeds normally.
+        // the tail of the last word makes it into the audio. The tail is
+        // ADAPTIVE: it only matters when the release overlaps speech, so if the
+        // mic has already been quiet for longer than the tail, skip it and stop
+        // right away — transcription starts ~200ms sooner in the common
+        // "finish the sentence, then release" case. (Continuous keeps the fixed
+        // tail: its voice activity isn't tracked by `recorder.onLevels`.)
         pendingStop?.cancel()
         let action = currentAction
+        if action != .stream, Date().timeIntervalSince(lastVoiceAt) > releaseTail + 0.15 {
+            stopRecording()
+            return
+        }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingStop = nil
@@ -271,7 +287,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             //    needed for STT. Returns nil if the model isn't ready (not
             //    downloaded / still preparing) — we then tell the user instead of
             //    hanging on the spinner.
+            let tTranscribe = Date()
             let transcript = await whisper.transcribe(wavURL, model: whisperModel)
+            Log.stt(String(format: "transcribed %.1fs audio in %.2fs (%@)",
+                           duration, Date().timeIntervalSince(tTranscribe), whisperModel))
             if Task.isCancelled { return }
             guard let text = transcript, !text.isEmpty else {
                 await MainActor.run { self.handleNoTranscript() }
