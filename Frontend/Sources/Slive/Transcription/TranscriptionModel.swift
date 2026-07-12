@@ -134,6 +134,13 @@ final class TranscriptionModel: ObservableObject {
         guard let pipe, let tokenizer = pipe.tokenizer else { return false }
         stopLiveDictation()   // never run two at once
 
+        // Clean text only: strip Whisper's control tokens (<|startoftranscript|>,
+        // <|en|>, <|0.00|> timestamps, <|endoftext|>, …) so none of them can be
+        // typed into the field or shown in the caption.
+        var options = DecodingOptions(language: "en")
+        options.skipSpecialTokens = true
+        options.withoutTimestamps = true
+
         let transcriber = AudioStreamTranscriber(
             audioEncoder: pipe.audioEncoder,
             featureExtractor: pipe.featureExtractor,
@@ -141,14 +148,14 @@ final class TranscriptionModel: ObservableObject {
             textDecoder: pipe.textDecoder,
             tokenizer: tokenizer,
             audioProcessor: pipe.audioProcessor,
-            decodingOptions: DecodingOptions(language: "en"),
+            decodingOptions: options,
             useVAD: true,
             stateChangeCallback: { _, state in
-                let confirmed = state.confirmedSegments.map { $0.text }.joined()
-                var hypothesis = state.unconfirmedSegments.map { $0.text }.joined()
+                let confirmed = Self.cleanStreamText(state.confirmedSegments.map { $0.text }.joined())
+                var hypothesis = Self.cleanStreamText(state.unconfirmedSegments.map { $0.text }.joined())
                 // While a fresh chunk is decoding there may be no unconfirmed
                 // segment yet — fall back to the in-progress decode text.
-                if hypothesis.isEmpty { hypothesis = state.currentText }
+                if hypothesis.isEmpty { hypothesis = Self.cleanStreamText(state.currentText) }
                 let energy = state.bufferEnergy.last ?? 0
                 Task { @MainActor in onUpdate(confirmed, hypothesis, energy) }
             }
@@ -159,6 +166,15 @@ final class TranscriptionModel: ObservableObject {
             catch { NSLog("Slive: live dictation error — \(error)") }
         }
         return true
+    }
+
+    /// Belt-and-suspenders: strip any residual Whisper control tokens like
+    /// `<|startoftranscript|>`, `<|en|>`, `<|0.00|>`, `<|endoftext|>` that can
+    /// slip through the in-progress decode text even with skipSpecialTokens set.
+    private static func cleanStreamText(_ text: String) -> String {
+        guard text.contains("<|") else { return text }
+        return text.replacingOccurrences(
+            of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
     }
 
     /// Stop the live stream (ends its mic capture + realtime loop).
