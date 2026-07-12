@@ -44,19 +44,17 @@ enum PasteEngine {
         // Never insert into a secure/password field.
         guard !isSecure(element) else { diag("secure field → skip"); return false }
 
-        // Strategy 1: clean AX insert when the field exposes an editable text
-        // role (native fields, most web inputs) — no clipboard involved.
-        if isEditableTextField(element), setSelectedText(element, text) {
-            diag("strategy 1: AX insert OK")
-            return true
-        }
+        // Must be a focused editable text field (avoid typing into non-text
+        // contexts, where characters could trigger shortcuts).
+        guard isEditableTextField(element) else { diag("not an editable field → skip"); return false }
 
-        // Strategy 2: type it out with synthetic key events — the universal
-        // path. Reaches Electron / VS Code / terminal editors (Monaco, the
-        // Claude Code extension) that ignore ⌘V and expose no settable AX value,
-        // because this *is* keyboard input, not a paste. Runs async so the
-        // per-character pacing never blocks the UI.
-        diag("strategy 2: typing \(text.count) chars")
+        // Type it out with synthetic key events. We deliberately do NOT use the
+        // AX insert (kAXSelectedText): Electron/Monaco (VS Code, the Claude Code
+        // extension) falsely reports `.success` without actually inserting.
+        // Synthetic typing IS keyboard input, so it lands reliably everywhere —
+        // native fields, browsers, Electron, terminals. Async so pacing never
+        // blocks the UI.
+        diag("typing \(text.count) chars")
         DispatchQueue.global(qos: .userInitiated).async { typeOut(text) }
         return true
     }
@@ -140,17 +138,7 @@ enum PasteEngine {
         return false
     }
 
-    // MARK: - Strategy 1: AX insert
-
-    /// Replace the current selection (or insert at the caret) via
-    /// `kAXSelectedTextAttribute`. Returns true on `.success`.
-    private static func setSelectedText(_ element: AXUIElement, _ text: String) -> Bool {
-        let err = AXUIElementSetAttributeValue(
-            element, kAXSelectedTextAttribute as CFString, text as CFString)
-        return err == .success
-    }
-
-    // MARK: - Strategy 2: type it out
+    // MARK: - Insertion: type it out
 
     /// Type `text` into the frontmost app one character at a time via synthetic
     /// Unicode key events. Works anywhere a keyboard works — Electron, VS Code,
