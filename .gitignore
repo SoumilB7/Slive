@@ -17,3 +17,6 @@ Audios/*.wav
 
 # macOS
 .DS_Store
+
+# Internal project notes (not committed)
+project_context.md
