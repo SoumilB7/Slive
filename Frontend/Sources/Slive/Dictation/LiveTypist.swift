@@ -21,6 +21,13 @@ final class LiveTypist: @unchecked Sendable {
     /// whole remaining diff on each `setTarget` so text appears at once.
     private static let instantThreshold: Double = 120
 
+    /// How many trailing characters stay editable. Text further back than this is
+    /// "frozen" and never backspaced — so a late revision of a word several
+    /// sentences back can't trigger a cascade that rewrites everything after it.
+    /// Big enough to always cover the recogniser's live (unconfirmed) tail, so
+    /// normal corrections are untouched; only DEEP revisions are refused.
+    private static let editableTail = 64
+
     // Queue-isolated state.
     private var committed = ""     // exactly what we've typed into the field
     private var target = ""        // what we're typing toward
@@ -28,6 +35,7 @@ final class LiveTypist: @unchecked Sendable {
     private var enabled = false    // false → no editable field, so never post keys
     private var cps: Double = 30   // characters/sec cruising speed for this session
     private var instant = false    // cps >= instantThreshold → flush whole diff
+    private var frozenLen = 0      // committed[0..<frozenLen] is settled; never backspaced
 
     /// Begin a session. `allowed` (from `PasteEngine.canStreamType()`, checked on
     /// the main thread) gates whether we actually post keystrokes this session.
@@ -37,6 +45,7 @@ final class LiveTypist: @unchecked Sendable {
         queue.async {
             self.committed = ""
             self.target = ""
+            self.frozenLen = 0
             self.enabled = allowed
             self.cps = cps
             self.instant = cps >= Self.instantThreshold
@@ -94,20 +103,26 @@ final class LiveTypist: @unchecked Sendable {
         var delay: TimeInterval = 0.030   // idle poll when caught up
         if enabled {
             let old = Array(committed), new = Array(target)
-            var common = 0
+            // Reconcile only from the freeze boundary onward: treat everything
+            // before it as agreed, so a deep revision can't backspace into it.
+            let lo = min(frozenLen, old.count, new.count)
+            var common = lo
             let maxCommon = min(old.count, new.count)
             while common < maxCommon && old[common] == new[common] { common += 1 }
 
-            if old.count > common {
-                // Wrong tail character → backspace it quickly.
+            if old.count > common && committed.count > frozenLen {
+                // Wrong tail character (within the editable window) → backspace it
+                // quickly. Never dips below frozenLen.
                 PasteEngine.postBackspace()
                 committed.removeLast()
                 delay = 0.012
             } else if new.count > common {
-                // Type the next new character, paced to spread the remaining run
+                // Type the next character, paced to spread the remaining run
                 // smoothly over ~one chunk interval.
                 PasteEngine.postUnicode(String(new[common]))
                 committed.append(new[common])
+                // Settle everything but the last `editableTail` chars.
+                frozenLen = max(frozenLen, committed.count - Self.editableTail)
                 let remaining = new.count - committed.count
                 delay = remaining <= 0 ? 0.030 : forwardDelay(remaining: remaining)
             }
@@ -126,17 +141,26 @@ final class LiveTypist: @unchecked Sendable {
         return min(slowest, max(fastest, spread / Double(remaining)))
     }
 
-    /// Apply the entire remaining diff at once (used on release so the field is
-    /// correct promptly rather than slowly finishing the tail).
+    /// Apply the entire remaining diff at once (used on release / Instant so the
+    /// field is correct promptly). Also respects the freeze boundary: it never
+    /// backspaces below `frozenLen`, so even the final full-accuracy pass can't
+    /// rewrite sentences the user has long since moved past — it only reconciles
+    /// the editable tail and appends what's new.
     private func flushRemaining() {
         let old = Array(committed), new = Array(target)
-        var common = 0
+        let lo = min(frozenLen, old.count, new.count)
+        var common = lo
         let maxCommon = min(old.count, new.count)
         while common < maxCommon && old[common] == new[common] { common += 1 }
 
-        for _ in 0..<(old.count - common) { PasteEngine.postBackspace() }
-        let insert = String(new[common...])
+        // Never backspace below the freeze boundary (guards the rare case where the
+        // target is shorter than it). `keep` is where the field stays unchanged.
+        let keep = max(common, min(frozenLen, old.count))
+        for _ in 0..<(old.count - keep) { PasteEngine.postBackspace() }
+        let insert = new.count > keep ? String(new[keep...]) : ""
         if !insert.isEmpty { PasteEngine.postUnicode(insert) }
-        committed = target
+        // `committed` mirrors the FIELD: the kept (old) prefix + what we just typed.
+        committed = String(old[0..<keep]) + insert
+        frozenLen = max(frozenLen, committed.count - Self.editableTail)
     }
 }
