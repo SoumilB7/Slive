@@ -117,14 +117,19 @@ final class FeedbackPlayer {
     private func setupEngine() {
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
+        // Let the engine idle the audio hardware between cues. Without this the
+        // engine ran 24/7 — a real-time IO thread pulling silence (~86 render
+        // callbacks/sec) and a coreaudiod power assertion for the whole app
+        // lifetime, to play a 200ms thump a few dozen times a day. Auto-shutdown
+        // stops the graph when idle and restarts transparently on demand —
+        // unlike a manual stop-after-linger, there's no completion-handler
+        // threading to race (they fire off-main and AVAudioEngine isn't
+        // thread-safe).
+        engine.isAutoShutdownEnabled = true
         engine.prepare()
-        do {
-            try engine.start()
-            player.play()
-            engineReady = true
-        } catch {
-            engineReady = false
-        }
+        // Don't start here: playActivation's `!engine.isRunning` path starts it
+        // on first use, so launch never spins up audio hardware at all.
+        engineReady = true
     }
 
     // MARK: - Fallback

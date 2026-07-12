@@ -1,10 +1,9 @@
 import Foundation
 
-/// Owns the local Python transcription backend end-to-end:
-/// - starts it on launch (reusing an already-running one instead of duplicating),
-/// - keeps it alive with a watchdog that restarts it if it dies,
-/// - brings it up **on demand** before a transcription so we never return an
-///   empty result just because it wasn't running,
+/// Owns the local Python assistant backend end-to-end:
+/// - reaps orphan servers at launch (without spawning one — the server starts
+///   on demand, at the first assistant use, via `ensureHealthy`),
+/// - re-spawns it inside `ensureHealthy` if it died,
 /// - publishes a `status` the UI can show.
 ///
 /// Everything runs on the main actor; health probes are async (never block).
@@ -25,7 +24,6 @@ final class BackendManager: ObservableObject {
     private let port = 50711
     private let healthURL = URL(string: "http://127.0.0.1:50711/health")!
     private var process: Process?
-    private var watchdog: Timer?
 
     /// Absolute path to the repo's Backend/ dir (baked at build time).
     private var backendDir: URL? {
@@ -41,29 +39,6 @@ final class BackendManager: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Start the backend fresh and begin the watchdog.
-    ///
-    /// We deliberately do NOT reuse an already-running server: an orphan from a
-    /// crash, or a stale process from before a backend code change, would serve
-    /// old routes. So we kill any existing `flowy.server`, wait for the port to
-    /// free, then spawn our own — every launch runs current code.
-    func start() {
-        Task {
-            status = .starting
-            pkillServer(signal: "TERM")
-            // Wait until the old server stops answering (port released), then
-            // spawn. Bounded so a wedged process can't hang startup.
-            var waited = 0
-            while await probeHealth() && waited < 20 {
-                try? await Task.sleep(nanoseconds: 100_000_000)   // 0.1s
-                waited += 1
-            }
-            if waited >= 20 { pkillServer(signal: "KILL") }        // force any holdout
-            spawn()
-            startWatchdog()
-        }
-    }
-
     /// Launch-time hygiene without the cost of running a server: kill any orphan
     /// `flowy.server` left over from a crashed session (it would sit on the port
     /// burning RAM), but do NOT spawn one. The server starts on demand — the
@@ -78,7 +53,6 @@ final class BackendManager: ObservableObject {
     /// `flowy.server`, so ⌘Q always leaves nothing on the port. SIGTERM first for
     /// a clean uvicorn shutdown, then SIGKILL to guarantee nothing survives.
     func stop() {
-        watchdog?.invalidate(); watchdog = nil
         if let p = process, p.isRunning { p.terminate() }
         process = nil
         pkillServer(signal: "TERM")
@@ -103,29 +77,6 @@ final class BackendManager: ObservableObject {
         }
         status = .offline
         return false
-    }
-
-    // MARK: - Watchdog
-
-    private func startWatchdog() {
-        watchdog?.invalidate()
-        let t = Timer(timeInterval: 6, repeats: true) { [weak self] _ in
-            Task { await self?.watchdogTick() }
-        }
-        t.tolerance = 2.0   // let macOS coalesce the wakeup (battery)
-        RunLoop.main.add(t, forMode: .common)
-        watchdog = t
-    }
-
-    private func watchdogTick() async {
-        if await probeHealth() {
-            status = .running
-        } else if !(process?.isRunning ?? false) {
-            // No live server and nothing answering → (re)start it. If our process
-            // IS alive but not answering yet, it's still loading — leave it be.
-            status = .starting
-            spawnIfNeeded()
-        }
     }
 
     // MARK: - Spawn
