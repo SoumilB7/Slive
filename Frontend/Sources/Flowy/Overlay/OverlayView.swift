@@ -183,7 +183,10 @@ struct OverlayView: View {
                     .textSelection(.enabled)
                     .frame(width: textWidth, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, OverlayMetrics.hInset)
+                    .padding(.leading, OverlayMetrics.hInset)
+                    // Reserve the copy button's column on the right so text can't
+                    // run under it.
+                    .padding(.trailing, OverlayMetrics.hInset + OverlayMetrics.copyReserve)
                     .padding(.vertical, OverlayMetrics.vInset)
                 // Anchor so we can keep the newest text in view while streaming.
                 Color.clear.frame(height: 1).id("streamEnd")
