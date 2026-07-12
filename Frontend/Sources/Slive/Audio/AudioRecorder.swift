@@ -17,12 +17,43 @@ final class AudioRecorder {
 
     let bandCount = 14
 
+    /// Whether the input node currently has the system voice-processing chain
+    /// (echo cancellation) attached — tracked so we only toggle on change.
+    private var voiceProcessingOn = false
+
+    /// Attach/detach the system voice-processing chain (the FaceTime echo
+    /// canceller) per the setting. With speakers instead of headphones, the mic
+    /// hears whatever the Mac is playing — music, videos — and transcription
+    /// quality collapses; AEC subtracts the known output signal from the mic.
+    /// Must be called while the engine is stopped (we're between recordings).
+    private func applyVoiceProcessing(_ input: AVAudioInputNode) {
+        let want = Settings.shared.echoCancellation
+        guard want != voiceProcessingOn else { return }
+        do {
+            try input.setVoiceProcessingEnabled(want)
+            voiceProcessingOn = want
+            if want {
+                // Don't audibly duck the user's music while they dictate — we
+                // only need the cancellation, not the FaceTime-style volume dip.
+                input.voiceProcessingOtherAudioDuckingConfiguration =
+                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+                        enableAdvancedDucking: false, duckingLevel: .min)
+            }
+            Log.app("voice processing (echo cancellation) \(want ? "on" : "off")")
+        } catch {
+            NSLog("Slive: voice processing toggle failed — recording without AEC: \(error)")
+        }
+    }
+
     /// Begin recording. Returns false if the engine failed to start.
     @discardableResult
     func start() -> Bool {
         guard !isRecording else { return true }
 
         let input = engine.inputNode
+        // Attach AEC BEFORE reading the format — voice processing changes the
+        // node's output format, and the tap + WAV must match what it produces.
+        applyVoiceProcessing(input)
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             NSLog("Slive: invalid input format (mic not ready)")

@@ -8,6 +8,7 @@ struct TrainingSettingsView: View {
     @ObservedObject var settings: Settings
     var accent: Color
     @ObservedObject private var store = TrainingStore.shared
+    @ObservedObject private var player = AudioPreviewPlayer.shared
 
     /// Whether the Data folder is open (showing the table) vs. the folder tile.
     @State private var openData = false
@@ -28,6 +29,7 @@ struct TrainingSettingsView: View {
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity)
         }
+        .onDisappear { player.stop() }
     }
 
     // MARK: - Saving toggle
@@ -203,40 +205,63 @@ struct TrainingSettingsView: View {
     }
 
     private func dataRow(_ sample: EditSample) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            // Audio column.
-            Group {
-                if let url = store.audioURL(sample) {
-                    Button { PreviewSound.play(url) } label: {
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundStyle(accent)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                // Audio column: play/pause toggles the shared player onto this row.
+                Group {
+                    if let url = store.audioURL(sample) {
+                        Button { player.toggle(id: sample.id, url: url) } label: {
+                            Image(systemName: player.currentID == sample.id && player.isPlaying
+                                    ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundStyle(accent)
+                        }
+                        .buttonStyle(.plain)
+                        .help(player.currentID == sample.id && player.isPlaying ? "Pause" : "Play")
+                    } else {
+                        Image(systemName: "waveform.slash")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.white.opacity(0.25))
                     }
-                    .buttonStyle(.plain)
-                    .help("Play captured audio")
-                } else {
-                    Image(systemName: "waveform.slash")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.white.opacity(0.25))
                 }
+                .frame(width: 44, alignment: .leading)
+
+                // What Slive output.
+                Text(sample.transcript)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                // What it should have been (after editing).
+                Text(sample.finalText.isEmpty ? "—" : sample.finalText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(sample.edited ? .orange.opacity(0.95) : .white.opacity(0.75))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(width: 44, alignment: .leading)
 
-            // What Slive output.
-            Text(sample.transcript)
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.75))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            // What it should have been (after editing).
-            Text(sample.finalText.isEmpty ? "—" : sample.finalText)
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(sample.edited ? .orange.opacity(0.95) : .white.opacity(0.75))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Scrubber, only under the row that's loaded in the player.
+            if player.currentID == sample.id {
+                HStack(spacing: 8) {
+                    Slider(
+                        value: Binding(
+                            get: { player.position },
+                            set: { player.seek(to: $0) }
+                        ),
+                        in: 0...max(player.duration, 0.01)
+                    )
+                    .controlSize(.mini)
+                    .tint(accent)
+                    Text("\(AudioPreviewPlayer.timeText(player.position)) / \(AudioPreviewPlayer.timeText(player.duration))")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .fixedSize()
+                }
+                .padding(.leading, 44)   // align under the text columns
+            }
         }
         .padding(.vertical, 9)
     }
@@ -261,15 +286,5 @@ struct TrainingSettingsView: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(.white.opacity(0.08), lineWidth: 0.8)
             )
-    }
-}
-
-/// Retains the currently-playing preview sound so it isn't deallocated mid-play.
-private enum PreviewSound {
-    static var current: NSSound?
-    static func play(_ url: URL) {
-        current?.stop()
-        current = NSSound(contentsOf: url, byReference: true)
-        current?.play()
     }
 }

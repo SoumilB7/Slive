@@ -24,6 +24,7 @@ final class Settings: ObservableObject {
         static let verboseLogging = "verboseLogging"
         static let captureEdits = "captureEdits"
         static let captureMaxGB = "captureMaxGB"
+        static let echoCancellation = "echoCancellation"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -169,6 +170,15 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(captureMaxGB, forKey: Keys.captureMaxGB) }
     }
 
+    /// Run the mic through the system voice-processing chain (the FaceTime echo
+    /// canceller): what the Mac itself is playing over the speakers is
+    /// subtracted from what the mic hears, so music/videos don't pollute the
+    /// transcription in open-mic (no headphones) use. Default true. Applies from
+    /// the next recording.
+    @Published var echoCancellation: Bool {
+        didSet { UserDefaults.standard.set(echoCancellation, forKey: Keys.echoCancellation) }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -235,6 +245,12 @@ final class Settings: ObservableObject {
             captureMaxGB = 1.0
         } else {
             captureMaxGB = UserDefaults.standard.double(forKey: Keys.captureMaxGB)
+        }
+        // Default TRUE: open-mic dictation with speakers is the common case.
+        if UserDefaults.standard.object(forKey: Keys.echoCancellation) == nil {
+            echoCancellation = true
+        } else {
+            echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
         }
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.
