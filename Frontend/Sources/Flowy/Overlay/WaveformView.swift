@@ -18,9 +18,7 @@ struct WaveformView: View {
             let minBar = barWidth               // fully-rounded dot at rest
 
             for i in 0..<n {
-                // Mirror-symmetric, tallest in the middle (mic-icon shape).
-                let base = CGFloat(min(1, max(0, levels[bandIndex(for: i, count: n)])))
-                let level = base * envelope(for: i, count: n)
+                let level = CGFloat(min(1, max(0, levels[i])))
                 let h = max(minBar, level * maxBar)
                 let x = CGFloat(i) * (barWidth + spacing)
                 let rect = CGRect(x: x, y: midY - h / 2, width: barWidth, height: h)
@@ -28,23 +26,6 @@ struct WaveformView: View {
                 ctx.fill(path, with: .color(color(level: level)))
             }
         }
-    }
-
-    /// Map a display position to a frequency band by distance from centre, so
-    /// the loudest low frequencies land in the middle and equidistant bars share
-    /// a band — a symmetric shape instead of a left-to-right ramp.
-    private func bandIndex(for i: Int, count n: Int) -> Int {
-        guard n > 1 else { return 0 }
-        let mid = Double(n - 1) / 2.0
-        let dist = abs(Double(i) - mid) / mid          // 0 centre … 1 edges
-        return Int((dist * Double(n - 1)).rounded())
-    }
-
-    /// Arch envelope: full height at the centre, tapering toward the edges.
-    private func envelope(for i: Int, count n: Int) -> CGFloat {
-        guard n > 1 else { return 1 }
-        let p = Double(i) / Double(n - 1)              // 0 … 1
-        return CGFloat(0.4 + 0.6 * sin(.pi * p))
     }
 
     /// Off-matte blue: low saturation (flat, not neon), gently brighter louder.

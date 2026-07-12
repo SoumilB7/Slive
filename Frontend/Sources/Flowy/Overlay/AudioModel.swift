@@ -27,7 +27,7 @@ final class AudioModel: ObservableObject {
 
     private var timer: Timer?
     private var startDate: Date?
-    private var shimmerPhase: Double = 0
+    private var wavePhase: Double = 0
 
     // Fast rise, gentle fall — the classic "lively meter" feel.
     private let attack: Float = 0.55
@@ -89,8 +89,8 @@ final class AudioModel: ObservableObject {
     func pushLevels(_ bands: [Float], rms: Float) {
         guard bands.count == bandCount else { return }
         targetLevels = bands
-        // Amplify RMS a touch so the halo reacts on normal speech.
-        targetGlow = min(1, rms * 6)
+        // Drives the wave amplitude — normal speech should reach a good height.
+        targetGlow = min(1, rms * 9)
     }
 
     // MARK: - 60 fps easing
@@ -110,35 +110,35 @@ final class AudioModel: ObservableObject {
     }
 
     private func tick() {
-        shimmerPhase += 0.08
+        wavePhase += 0.16
 
-        let listening = phase == .listening
-        var newLevels = levels
-        for i in 0..<bandCount {
-            let target = targetLevels[i]
-            let rate = target > newLevels[i] ? attack : decay
-            var v = newLevels[i] + (target - newLevels[i]) * rate
-            if listening {
-                // A gentle travelling shimmer so silence still looks alive.
-                let s = Float(sin(shimmerPhase + Double(i) * 0.5)) * 0.5 + 0.5
-                let floorLevel = 0.05 + 0.05 * s
-                v = max(v, floorLevel)
-            }
-            newLevels[i] = v
-        }
-        levels = newLevels
-
+        // Ease overall loudness for smooth vertical growth/shrink.
         let gRate: Float = targetGlow > glow ? attack : decay
         glow = glow + (targetGlow - glow) * gRate
+
+        let listening = phase == .listening
+        // Soft-capped amplitude (~0.6 max); a little idle motion while listening
+        // so it breathes even in silence.
+        var amp = 0.6 * tanhf(glow / 0.6)
+        if listening { amp = max(amp, 0.10) }
+
+        // Smooth travelling sine across the bars — grows vertically with volume.
+        var newLevels = [Float](repeating: 0, count: bandCount)
+        for i in 0..<bandCount {
+            let wave = 0.5 + 0.5 * Float(sin(wavePhase + Double(i) * 0.5))
+            newLevels[i] = amp * (0.3 + 0.7 * wave)
+        }
+        levels = newLevels
 
         if listening, let start = startDate {
             elapsed = Date().timeIntervalSince(start)
         }
 
-        // Once idle and fully settled, stop spinning the timer.
-        if !listening && phase != .saving {
-            let settled = levels.allSatisfy { $0 < 0.01 } && glow < 0.01
-            if settled { stopTimer(); levels = [Float](repeating: 0, count: bandCount); glow = 0 }
+        // Once idle and faded out, stop spinning the timer.
+        if !listening && phase != .saving && glow < 0.01 {
+            stopTimer()
+            levels = [Float](repeating: 0, count: bandCount)
+            glow = 0
         }
     }
 
