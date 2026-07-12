@@ -166,10 +166,16 @@ final class TranscriptionModel: ObservableObject {
         // still hold the previous utterance and re-transcribe it from the top.
         pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
 
-        // Dedupe: the state callback also fires on every mic-energy tick (~10×/s)
-        // with an UNCHANGED transcript. Only push through when the text actually
-        // changes, so we don't spam the main actor with no-op updates.
+        // Dedupe + instrumentation. The state callback also fires on every mic-
+        // energy tick (~10×/s) with an UNCHANGED transcript; only push through real
+        // text changes. The logs (filter "Slive.live") show, per hold: each text
+        // growth with the gap since the last one + mic energy, an idle heartbeat
+        // when text is frozen but audio is flowing (→ VAD skip / loop death), and
+        // whether the stream loop ends before release (→ the loop died).
         var lastTranscript = ""
+        var lastChange = Date()
+        var lastBeat = Date()
+        NSLog("Slive.live: START model=\(model)")
 
         let transcriber = AudioStreamTranscriber(
             audioEncoder: pipe.audioEncoder,
@@ -196,15 +202,36 @@ final class TranscriptionModel: ObservableObject {
                 let confirmed = state.confirmedSegments.map { $0.text }.joined()
                 let tail = state.unconfirmedSegments.map { $0.text }.joined()
                 let transcript = Self.cleanStreamText(confirmed + tail)
-                guard transcript != lastTranscript else { return }   // energy-only tick
+                let energy = state.bufferEnergy.last ?? 0
+                let now = Date()
+                guard transcript != lastTranscript else {   // energy-only tick
+                    if now.timeIntervalSince(lastBeat) > 1.0 {
+                        NSLog(String(format: "Slive.live:   …frozen %.1fs  energy=%.2f  conf=%d tail=%d",
+                                     now.timeIntervalSince(lastChange), energy, confirmed.count, tail.count))
+                        lastBeat = now
+                    }
+                    return
+                }
+                NSLog(String(format: "Slive.live: +text len=%d (+%d)  gap=%.2fs  energy=%.2f  conf=%d tail=%d",
+                             transcript.count, transcript.count - lastTranscript.count,
+                             now.timeIntervalSince(lastChange), energy, confirmed.count, tail.count))
+                lastChange = now
+                lastBeat = now
                 lastTranscript = transcript
                 Task { @MainActor in onUpdate(transcript, 0) }
             }
         )
         liveTranscriber = transcriber
         Task {
-            do { try await transcriber.startStreamTranscription() }
-            catch { NSLog("Slive: live dictation error — \(error)") }
+            do {
+                try await transcriber.startStreamTranscription()
+                // Returns when the realtime loop ends. If this logs BEFORE the user
+                // releases, the loop died on a decode error (streaming is dead until
+                // release). Normally it logs right after stopLiveDictation().
+                NSLog("Slive.live: stream loop ended")
+            } catch {
+                NSLog("Slive.live: stream ERROR — \(error)")
+            }
         }
         return true
     }
