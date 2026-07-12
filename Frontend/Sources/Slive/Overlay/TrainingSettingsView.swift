@@ -25,6 +25,8 @@ struct TrainingSettingsView: View {
     /// stock models keep their names). Empty → the timestamped default.
     @State private var customName = ""
     @State private var maxRamGB = 12.0
+    /// The small print (profile, RAM, time, name) is tucked one tap away.
+    @State private var showAdvanced = false
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -95,10 +97,12 @@ struct TrainingSettingsView: View {
         SettingsCard("FINE-TUNE PIPELINE", trailing: {
             if checking { ProgressView().controlSize(.small) }
         }) {
-            Text("Choose the WhisperKit model family that should learn from the recordings corrected on the Data page.")
+            Text("Teach a WhisperKit model your voice from the dictations you corrected on the Data page.")
                 .sliveCaption()
 
-            trainingChoices
+            choicesRow
+            summaryLine
+            advancedDisclosure
 
             stageRail
                 .padding(.vertical, 6)
@@ -138,118 +142,192 @@ struct TrainingSettingsView: View {
         trainingModels.first { $0.id == selectedModel }
     }
 
-    private var trainingChoices: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Text("Base model")
-                    .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(SliveTheme.textSecondary)
-                Picker("", selection: $selectedModel) {
-                    ForEach(trainingModels) { model in
-                        Text(model.label).tag(model.id)
-                    }
+    /// The two decisions kept on the face: which checkpoint family, which method.
+    private var choicesRow: some View {
+        HStack(spacing: 10) {
+            Text("Base model")
+                .font(SliveTheme.font(11, .semibold))
+                .foregroundStyle(SliveTheme.textSecondary)
+            Picker("", selection: $selectedModel) {
+                ForEach(trainingModels) { model in
+                    Text(model.label).tag(model.id)
                 }
-                .labelsHidden().pickerStyle(.menu).fixedSize()
-                .disabled(job?.isActive == true || trainingModels.isEmpty)
+            }
+            .labelsHidden().pickerStyle(.menu).fixedSize()
+            .disabled(job?.isActive == true || trainingModels.isEmpty)
 
-                Text("Method")
-                    .font(SliveTheme.font(11, .semibold))
+            Text("Method")
+                .font(SliveTheme.font(11, .semibold))
+                .foregroundStyle(SliveTheme.textSecondary)
+            Picker("", selection: $selectedMethod) {
+                Text("QLoRA (4-bit CUDA)").tag("qlora")
+                Text("LoRA (this Mac)").tag("lora")
+            }
+            .labelsHidden().pickerStyle(.menu).fixedSize()
+            .disabled(job?.isActive == true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// One quiet line naming what will run — no hyperparameters, no caveats.
+    /// The small print lives under "Advanced".
+    @ViewBuilder private var summaryLine: some View {
+        if let model = selectedTrainingModel {
+            HStack(spacing: 8) {
+                Text(model.hfModel)
+                    .font(SliveTheme.mono(11))
+                    .foregroundStyle(SliveTheme.textMid)
+                Text(model.multilingual ? "multilingual" : "English-only")
+                    .font(SliveTheme.font(9, .semibold))
                     .foregroundStyle(SliveTheme.textSecondary)
-                Picker("", selection: $selectedMethod) {
-                    Text("QLoRA (4-bit CUDA)").tag("qlora")
-                    Text("LoRA (this Mac)").tag("lora")
-                }
-                .labelsHidden().pickerStyle(.menu).fixedSize()
-                .disabled(job?.isActive == true)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(.white.opacity(0.07)))
                 Spacer(minLength: 0)
             }
-            if let model = selectedTrainingModel {
-                HStack(spacing: 8) {
-                    Text(model.hfModel)
-                        .font(SliveTheme.mono(11))
-                        .foregroundStyle(SliveTheme.textPrimary)
-                    Text(model.multilingual ? "multilingual" : "English-only")
-                        .font(SliveTheme.font(9, .semibold))
+        } else {
+            Text("Loading models…").sliveCaption()
+        }
+    }
+
+    // MARK: Advanced (progressive disclosure — collapsed by default)
+
+    /// The profile breakdown, RAM ceiling, time estimate, and output name —
+    /// everything that used to crowd the face, one tap away.
+    private var advancedDisclosure: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showAdvanced.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(SliveTheme.accent.opacity(0.85))
+                    Text("Advanced")
+                        .font(SliveTheme.font(11, .semibold))
                         .foregroundStyle(SliveTheme.textSecondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(.white.opacity(0.07)))
+                    Text(advancedSummary)
+                        .font(SliveTheme.mono(10))
+                        .foregroundStyle(SliveTheme.textTertiary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(SliveTheme.textTertiary)
+                        .rotationEffect(.degrees(showAdvanced ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showAdvanced {
+                advancedBody.padding(.top, 12)
+            }
+        }
+    }
+
+    /// The collapsed row still tells you the two values you'd most want to check.
+    private var advancedSummary: String {
+        "\(selectedMethod.uppercased()) · \(Int(maxRamGB)) GB cap"
+    }
+
+    private var advancedBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Profile — what the backend will actually run.
+            if let model = selectedTrainingModel {
+                VStack(alignment: .leading, spacing: 4) {
                     if let profile = model.profileSummary {
                         Text(profile)
                             .font(SliveTheme.mono(10))
                             .foregroundStyle(SliveTheme.accent.opacity(0.9))
                     }
-                    Spacer(minLength: 0)
+                    Text(model.detail).sliveCaption()
                 }
-                Text(model.detail).sliveCaption()
             }
             if selectedMethod == "qlora" {
-                Text("QLoRA uses NF4 + double quantization during SFT and requires a CUDA/bitsandbytes training host. Apple MPS is not a supported NF4 backend; choose LoRA to train locally on this Mac.")
+                Text("QLoRA uses NF4 + double quantization during SFT and needs a CUDA/bitsandbytes host. Apple MPS isn't a supported NF4 backend — choose LoRA to train locally on this Mac.")
                     .sliveCaption()
             }
 
-            HStack(spacing: 10) {
-                Text("Max RAM")
-                    .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(SliveTheme.textSecondary)
-                Slider(value: $maxRamGB, in: 2...32, step: 1)
-                    .frame(maxWidth: 220)
-                    .disabled(job?.isActive == true)
-                Text("\(Int(maxRamGB)) GB")
-                    .font(SliveTheme.mono(11))
-                    .foregroundStyle(SliveTheme.accent)
-                    .frame(width: 42, alignment: .trailing)
-                if let model = selectedTrainingModel {
-                    let recommended = selectedMethod == "qlora"
-                        ? model.qloraRamGB : model.loraRamGB
-                    Text("~\(Int(recommended)) GB recommended")
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(maxRamGB < recommended ? Color.orange : SliveTheme.textTertiary)
-                }
-                Spacer(minLength: 0)
-            }
-            Text("The backend refuses an undersized profile and stops SFT if its total process RAM crosses this ceiling. CUDA VRAM is separate.")
-                .sliveCaption()
+            Divider().overlay(SliveTheme.divider)
 
+            // Max RAM.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    Text("Max RAM")
+                        .font(SliveTheme.font(11, .semibold))
+                        .foregroundStyle(SliveTheme.textSecondary)
+                    Slider(value: $maxRamGB, in: 2...32, step: 1)
+                        .frame(maxWidth: 220)
+                        .disabled(job?.isActive == true)
+                    Text("\(Int(maxRamGB)) GB")
+                        .font(SliveTheme.mono(11))
+                        .foregroundStyle(SliveTheme.accent)
+                        .frame(width: 42, alignment: .trailing)
+                    if let model = selectedTrainingModel {
+                        let recommended = selectedMethod == "qlora"
+                            ? model.qloraRamGB : model.loraRamGB
+                        Text("~\(Int(recommended)) GB recommended")
+                            .font(SliveTheme.captionFont)
+                            .foregroundStyle(maxRamGB < recommended ? Color.orange : SliveTheme.textTertiary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Text("The backend refuses an undersized profile and stops SFT if its total process RAM crosses this ceiling. CUDA VRAM is separate.")
+                    .sliveCaption()
+            }
+
+            Divider().overlay(SliveTheme.divider)
+
+            // Est. time.
             HStack(spacing: 10) {
                 Text("Est. time")
                     .font(SliveTheme.font(11, .semibold))
                     .foregroundStyle(SliveTheme.textSecondary)
-                if selectedMethod == "qlora" {
-                    Text("depends on your CUDA host")
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(SliveTheme.textTertiary)
-                } else if let estimate = estimatedMinutes {
-                    Text(timeText(estimate))
-                        .font(SliveTheme.mono(11))
-                        .foregroundStyle(SliveTheme.accent)
-                    Text(String(format: "3 epochs · %.1f min audio · rough",
-                                readiness?.eligibleAudioMinutes ?? 0))
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(SliveTheme.textTertiary)
-                } else {
-                    Text("known once eligible recordings exist")
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(SliveTheme.textTertiary)
-                }
+                estTimeValue
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 10) {
-                Text("Name")
-                    .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(SliveTheme.textSecondary)
-                TextField("balenced-ft-<date>-<time>", text: $customName)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
-                    .frame(maxWidth: 260)
-                    .disabled(job?.isActive == true)
+            // Name.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    Text("Name")
+                        .font(SliveTheme.font(11, .semibold))
+                        .foregroundStyle(SliveTheme.textSecondary)
+                    TextField("balanced-ft-<date>-<time>", text: $customName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(maxWidth: 260)
+                        .disabled(job?.isActive == true)
+                }
+                Text("Names the finished model in the Dictation picker — spaces become dashes, letters/digits/._- only. Leave empty for the dated default.")
+                    .sliveCaption()
             }
-            Text("Names the finished model in the Dictation picker — spaces become dashes, letters/digits/._- only. Leave empty for the dated default.")
-                .sliveCaption()
         }
         .padding(10)
         .innerWell()
+    }
+
+    /// The est-time readout (LoRA on this Mac is estimable; QLoRA depends on the
+    /// CUDA host; both need eligible audio to know).
+    @ViewBuilder private var estTimeValue: some View {
+        if selectedMethod == "qlora" {
+            Text("depends on your CUDA host")
+                .font(SliveTheme.captionFont)
+                .foregroundStyle(SliveTheme.textTertiary)
+        } else if let estimate = estimatedMinutes {
+            Text(timeText(estimate))
+                .font(SliveTheme.mono(11))
+                .foregroundStyle(SliveTheme.accent)
+            Text(String(format: "3 epochs · %.1f min audio · rough",
+                        readiness?.eligibleAudioMinutes ?? 0))
+                .font(SliveTheme.captionFont)
+                .foregroundStyle(SliveTheme.textTertiary)
+        } else {
+            Text("known once eligible recordings exist")
+                .font(SliveTheme.captionFont)
+                .foregroundStyle(SliveTheme.textTertiary)
+        }
     }
 
     // MARK: - Time estimates
@@ -556,7 +634,7 @@ struct TrainingSettingsView: View {
             infoRow("RAM cap", "\(Int(job?.maxRamGB ?? maxRamGB)) GB")
             infoRow("Name", job?.modelName
                     ?? (customName.trimmingCharacters(in: .whitespaces).isEmpty
-                        ? "balenced-ft-<date>-<time>"
+                        ? "balanced-ft-<date>-<time>"
                         : customName.trimmingCharacters(in: .whitespaces)))
             infoRow("Runs on", "Neural Engine — compiled .mlmodelc, same serving path as stock models")
             infoRow("Stored in", "~/Library/Application Support/Slive/Models/Custom")
