@@ -70,10 +70,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (never auto-downloads — the user does that from Settings). Refresh the
         // status when the selected model changes.
         Settings.shared.onWhisperModelChange = { [weak self] model in
-            self?.whisper.preloadIfDownloaded(model)
+            self?.whisper.select(model)
         }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
-        whisper.preloadIfDownloaded(Settings.shared.whisperModel)
+        whisper.select(Settings.shared.whisperModel)
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
@@ -315,8 +315,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             message = "Transcription model isn't downloaded yet — open Settings → General to download it."
         case .downloading(let p):
             message = "Downloading the transcription model… \(Int(p * 100))%"
-        case .preparing:
-            message = "Preparing the model for the Neural Engine (first time only)…"
+        case .preparing(let stage):
+            message = "Preparing the model (\(stage))…"
         case .failed(let e):
             message = "Transcription model failed to load: \(e)"
         case .ready:
