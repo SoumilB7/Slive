@@ -30,9 +30,28 @@ final class PermissionsModel: ObservableObject {
     // MARK: - Requests
 
     func requestMic() {
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
-            DispatchQueue.main.async { self?.refresh() }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined:
+            // First time — this shows the system prompt.
+            NSApp.activate(ignoringOtherApps: true)
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
+                DispatchQueue.main.async { self?.refresh() }
+            }
+        case .denied, .restricted:
+            // Already decided — macOS won't re-prompt, so open the pane directly.
+            openPane("Privacy_Microphone")
+        case .authorized:
+            break
+        @unknown default:
+            openPane("Privacy_Microphone")
         }
+    }
+
+    private func openPane(_ anchor: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+            NSWorkspace.shared.open(url)
+        }
+        refresh()
     }
 
     func requestInputMonitoring() {
