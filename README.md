@@ -65,17 +65,21 @@ cd Frontend
 `build.sh` compiles the Swift package, assembles `Flowy.app` (icon + Info.plist),
 signs it, and (for `install`) copies it to `/Applications`.
 
-### Permissions (two, both required)
+### Permissions
 
 macOS gates these behind its privacy system (TCC). You grant each **once** in the
 home window (or System Settings); the app shows live status with Grant buttons.
+Each takes effect after a relaunch (a "Relaunch" button is provided).
 
-| Permission | Why | Asked |
+| Permission | Why | Required? |
 |---|---|---|
-| **Input Monitoring** | Detect your push-to-talk key globally (keyboard tap) | On launch / from Settings |
-| **Microphone** | Record your voice | First recording |
+| **Input Monitoring** | Detect your push-to-talk key globally (keyboard tap) | Yes |
+| **Microphone** | Record your voice | Yes |
+| **Accessibility** | Auto-insert transcripts into the focused text field | Optional (only for auto-paste) |
 
-No Screen Recording, no Accessibility, no network access.
+When **Auto-insert** is on (Settings ▸ General) and a text field is focused, the
+transcript is pasted straight in; otherwise the copy box appears. Secure/password
+fields are never written to. No Screen Recording; network is localhost-only.
 
 ### Persistent permissions (do this once) 🔑
 
