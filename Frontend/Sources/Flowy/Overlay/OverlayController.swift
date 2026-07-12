@@ -12,7 +12,7 @@ final class OverlayController {
     init(model: AudioModel) {
         self.model = model
 
-        let size = NSSize(width: 180, height: 56)
+        let size = NSSize(width: 200, height: 66)
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
