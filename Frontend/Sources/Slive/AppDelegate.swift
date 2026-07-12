@@ -85,9 +85,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// ⌘Q / Quit: tear everything down so nothing survives the app. Stop
+    /// listening, cancel any in-flight transcription, release the on-device
+    /// model from memory, kill the Python backend (ours + any orphan on the
+    /// port), and end the background-activity assertion. `backend.stop()` is
+    /// synchronous (it `waitUntilExit`s on pkill), so the server is gone before
+    /// the process exits.
     func applicationWillTerminate(_ notification: Notification) {
         hotkey.stop()
-        backend.stop()   // shut the Python server down with the app
+        transcribeTask?.cancel(); transcribeTask = nil
+        whisper.shutdown()   // release the WhisperKit (Neural Engine) model
+        backend.stop()       // shut the Python server down with the app
+        if let token = activityToken {
+            ProcessInfo.processInfo.endActivity(token)
+            activityToken = nil
+        }
     }
 
     /// Clicking the Dock icon (no windows open) reopens the home window.
