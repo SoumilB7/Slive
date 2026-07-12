@@ -432,7 +432,7 @@ struct ModelPickerCard: View {
                 .fixedSize()
                 Text(WhisperModelChoice.all.first { $0.model == model }?.detail
                      ?? transcription.customModels.first { $0.id == model }
-                        .map { "Fine-tuned Balanced model · \($0.id)" }
+                        .map { "Fine-tuned \($0.baseModel) · \($0.id)" }
                      ?? "Custom model · \(model)")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.white.opacity(0.55))

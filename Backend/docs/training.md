@@ -104,11 +104,34 @@ The Slive Training page calls:
 
 ```text
 GET  /training/readiness
+GET  /training/models
 POST /training/start
 GET  /training/jobs/<id>
 ```
 
-The initial trainer uses a rank-4 LoRA on `openai/whisper-large-v3`, then merges
+The Training page now selects the source model and method explicitly. The backend
+catalog mirrors every standard model variant in the pinned WhisperKit version:
+`tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`,
+`large`, `large-v2`, and `large-v3`. Slive's optimized
+`large-v3-v20240930_626MB` choice maps to the original
+`openai/whisper-large-v3` trainable weights because the 626 MB artifact is a
+Core ML distribution, not a separate Hugging Face training checkpoint.
+
+Profiles are size-aware: small models use more adapter rank and shorter gradient
+accumulation; large models use lower learning rates, rank 4, longer accumulation,
+and more frequent KL checks. Samples are deterministically shuffled each epoch
+to avoid capture-order bias.
+
+The available SFT methods are:
+
+- **LoRA**: supported locally on Apple MPS and on CUDA.
+- **QLoRA**: NF4 4-bit base weights with double quantization and PEFT k-bit
+  preparation. This requires a supported CUDA + bitsandbytes host. Apple MPS is
+  not currently a supported bitsandbytes NF4 backend. QLoRA only quantizes the
+  training load; post-training reloads the chosen base in full precision, merges
+  the adapter, and then converts that merged checkpoint for WhisperKit.
+
+The trainer then merges
 the adapter into a standard Hugging Face checkpoint before conversion. The
 portable installed result is named:
 
@@ -126,6 +149,18 @@ Slive scans each custom model's `manifest.json`, validates its WhisperKit
 components, and includes the exact `balenced-ft-*` name in both Dictation and
 Continuous model selectors.
 
+### Is 50 samples enough?
+
+Fifty eligible samples plus five minutes of speech is the minimum safety gate,
+not a quality guarantee. It is suitable for an experimental, narrow adaptation
+when recordings cover the user's real distribution. A more credible first
+personal model is 100–300 corrected clips and roughly 20–60 minutes, with varied
+utterance lengths, vocabulary, pace, microphone distance, noise, and application
+contexts. Repeated near-duplicates increase the count without adding equivalent
+information. Low-data runs should keep the conservative size-specific profiles,
+watch KL drift, and be evaluated against held-out general and personal speech
+before replacing a stock model.
+
 ## Current boundaries
 
 Not implemented yet:
@@ -134,10 +169,8 @@ Not implemented yet:
 - Train/validation/test splitting.
 - Human verification UI or a `verified` schema field.
 - Hugging Face `Dataset` conversion.
-- Whisper processor/tokenization.
 - Full-parameter fine-tuning.
 - General replay data.
-- KL-divergence retention.
 - Automatic evaluation/release gates beyond conversion structure validation.
 - Resumable training after the backend or app is terminated.
 - Pinned `whisperkittools` installation automation.

@@ -7,16 +7,17 @@ dictation and assistant usage therefore remain lightweight.
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
+import random
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
+from flowy.training.models import DEFAULT_TRAINING_MODEL, get_training_model
 from flowy.training.store import LabelPolicy, TrainingStore, write_manifest
-
-BALANCED_BASE_MODEL = "openai/whisper-large-v3"
 
 
 @dataclass(frozen=True)
@@ -24,12 +25,29 @@ class PipelineConfig:
     model_name: str
     store_root: Path | None = None
     output_root: Path | None = None
-    base_model: str = BALANCED_BASE_MODEL
+    source_model: str = DEFAULT_TRAINING_MODEL
+    base_model: str = ""
+    method: str = "qlora"
     epochs: int = 3
     learning_rate: float = 1e-5
     lora_rank: int = 4
     batch_size: int = 1
     gradient_accumulation_steps: int = 8
+    kl_every: int = 4
+
+    @classmethod
+    def for_model(cls, *, model_name: str, source_model: str, **kwargs) -> "PipelineConfig":
+        profile = get_training_model(source_model)
+        return cls(
+            model_name=model_name,
+            source_model=profile.id,
+            base_model=profile.hf_model,
+            learning_rate=profile.learning_rate,
+            lora_rank=profile.lora_rank,
+            gradient_accumulation_steps=profile.gradient_accumulation_steps,
+            kl_every=profile.kl_every,
+            **kwargs,
+        )
 
 
 Progress = Callable[..., None]
@@ -84,21 +102,60 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
 def _training_imports():
     try:
         import torch
-        from peft import LoraConfig, PeftModel, get_peft_model
+        from peft import (
+            LoraConfig,
+            PeftModel,
+            get_peft_model,
+            prepare_model_for_kbit_training,
+        )
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
     except ImportError as exc:
         raise RuntimeError(
             "Whisper training dependencies are not installed. Run "
             "`uv sync --extra training` in Backend first."
         ) from exc
-    return torch, LoraConfig, PeftModel, get_peft_model, WhisperForConditionalGeneration, WhisperProcessor
+    return (
+        torch,
+        LoraConfig,
+        PeftModel,
+        get_peft_model,
+        prepare_model_for_kbit_training,
+        WhisperForConditionalGeneration,
+        WhisperProcessor,
+    )
 
 
 def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Progress) -> None:
-    torch, LoraConfig, _, get_peft_model, Model, Processor = _training_imports()
+    torch, LoraConfig, _, get_peft_model, prepare_kbit, Model, Processor = _training_imports()
     device = _device(torch)
     processor = Processor.from_pretrained(config.base_model, language="en", task="transcribe")
-    model = Model.from_pretrained(config.base_model)
+    if config.method == "qlora":
+        if device.type != "cuda":
+            raise RuntimeError(
+                "QLoRA needs a supported 4-bit backend. Apple MPS is not supported "
+                "by bitsandbytes NF4; choose LoRA on this Mac or run QLoRA on CUDA."
+            )
+        if importlib.util.find_spec("bitsandbytes") is None:
+            raise RuntimeError("QLoRA requires bitsandbytes on the CUDA host.")
+        try:
+            from transformers import BitsAndBytesConfig
+
+            quantization = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            model = Model.from_pretrained(
+                config.base_model,
+                quantization_config=quantization,
+                device_map={"": device.index or 0},
+            )
+        except (ImportError, OSError) as exc:
+            raise RuntimeError("QLoRA requires bitsandbytes on the CUDA host.") from exc
+        model = prepare_kbit(model)
+    else:
+        model = Model.from_pretrained(config.base_model).to(device)
     model.config.use_cache = False
     lora = LoraConfig(
         r=config.lora_rank,
@@ -107,7 +164,7 @@ def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Pr
         bias="none",
         target_modules=["q_proj", "v_proj"],
     )
-    model = get_peft_model(model, lora).to(device)
+    model = get_peft_model(model, lora)
     model.train()
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=config.learning_rate
@@ -115,9 +172,11 @@ def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Pr
     total_updates = max(1, config.epochs * len(samples))
     optimizer.zero_grad(set_to_none=True)
     update = 0
-    kl_every = 4   # KL costs an extra (no-grad) forward — sample it, don't pay it every step
+    kl_every = config.kl_every
     for epoch in range(config.epochs):
-        for index, sample in enumerate(samples):
+        epoch_samples = list(samples)
+        random.Random(17 + epoch).shuffle(epoch_samples)
+        for index, sample in enumerate(epoch_samples):
             audio, rate = _load_audio(sample.audio.path)
             batch = processor(
                 audio=audio,
@@ -129,7 +188,8 @@ def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Pr
             outputs = model(**inputs)
             loss = outputs.loss / config.gradient_accumulation_steps
             loss.backward()
-            if (index + 1) % config.gradient_accumulation_steps == 0 or index + 1 == len(samples):
+            if ((index + 1) % config.gradient_accumulation_steps == 0
+                    or index + 1 == len(epoch_samples)):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -164,7 +224,7 @@ def _train_lora(config: PipelineConfig, samples, adapter_dir: Path, progress: Pr
 
 
 def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) -> None:
-    _, _, PeftModel, _, Model, Processor = _training_imports()
+    _, _, PeftModel, _, _, Model, Processor = _training_imports()
     base = Model.from_pretrained(config.base_model)
     merged = PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()
     merged.save_pretrained(merged_dir, safe_serialization=True)
@@ -232,6 +292,8 @@ def _install_model(
         "id": config.model_name,
         "display_name": config.model_name,
         "base_model": config.base_model,
+        "source_model": config.source_model,
+        "training_method": config.method,
         "model_folder": "model",
         "tokenizer_folder": "tokenizer",
         "training_run": str(run_dir),

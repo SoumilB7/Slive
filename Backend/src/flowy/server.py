@@ -30,6 +30,7 @@ from flowy.assistant import list_models as assistant_list_models
 from flowy.assistant import transcribe_audio as assistant_transcribe_audio
 from flowy import local as local_models
 from flowy.training import jobs as training_jobs
+from flowy.training.models import training_models_payload
 from flowy.transcribe import transcribe
 
 HOST = "127.0.0.1"
@@ -307,6 +308,15 @@ async def local_delete_endpoint(req: LocalDeleteRequest) -> JSONResponse:
 # Whisper fine-tuning — readiness + one local background job
 # ---------------------------------------------------------------------------
 
+class TrainingStartRequest(BaseModel):
+    source_model: str
+    method: str = "qlora"
+
+
+@app.get("/training/models")
+async def training_models_endpoint() -> JSONResponse:
+    return JSONResponse(status_code=200, content={"models": training_models_payload()})
+
 
 @app.get("/training/readiness")
 async def training_readiness_endpoint() -> JSONResponse:
@@ -316,10 +326,10 @@ async def training_readiness_endpoint() -> JSONResponse:
 
 
 @app.post("/training/start")
-async def training_start_endpoint() -> JSONResponse:
+async def training_start_endpoint(req: TrainingStartRequest) -> JSONResponse:
     """Start LoRA training through merge, WhisperKit conversion, and install."""
     try:
-        job = training_jobs.start_job()
+        job = training_jobs.start_job(source_model=req.source_model, method=req.method)
     except ValueError as exc:
         return JSONResponse(status_code=409, content={"error": str(exc)})
     return JSONResponse(status_code=202, content={"job": job.to_dict()})

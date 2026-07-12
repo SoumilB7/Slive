@@ -7,12 +7,33 @@ import pytest
 
 from flowy.training import jobs
 from flowy.training.pipeline import PipelineConfig
+from flowy.training.models import get_training_model, training_models_payload
 
 
 def test_fine_tuned_model_name_is_picker_and_filesystem_safe() -> None:
     now = datetime(2026, 7, 18, 14, 5, 9, tzinfo=timezone.utc)
 
     assert jobs.fine_tuned_model_name(now) == "balenced-ft-20260718-140509"
+
+
+def test_catalog_covers_pinned_whisperkit_variants_and_optimized_alias() -> None:
+    ids = {item["id"] for item in training_models_payload()}
+    assert ids == {
+        "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+        "medium", "medium.en", "large", "large-v2", "large-v3",
+        "large-v3-v20240930_626MB",
+    }
+    assert get_training_model("large-v3-v20240930_626MB").hf_model == (
+        "openai/whisper-large-v3"
+    )
+
+
+def test_profiles_reduce_large_model_update_pressure() -> None:
+    tiny = get_training_model("tiny.en")
+    large = get_training_model("large-v3")
+    assert large.learning_rate < tiny.learning_rate
+    assert large.lora_rank < tiny.lora_rank
+    assert large.gradient_accumulation_steps > tiny.gradient_accumulation_steps
 
 
 def test_start_job_requires_fifty_eligible_samples(monkeypatch) -> None:

@@ -18,6 +18,9 @@ struct TrainingSettingsView: View {
     @State private var job: WhisperTrainingJob?
     @State private var jobError: String?
     @State private var checking = false
+    @State private var trainingModels: [WhisperTrainingModel] = []
+    @State private var selectedModel = "large-v3-v20240930_626MB"
+    @State private var selectedMethod = "qlora"
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -44,18 +47,28 @@ struct TrainingSettingsView: View {
         var id: String { title }
     }
 
-    private let stages: [StageSpec] = [
-        .init(keys: ["preparing", "dataset"], icon: "waveform",
-              title: "Dataset", detail: "your corrected dictations"),
-        .init(keys: ["training"], icon: "slider.horizontal.3",
-              title: "LoRA fine-tune", detail: "r=4 · q/v proj · 3 epochs"),
-        .init(keys: ["merging"], icon: "arrow.triangle.merge",
-              title: "Merge", detail: "adapter → full weights"),
-        .init(keys: ["converting"], icon: "cpu.fill",
-              title: "ANE convert", detail: "CoreML · WhisperKit"),
-        .init(keys: ["installing", "installed"], icon: "checkmark.seal.fill",
-              title: "Install", detail: "Dictation model picker"),
-    ]
+    /// Computed so the SFT node's technical line tracks the current selection
+    /// (each checkpoint size gets its own adapter profile from the backend).
+    private var stages: [StageSpec] {
+        let sft: String
+        if let model = selectedTrainingModel, let profile = model.profileSummary {
+            sft = "\(selectedMethod.uppercased()) · \(profile)"
+        } else {
+            sft = "LoRA / QLoRA · size-aware profile"
+        }
+        return [
+            .init(keys: ["preparing", "dataset"], icon: "waveform",
+                  title: "Dataset", detail: "your corrected dictations"),
+            .init(keys: ["training"], icon: "slider.horizontal.3",
+                  title: "SFT adapter", detail: sft),
+            .init(keys: ["merging"], icon: "arrow.triangle.merge",
+                  title: "Merge", detail: "adapter → full weights"),
+            .init(keys: ["converting"], icon: "cpu.fill",
+                  title: "ANE convert", detail: "CoreML · WhisperKit"),
+            .init(keys: ["installing", "installed"], icon: "checkmark.seal.fill",
+                  title: "Install", detail: "Dictation model picker"),
+        ]
+    }
 
     private enum StageState { case pending, active, done }
 
@@ -78,8 +91,10 @@ struct TrainingSettingsView: View {
         SettingsCard("FINE-TUNE PIPELINE", trailing: {
             if checking { ProgressView().controlSize(.small) }
         }) {
-            Text("Balanced Whisper learns your voice from the recordings you corrected on the Data page. Everything runs on this Mac — nothing leaves it.")
+            Text("Choose the WhisperKit model family that should learn from the recordings corrected on the Data page.")
                 .sliveCaption()
+
+            trainingChoices
 
             stageRail
                 .padding(.vertical, 6)
@@ -108,6 +123,64 @@ struct TrainingSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var selectedTrainingModel: WhisperTrainingModel? {
+        trainingModels.first { $0.id == selectedModel }
+    }
+
+    private var trainingChoices: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Text("Base model")
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(SliveTheme.textSecondary)
+                Picker("", selection: $selectedModel) {
+                    ForEach(trainingModels) { model in
+                        Text(model.label).tag(model.id)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+                .disabled(job?.isActive == true || trainingModels.isEmpty)
+
+                Text("Method")
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(SliveTheme.textSecondary)
+                Picker("", selection: $selectedMethod) {
+                    Text("QLoRA (4-bit CUDA)").tag("qlora")
+                    Text("LoRA (this Mac)").tag("lora")
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+                .disabled(job?.isActive == true)
+                Spacer(minLength: 0)
+            }
+            if let model = selectedTrainingModel {
+                HStack(spacing: 8) {
+                    Text(model.hfModel)
+                        .font(SliveTheme.mono(11))
+                        .foregroundStyle(SliveTheme.textPrimary)
+                    Text(model.multilingual ? "multilingual" : "English-only")
+                        .font(SliveTheme.font(9, .semibold))
+                        .foregroundStyle(SliveTheme.textSecondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(.white.opacity(0.07)))
+                    if let profile = model.profileSummary {
+                        Text(profile)
+                            .font(SliveTheme.mono(10))
+                            .foregroundStyle(SliveTheme.accent.opacity(0.9))
+                    }
+                    Spacer(minLength: 0)
+                }
+                Text(model.detail).sliveCaption()
+            }
+            if selectedMethod == "qlora" {
+                Text("QLoRA uses NF4 + double quantization during SFT and requires a CUDA/bitsandbytes training host. Apple MPS is not a supported NF4 backend; choose LoRA to train locally on this Mac.")
+                    .sliveCaption()
+            }
+        }
+        .padding(10)
+        .innerWell()
     }
 
     /// True while a run is actually progressing — the only time the rail
@@ -312,7 +385,7 @@ struct TrainingSettingsView: View {
                 HStack(spacing: 16) {
                     legendEntry(color: SliveTheme.accent, label: "CE loss",
                                 value: metrics.last.map { String(format: "%.3f", $0.loss) })
-                    legendEntry(color: .orange.opacity(0.9), label: "KL vs stock",
+                    legendEntry(color: .orange.opacity(0.9), label: "KL vs base",
                                 value: metrics.last(where: { $0.kl != nil })?.kl
                                     .map { String(format: "%.4f", $0) })
                     Spacer()
@@ -327,8 +400,8 @@ struct TrainingSettingsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     legendExplainer(color: SliveTheme.accent, title: "CE loss",
                                     text: "How closely the model matches your corrected transcripts — should fall as it learns your voice.")
-                    legendExplainer(color: .orange.opacity(0.9), title: "KL divergence vs stock Balanced",
-                                    text: "How far the adapted model drifts from the original, in nats per token. Staying low means it keeps its general accuracy while picking up your speech.")
+                    legendExplainer(color: .orange.opacity(0.9), title: "KL divergence vs the base model",
+                                    text: "How far the adapted model drifts from the checkpoint you picked, in nats per token. Staying low means it keeps its general accuracy while picking up your speech.")
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -369,7 +442,8 @@ struct TrainingSettingsView: View {
 
     private var outputCard: some View {
         SettingsCard("OUTPUT MODEL") {
-            infoRow("Base", "whisper-large-v3 (Balanced)")
+            infoRow("Base", job?.baseModel ?? selectedTrainingModel?.hfModel ?? "Loading models…")
+            infoRow("Method", (job?.method ?? selectedMethod).uppercased())
             infoRow("Name", job?.modelName ?? "balenced-ft-<date>-<time>")
             infoRow("Runs on", "Neural Engine — compiled .mlmodelc, same serving path as stock models")
             infoRow("Stored in", "~/Library/Application Support/Slive/Models/Custom")
@@ -423,8 +497,16 @@ struct TrainingSettingsView: View {
             do {
                 async let ready = TrainingClient().readiness()
                 async let latest = TrainingClient().latest()
+                async let models = TrainingClient().models()
                 readiness = try await ready
                 job = try await latest
+                trainingModels = try await models
+                // Keep the selection valid against whatever catalog the
+                // backend actually serves.
+                if !trainingModels.isEmpty, !trainingModels.contains(where: { $0.id == selectedModel }) {
+                    selectedModel = trainingModels[0].id
+                }
+                if let job, job.isActive { selectedModel = job.sourceModel; selectedMethod = job.method }
                 if let job, job.isActive { poll(job.id) }
                 if job?.state == "done" { transcription.refreshCustomModels() }
                 if job?.state == "error" { jobError = job?.error }
@@ -438,7 +520,8 @@ struct TrainingSettingsView: View {
         jobError = nil
         Task { @MainActor in
             do {
-                let started = try await TrainingClient().start()
+                let started = try await TrainingClient().start(
+                    sourceModel: selectedModel, method: selectedMethod)
                 job = started
                 poll(started.id)
             } catch {

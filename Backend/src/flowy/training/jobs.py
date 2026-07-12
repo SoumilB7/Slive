@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from flowy.training.pipeline import PipelineConfig, run_pipeline
+from flowy.training.models import DEFAULT_TRAINING_MODEL, get_training_model
 from flowy.training.store import LabelPolicy, TrainingStore
 
 MIN_TRAINING_SAMPLES = 50
@@ -29,6 +30,9 @@ def fine_tuned_model_name(now: datetime | None = None) -> str:
 class TrainingJob:
     id: str
     model_name: str
+    source_model: str
+    base_model: str
+    method: str
     state: str = "queued"  # queued | running | done | error
     stage: str = "queued"
     message: str = "Waiting to start"
@@ -72,10 +76,15 @@ def readiness(store_root: Path | str | None = None) -> dict:
 
 def start_job(
     *,
+    source_model: str = DEFAULT_TRAINING_MODEL,
+    method: str = "qlora",
     store_root: Path | str | None = None,
     output_root: Path | str | None = None,
     runner: Callable[[PipelineConfig, Callable[..., None]], Path] = run_pipeline,
 ) -> TrainingJob:
+    profile = get_training_model(source_model)
+    if method not in {"lora", "qlora"}:
+        raise ValueError(f"Unsupported training method: {method}")
     ready = readiness(store_root)
     if not ready["ready"]:
         raise ValueError(
@@ -93,12 +102,17 @@ def start_job(
         job = TrainingJob(
             id=str(uuid.uuid4()),
             model_name=fine_tuned_model_name(),
+            source_model=profile.id,
+            base_model=profile.hf_model,
+            method=method,
             eligible_samples=ready["eligible_count"],
         )
         _jobs[job.id] = job
 
-    config = PipelineConfig(
+    config = PipelineConfig.for_model(
         model_name=job.model_name,
+        source_model=profile.id,
+        method=method,
         store_root=Path(store_root).expanduser() if store_root else None,
         output_root=Path(output_root).expanduser() if output_root else None,
     )
