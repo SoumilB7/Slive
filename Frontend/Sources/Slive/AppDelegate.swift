@@ -39,6 +39,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chatActive = false
     private var pendingTurn: (question: String, answer: String)?
 
+    /// How long the mic stays open AFTER the key is released. Releasing the key
+    /// usually overlaps the last word — stopping instantly clips its tail and
+    /// the transcript loses the final word or two. A short grace captures it.
+    private let releaseTail: TimeInterval = 0.35
+    /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
+    private var pendingStop: DispatchWorkItem?
+
     /// How long a result box stays on screen before collapsing.
     private let resultDisplayDuration: TimeInterval = 6.0
     /// Assistant answers stay up longer — you need time to read them (dismiss
@@ -163,6 +170,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Hold-to-talk flow
 
     private func keyDown(_ action: HotkeyAction) {
+        // A delayed stop may still be pending from the previous release — flush
+        // it now (stop + hand off to transcription immediately) so the new hold
+        // starts from a clean state instead of colliding with a live session.
+        flushPendingStop()
         // Arm: recording begins only if the key is still held after the delay.
         armWorkItem?.cancel()
         currentAction = action
@@ -183,6 +194,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             armWorkItem = nil
             return
         }
+        // Don't stop the instant the key lifts — keep listening for a beat so
+        // the tail of the last word makes it into the audio. The overlay keeps
+        // its listening pill for that beat; the stop then proceeds normally.
+        pendingStop?.cancel()
+        let action = currentAction
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingStop = nil
+            if action == .stream { self.stopLiveDictation() }
+            else { self.stopRecording() }
+        }
+        pendingStop = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + releaseTail, execute: work)
+    }
+
+    /// Run the pending delayed stop right now (if any) — used when a new hold
+    /// begins inside the release-tail window, so sessions never overlap.
+    private func flushPendingStop() {
+        guard pendingStop != nil else { return }
+        pendingStop?.cancel()
+        pendingStop = nil
         if currentAction == .stream { stopLiveDictation() }
         else { stopRecording() }
     }
