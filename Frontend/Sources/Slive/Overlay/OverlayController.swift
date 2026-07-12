@@ -20,8 +20,12 @@ final class OverlayController {
             defer: false
         )
         panel.isFloatingPanel = true
-        // Above everything — including fullscreen apps and other floating HUDs.
-        panel.level = .screenSaver
+        // Above EVERYTHING, including other apps' full-screen spaces. `.screenSaver`
+        // (level 1000) isn't reliably above a full-screen app's own window layers
+        // on recent macOS; `CGShieldingWindowLevel()` is the level Apple uses for
+        // overlays that must sit on top of full-screen content (screen dimmers /
+        // capture overlays use it).
+        panel.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false                      // shadow is drawn in SwiftUI
