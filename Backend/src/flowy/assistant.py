@@ -83,7 +83,8 @@ async def answer(
             )
         if provider == "openai":
             return await _answer_openai(
-                client, text, model, api_key, system_prompt, max_tokens
+                client, text, model, api_key, system_prompt, max_tokens,
+                token_field="max_completion_tokens",
             )
         if provider == "gemini":
             return await _answer_gemini(
@@ -100,6 +101,7 @@ async def answer(
                 system_prompt,
                 max_tokens,
                 url=f"{base_url.rstrip('/')}/chat/completions",
+                token_field="max_tokens",
             )
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -133,13 +135,15 @@ async def answer_stream(
         elif provider in ("openai", "openai_compatible"):
             if provider == "openai_compatible" and not base_url:
                 raise ValueError("base_url is required for openai_compatible")
-            url = (
-                "https://api.openai.com/v1/chat/completions"
-                if provider == "openai"
-                else f"{base_url.rstrip('/')}/chat/completions"
-            )
+            if provider == "openai":
+                url = "https://api.openai.com/v1/chat/completions"
+                token_field = "max_completion_tokens"
+            else:
+                url = f"{base_url.rstrip('/')}/chat/completions"
+                token_field = "max_tokens"
             async for d in _stream_openai(
-                client, text, model, api_key, system_prompt, max_tokens, url
+                client, text, model, api_key, system_prompt, max_tokens, url,
+                token_field=token_field,
             ):
                 yield d
         elif provider == "gemini":
@@ -215,6 +219,7 @@ async def _stream_openai(
     system_prompt: str | None,
     max_tokens: int,
     url: str,
+    token_field: str = "max_completion_tokens",
 ) -> AsyncIterator[str]:
     messages: list[dict[str, str]] = []
     if system_prompt:
@@ -222,7 +227,7 @@ async def _stream_openai(
     messages.append({"role": "user", "content": text})
     body: dict[str, Any] = {
         "model": model,
-        "max_tokens": max_tokens,
+        token_field: max_tokens,
         "stream": True,
         "messages": messages,
     }
@@ -384,11 +389,13 @@ async def _answer_openai(
     system_prompt: str | None,
     max_tokens: int,
     url: str = "https://api.openai.com/v1/chat/completions",
+    token_field: str = "max_completion_tokens",
 ) -> str:
     """Call an OpenAI-style chat completions API and return the reply text.
 
-    Shared by the "openai" and "openai_compatible" providers; the latter only
-    differs by ``url``.
+    Shared by the "openai" and "openai_compatible" providers. Native OpenAI
+    (and o-series/GPT-5) require ``max_completion_tokens``; third-party
+    OpenAI-compatible servers still expect ``max_tokens`` — hence ``token_field``.
     """
     messages: list[dict[str, str]] = []
     if system_prompt:
@@ -396,7 +403,7 @@ async def _answer_openai(
     messages.append({"role": "user", "content": text})
     body: dict[str, Any] = {
         "model": model,
-        "max_tokens": max_tokens,
+        token_field: max_tokens,
         "messages": messages,
     }
     response = await client.post(
