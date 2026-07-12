@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorder()
     private let hotkey = HotkeyMonitor()
     private let settingsWindow = SettingsWindowController()
-    private let transcriber = TranscriptionClient()
+    private let whisper = WhisperEngine()   // on-device STT (Neural Engine)
     private let assistant = AssistantClient()
     private let backend = BackendManager()
 
@@ -65,6 +65,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Settings.shared.onAssistantHotkeyChange = { [weak self] hk in self?.hotkey.assistantHotkey = hk }
         hotkey.hotkey = Settings.shared.hotkey
         hotkey.assistantHotkey = Settings.shared.assistantHotkey
+
+        // Preload the on-device transcription model (downloads once) so the first
+        // dictation is instant; reload it when the user changes the model.
+        Settings.shared.onWhisperModelChange = { [weak self] model in
+            Task { await self?.whisper.load(model) }
+        }
+        Task { await whisper.load(Settings.shared.whisperModel) }
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
@@ -173,61 +180,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the overlay up and show a loading state while we save + transcribe.
         model.beginTranscribing()
 
-        let transcriber = self.transcriber
-        // Captured on the main thread; sent as vocabulary hints to the backend.
-        let hotwords = Settings.shared.hotwords
-        let prompt = Settings.shared.contextPrompt
         // Which shortcut started this recording decides what we do with the text.
         let action = currentAction
+        let whisperModel = Settings.shared.whisperModel
 
         transcribeTask?.cancel()
         // Strong `self` capture: the task always returns (breaking any cycle),
         // and a new recording cancels it so a stale UI update never lands.
         transcribeTask = Task {
-            // Send the recorded WAV straight to the backend. Skipping MP3
-            // encoding removes a step (and a subprocess) from the latency path;
-            // the backend resamples internally. Deleted right after — never
-            // persisted.
-            defer { try? FileManager.default.removeItem(at: wavURL) }
+            defer { try? FileManager.default.removeItem(at: wavURL) }   // never persisted
             NSLog("Slive: captured \(String(format: "%.1f", duration))s of audio")
-
             if Task.isCancelled { return }
 
-            // 2. Make sure the backend is actually up — start it and wait if it
-            //    isn't — so a not-running server never yields an empty result.
-            //    (The overlay keeps its loading dots during the wait.)
-            let up = await self.backend.ensureHealthy()
-            if Task.isCancelled { return }
-            guard up else {
-                await MainActor.run { self.showBackendError() }
-                return
-            }
-
-            // 3. Transcribe. If it fails (server may have died mid-flight), bring
-            //    the backend back and retry once before surfacing an error.
+            // 1. Transcribe ON-DEVICE with WhisperKit (Neural Engine) — no backend
+            //    needed for STT. The model is preloaded at launch.
             var transcript: String?
             do {
-                transcript = try await transcriber.transcribe(wavURL, hotwords: hotwords, prompt: prompt)
+                transcript = try await whisper.transcribe(wavURL, model: whisperModel)
             } catch {
-                NSLog("Slive: transcription failed — \(error); retrying after ensuring backend")
-                if Task.isCancelled { return }
-                if await self.backend.ensureHealthy() {
-                    transcript = try? await transcriber.transcribe(wavURL, hotwords: hotwords, prompt: prompt)
-                }
+                NSLog("Slive: WhisperKit transcription failed — \(error)")
             }
             if Task.isCancelled { return }
             guard let text = transcript else {
-                await MainActor.run { self.showBackendError() }
+                await MainActor.run { self.finishTranscription(text: nil) }
                 return
             }
 
-            // 4. Route the transcript: plain dictation types/shows it; the
-            //    assistant shortcut sends it to the LLM and shows the answer.
+            // 2. Route the transcript: plain dictation types/shows it; the
+            //    assistant shortcut needs the (always-on) Python backend to reach
+            //    the LLM, so ensure it's up first, then stream the answer.
             switch action {
             case .dictate:
                 await MainActor.run { self.finishTranscription(text: text) }
             case .assist:
-                await self.runAssistant(on: text)
+                if await self.backend.ensureHealthy() {
+                    if Task.isCancelled { return }
+                    await self.runAssistant(on: text)
+                } else {
+                    await MainActor.run { self.showBackendError() }
+                }
             }
         }
     }
