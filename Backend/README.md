@@ -88,3 +88,12 @@ model (~75 MB from Hugging Face) once; after that transcription is fully offline
 
 `transcribe.py` hides the engine behind a single `transcribe()` function, so a
 different local model (e.g. Gemma 4 E2B) can slot in without changing `server.py`.
+
+---
+
+## Whisper training foundation
+
+The first hardware-neutral training-data ingestion layer is documented in
+[`docs/training.md`](docs/training.md). `flowy-train` can inspect Slive's existing
+Application Support training store and build a validated JSONL manifest without
+loading a model or modifying the captured source data.
