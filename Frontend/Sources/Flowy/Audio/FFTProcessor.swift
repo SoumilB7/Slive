@@ -26,12 +26,14 @@ final class FFTProcessor {
 
     // Level-mapping dials for bar liveliness (see `process`). `gain` is raw
     // sensitivity; `shape` (<1) expands the low end so normal speech reads
-    // ~30–40% instead of hugging zero.
+    // ~30–40%. `ceiling` soft-caps the top: bars approach ~55% of the pill's
+    // height even at loud input, instead of slamming the ceiling.
     private let gain: Float = 22000
     private let logRange: Float = 3.4
     private let shape: Float = 0.6
+    private let ceiling: Float = 0.6
 
-    init(fftSize: Int = 1024, bandCount: Int = 28, sampleRate: Double = 48_000) {
+    init(fftSize: Int = 1024, bandCount: Int = 20, sampleRate: Double = 48_000) {
         self.fftSize = fftSize
         self.bandCount = bandCount
         self.log2n = vDSP_Length(log2(Float(fftSize)))
@@ -111,8 +113,10 @@ final class FFTProcessor {
             for bin in range.0..<range.1 { sum += magnitudes[bin] }
             let mean = sum / Float(max(1, range.1 - range.0))
             // Log (dB-like) mapping, not linear — lifts quiet/normal speech.
-            let compressed = min(1, log10(1 + mean * gain) / logRange)
-            bands[i] = pow(compressed, shape)
+            let raw = pow(min(1, log10(1 + mean * gain) / logRange), shape)
+            // Soft-saturate toward `ceiling`: loud input approaches ~55% of the
+            // pill height rather than clipping the top.
+            bands[i] = ceiling * tanhf(raw / ceiling)
         }
         return bands
     }

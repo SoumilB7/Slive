@@ -33,7 +33,7 @@ final class AudioModel: ObservableObject {
     private let attack: Float = 0.55
     private let decay: Float = 0.18
 
-    init(bandCount: Int = 28) {
+    init(bandCount: Int = 20) {
         self.bandCount = bandCount
         self.levels = [Float](repeating: 0, count: bandCount)
         self.targetLevels = [Float](repeating: 0, count: bandCount)
