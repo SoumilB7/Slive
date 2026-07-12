@@ -92,8 +92,8 @@ final class AudioModel: ObservableObject {
     func pushLevels(_ bands: [Float], rms: Float) {
         guard bands.count == bandCount else { return }
         targetLevels = bands
-        // Drives the wave amplitude — bump so it grows tall and reactive.
-        targetGlow = min(1, rms * 12)
+        // Drives the wave amplitude — stronger so normal audible speech reads high.
+        targetGlow = min(1, rms * 18)
     }
 
     // MARK: - 60 fps easing

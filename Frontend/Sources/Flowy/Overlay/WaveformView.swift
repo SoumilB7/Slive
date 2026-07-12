@@ -28,11 +28,11 @@ struct WaveformView: View {
         }
     }
 
-    /// Off-matte blue: low saturation (flat, not neon), gently brighter louder.
+    /// Off-blue, brighter now — still calm, but clearly lit.
     private func color(level: CGFloat) -> Color {
         Color(hue: 0.58,
-              saturation: 0.42,
-              brightness: 0.60 + 0.30 * Double(level),
-              opacity: 0.55 + 0.40 * Double(level))
+              saturation: 0.45,
+              brightness: 0.85 + 0.15 * Double(level),
+              opacity: 0.75 + 0.25 * Double(level))
     }
 }
