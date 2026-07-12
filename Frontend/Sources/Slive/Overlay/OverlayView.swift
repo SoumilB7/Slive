@@ -97,11 +97,11 @@ struct OverlayView: View {
     private var isListening: Bool {
         if case .listening = model.phase { return true }; return false
     }
-    /// Dictation listen (waveform pill) vs. assistant listen (black-hole pill).
-    // Live streaming dictation reuses the exact same waveform pill as normal
-    // dictation — visually identical; the text just types straight into the field.
-    private var isDictationListening: Bool { isListening && !model.assistantListening }
+    /// Dictation listen (waveform pill) vs. assistant listen (black-hole pill) vs.
+    /// continuous listen (pen-scribble pill).
+    private var isDictationListening: Bool { isListening && !model.assistantListening && !model.liveDictating }
     private var isAssistantListening: Bool { isListening && model.assistantListening }
+    private var isLiveDictating: Bool { isListening && model.liveDictating }
     private var isTranscribing: Bool {
         if case .transcribing = model.phase { return true }; return false
     }
@@ -149,6 +149,10 @@ struct OverlayView: View {
                 .opacity(isAssistantListening ? 1 : 0)
                 .scaleEffect(isAssistantListening ? 1 : 0.9)
 
+            continuousPill
+                .opacity(isLiveDictating ? 1 : 0)
+                .scaleEffect(isLiveDictating ? 1 : 0.9)
+
             transcribingPill(active: isTranscribing)
                 .opacity(isTranscribing ? 1 : 0)
                 .scaleEffect(isTranscribing ? 1 : 0.9)
@@ -175,6 +179,19 @@ struct OverlayView: View {
     private var listeningPill: some View {
         WaveformView(levels: model.levels)
             .frame(width: 48, height: 18)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
+    }
+
+    // MARK: - Continuous listening (pen scribbling a line)
+
+    private var continuousPill: some View {
+        PenScribbleView(active: isLiveDictating)
+            .frame(width: 60, height: 20)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
