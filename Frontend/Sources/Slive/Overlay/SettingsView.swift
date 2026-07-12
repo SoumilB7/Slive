@@ -177,7 +177,7 @@ struct SettingsView: View {
     /// dictation's text is written (so it never adds latency to what you type).
     @ViewBuilder private var speakingPaceCard: some View {
         let hasData = stats.sampleCount > 0
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 sectionTitle("SPEAKING PACE")
                 Spacer()
@@ -189,78 +189,43 @@ struct SettingsView: View {
                 }
             }
 
-            if hasData {
-                HStack(alignment: .lastTextBaseline, spacing: 6) {
-                    Text("\(Int(stats.lastWPM.rounded()))")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
+            VStack(spacing: 4) {
+                SpeedometerView(value: stats.lastWPM, accent: accent)
+                    .frame(maxWidth: 280)
+                    .frame(height: 130)
+
+                HStack(alignment: .lastTextBaseline, spacing: 5) {
+                    Text(hasData ? "\(Int(stats.lastWPM.rounded()))" : "—")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .contentTransition(.numericText())
                     Text("WPM")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
                         .foregroundStyle(accent)
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("avg \(Int(stats.averageWPM.rounded()))  ·  best \(Int(stats.bestWPM.rounded()))")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.72))
-                        Text("\(stats.sampleCount) dictation\(stats.sampleCount == 1 ? "" : "s")")
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.4))
-                    }
                 }
-                paceScale(value: stats.lastWPM)
-            } else {
-                Text("Speak to measure your pace — your words-per-minute appears here after each dictation.")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .fixedSize(horizontal: false, vertical: true)
-                paceScale(value: 0).opacity(0.4)
+
+                if hasData {
+                    Text("Faster than \(SpeakingStats.percentile(forWPM: stats.lastWPM))% of speakers")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.8))
+                    Text("avg \(Int(stats.averageWPM.rounded())) · best \(Int(stats.bestWPM.rounded())) · \(stats.sampleCount) dictation\(stats.sampleCount == 1 ? "" : "s")")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.45))
+                } else {
+                    Text("Speak to measure your pace — your words-per-minute appears here after each dictation.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
             }
+            .frame(maxWidth: .infinity)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(card)
-        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: stats.lastWPM)
-    }
-
-    /// A horizontal WPM gauge: a cool→warm track with a marker at `value`.
-    /// Range 60–200 covers slow to rapid conversational speech.
-    private func paceScale(value: Double) -> some View {
-        let lo = 60.0, hi = 200.0
-        let clamped = min(max(value, lo), hi)
-        let frac = (clamped - lo) / (hi - lo)
-        return VStack(spacing: 5) {
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(LinearGradient(
-                            colors: [Color(hue: 0.55, saturation: 0.45, brightness: 0.72),
-                                     accent,
-                                     Color(hue: 0.12, saturation: 0.78, brightness: 0.92)],
-                            startPoint: .leading, endPoint: .trailing))
-                        .frame(height: 6)
-                        .opacity(0.7)
-                    if value > 0 {
-                        Circle()
-                            .fill(.white)
-                            .frame(width: 13, height: 13)
-                            .overlay(Circle().strokeBorder(accent, lineWidth: 2.5))
-                            .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-                            .offset(x: frac * max(0, w - 13))
-                    }
-                }
-                .frame(height: 13)
-            }
-            .frame(height: 13)
-            HStack {
-                Text("60").frame(maxWidth: .infinity, alignment: .leading)
-                Text("natural pace").frame(maxWidth: .infinity, alignment: .center)
-                Text("200+").frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            .font(.system(size: 9, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.35))
-        }
+        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: stats.lastWPM)
     }
 
     // MARK: - Key picker

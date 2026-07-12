@@ -58,6 +58,18 @@ final class SpeakingStats: ObservableObject {
         persist()
     }
 
+    /// Where a given pace sits among speakers, as a percentile (1…99). Models
+    /// conversational speaking rate as a normal distribution (mean ~130 WPM,
+    /// SD ~30 — typical for English speech), so e.g. 160 WPM ≈ 84th percentile.
+    /// Returns "you speak faster than N% of people".
+    static func percentile(forWPM wpm: Double) -> Int {
+        guard wpm > 0 else { return 0 }
+        let mean = 130.0, sd = 30.0
+        let z = (wpm - mean) / (sd * 2.0.squareRoot())
+        let cdf = 0.5 * (1 + erf(z))               // normal CDF
+        return min(99, max(1, Int((cdf * 100).rounded())))
+    }
+
     private func persist() {
         let d = UserDefaults.standard
         d.set(lastWPM, forKey: Keys.last)
