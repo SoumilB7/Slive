@@ -48,6 +48,33 @@ def load_model() -> None:
     _get_model()
 
 
+def warm_up() -> None:
+    """Run one throwaway inference so the first REAL dictation is instant.
+
+    Loading the model into memory isn't enough: ctranslate2 lazily initialises
+    its compute kernels (and PyAV/threadpool spin up) on the first actual
+    ``transcribe`` call, adding a one-off delay of a second or more. Feeding a
+    short buffer of silence through the full encoder+decoder here pays that cost
+    at startup instead of on the user's first hold-to-talk.
+    """
+    import numpy as np
+
+    model = _get_model()
+    lang = "en" if MODEL_SIZE.endswith(".en") else None
+    # 1s of silence @ 16 kHz. VAD off so the decoder actually runs (VAD would
+    # skip pure silence and leave the kernels cold).
+    silence = np.zeros(16000, dtype=np.float32)
+    segments, _info = model.transcribe(
+        silence,
+        beam_size=1,
+        language=lang,
+        vad_filter=False,
+        condition_on_previous_text=False,
+    )
+    for _ in segments:  # drain the generator so inference truly executes
+        pass
+
+
 def transcribe(
     audio_bytes: bytes,
     hotwords: str | None = None,

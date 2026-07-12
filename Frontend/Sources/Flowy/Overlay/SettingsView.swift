@@ -74,7 +74,7 @@ struct SettingsView: View {
                 Text("Flowy")
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                Text("Hold a key. Speak. It's saved.")
+                Text("Hold a key. Speak. It's typed.")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.55))
             }
@@ -102,7 +102,7 @@ struct SettingsView: View {
     private var steps: some View {
         HStack(spacing: 10) {
             step(icon: "hand.point.up.left.fill",
-                 title: "Hold", detail: settings.hotkey.title)
+                 title: "Hold", detail: settings.hotkey.label)
             arrow
             step(icon: "waveform", title: "Speak", detail: "Live waveform")
             arrow
@@ -141,16 +141,7 @@ struct SettingsView: View {
     private var keyPicker: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("PUSH-TO-TALK KEY")
-            Picker("", selection: $settings.hotkey) {
-                ForEach(HotkeyChoice.allCases) { choice in
-                    Text(choice.title).tag(choice)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            Text(settings.hotkey.subtitle)
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
+            HotkeyRecorderView(accent: accent)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

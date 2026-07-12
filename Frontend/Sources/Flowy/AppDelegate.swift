@@ -53,8 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Settings window + live hotkey switching.
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
-        Settings.shared.onHotkeyChange = { [weak self] choice in self?.hotkey.choice = choice }
-        hotkey.choice = Settings.shared.hotkey
+        Settings.shared.onHotkeyChange = { [weak self] hk in self?.hotkey.hotkey = hk }
+        hotkey.hotkey = Settings.shared.hotkey
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
