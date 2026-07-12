@@ -48,6 +48,13 @@ final class AudioModel: ObservableObject {
         startTimerIfNeeded()
     }
 
+    /// Stop showing the pill: bars ease down and it fades out. No confirmation.
+    func finishListening() {
+        phase = .idle
+        targetLevels = [Float](repeating: 0, count: bandCount)
+        targetGlow = 0
+    }
+
     func beginSaving() {
         phase = .saving
         targetLevels = [Float](repeating: 0, count: bandCount)

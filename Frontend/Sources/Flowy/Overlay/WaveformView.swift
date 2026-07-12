@@ -25,9 +25,9 @@ struct WaveformView: View {
                 return (Path(roundedRect: rect, cornerRadius: barWidth / 2), level)
             }
 
-            // Glow pass — blurred, brighter, drawn behind.
+            // Soft glow pass — subtle, drawn behind.
             ctx.drawLayer { layer in
-                layer.addFilter(.blur(radius: 6))
+                layer.addFilter(.blur(radius: 3.5))
                 for i in 0..<n {
                     let (path, level) = barPath(i)
                     layer.fill(path, with: .color(color(at: i, count: n, level: level, glow: true)))
@@ -47,11 +47,11 @@ struct WaveformView: View {
     private func color(at i: Int, count: Int, level: CGFloat, glow: Bool) -> Color {
         let t = count > 1 ? Double(i) / Double(count - 1) : 0
         let hue = 0.60 + 0.32 * t
-        let sat = 0.68
-        let bri = 0.78 + 0.22 * Double(level)
+        let sat = 0.60
+        let bri = 0.80 + 0.20 * Double(level)
         let opacity = glow
-            ? 0.20 + 0.30 * Double(level)
-            : 0.55 + 0.45 * Double(level)
+            ? 0.10 + 0.18 * Double(level)
+            : 0.42 + 0.42 * Double(level)
         return Color(hue: hue, saturation: sat, brightness: bri, opacity: opacity)
     }
 }
