@@ -1,0 +1,19 @@
+# Python / Backend
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+outputs/
+
+# Swift / Frontend
+Frontend/.build/
+Frontend/build/
+*.xcodeproj
+
+# Recorded audio (user data — keep the folder, ignore contents)
+Audios/*.mp3
+Audios/*.wav
+
+# macOS
+.DS_Store
