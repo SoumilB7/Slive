@@ -37,6 +37,7 @@ fi
 # relaunches. Falls back to ad-hoc otherwise (grants reset on each rebuild).
 # To create the identity, see: Frontend/setup-signing.sh
 SIGN_ID="Flowy Local Signing"
+ENTITLEMENTS="Flowy.entitlements"   # audio-input entitlement (mic under Hardened Runtime)
 # Detect by certificate presence, not `find-identity -p codesigning` — the
 # latter hides untrusted self-signed certs even though codesign can use them.
 if security find-certificate -c "$SIGN_ID" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
@@ -46,9 +47,9 @@ else
     SIGN_ARGS=(--sign -)
     echo "▸ Signing (ad-hoc — grants reset on rebuild; run setup-signing.sh for persistence)"
 fi
-# --options runtime = Hardened Runtime: blocks code injection / debugger attach
-# into Flowy, so no other local process can hijack its permissions.
-codesign --force --deep --options runtime "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
+# --options runtime = Hardened Runtime (blocks code injection). The entitlements
+# file grants microphone access under that runtime — without it the mic is silent.
+codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
     echo "  (codesign warning ignored)"
 }
 
@@ -64,8 +65,8 @@ if [[ "${1:-}" == "install" ]]; then
     sleep 0.3
     rm -rf "$DEST"
     cp -R "$APP" "$DEST"
-    # Re-sign the installed copy with the same identity + Hardened Runtime.
-    codesign --force --deep --options runtime "${SIGN_ARGS[@]}" "$DEST" >/dev/null 2>&1 || true
+    # Re-sign the installed copy with the same identity + runtime + entitlements.
+    codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN_ARGS[@]}" "$DEST" >/dev/null 2>&1 || true
     # Remove the throwaway build/ bundle entirely so it can never appear as a
     # duplicate app. (LaunchServices re-discovers any .app bundle on disk, so
     # unregistering isn't enough — the bundle itself must go.)

@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var recordStart: Date?
     private var armWorkItem: DispatchWorkItem?
+    private var activityToken: NSObjectProtocol?   // holds off App Nap
 
     /// How long you must hold the key before recording begins. Brief taps under
     /// this do nothing. Tune to taste.
@@ -20,6 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)   // normal app: Dock icon + Cmd-Tab
+
+        // Keep the global hotkey + overlay alive when Flowy has no open window
+        // and sits in the background — otherwise App Nap throttles the event tap.
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .automaticTerminationDisabled],
+            reason: "Global push-to-talk listener"
+        )
 
         setupMainMenu()
         setupMenuBar()
