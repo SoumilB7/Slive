@@ -23,9 +23,13 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BIN" "$CONTENTS/MacOS/Flowy"
 
-# Bake the absolute Audios path into Info.plist so the app knows where to save.
+# Bake absolute paths into Info.plist: where to save recordings, and the
+# Backend/ dir whose .venv runs the transcription server (auto-launched by the app).
 mkdir -p "$AUDIOS_DIR"
-sed "s|__AUDIOS_DIR__|$AUDIOS_DIR|g" Resources/Info.plist.template > "$CONTENTS/Info.plist"
+BACKEND_DIR="$REPO_DIR/Backend"
+sed -e "s|__AUDIOS_DIR__|$AUDIOS_DIR|g" \
+    -e "s|__BACKEND_DIR__|$BACKEND_DIR|g" \
+    Resources/Info.plist.template > "$CONTENTS/Info.plist"
 
 # App icon.
 if [[ -f Resources/AppIcon.icns ]]; then

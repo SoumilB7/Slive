@@ -32,5 +32,8 @@
     <!-- Baked at build time: absolute path to the repo's /Audios folder. -->
     <key>FlowyAudiosPath</key>
     <string>__AUDIOS_DIR__</string>
+    <!-- Baked at build time: the Backend/ dir whose .venv runs the STT server. -->
+    <key>FlowyBackendDir</key>
+    <string>__BACKEND_DIR__</string>
 </dict>
 </plist>
