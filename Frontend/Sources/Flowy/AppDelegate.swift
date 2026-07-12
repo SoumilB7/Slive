@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Settings window + live hotkey switching.
         settingsWindow.audiosPath = audiosDirectory().path
         settingsWindow.onOpenAudios = { [weak self] in self?.openAudios() }
+        settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         Settings.shared.onHotkeyChange = { [weak self] choice in self?.hotkey.choice = choice }
         hotkey.choice = Settings.shared.hotkey
 
@@ -248,6 +249,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dir = audiosDirectory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         NSWorkspace.shared.open(dir)
+    }
+
+    /// Quit and reopen Flowy. Required after granting Input Monitoring, because
+    /// macOS caches that permission until the app is relaunched.
+    @objc private func relaunchApp() {
+        let path = Bundle.main.bundlePath
+        let pid = ProcessInfo.processInfo.processIdentifier
+        // Wait for THIS process to exit, then reopen the app — no double instance.
+        let script = "while /bin/kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"\(path)\""
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", script]
+        try? task.run()
+        NSApp.terminate(nil)
     }
 }
 
