@@ -38,6 +38,7 @@ struct TrainingSettingsView: View {
             }
             dataCard
         }
+        .onAppear { store.loadSamplesIfNeeded() }   // lazy index parse
         .onDisappear { player.stop() }
     }
 

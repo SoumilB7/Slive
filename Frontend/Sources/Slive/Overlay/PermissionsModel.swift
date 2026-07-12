@@ -15,6 +15,7 @@ final class PermissionsModel: ObservableObject {
     func startWatching() {
         refresh()
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.refresh() }
+        t.tolerance = 0.3   // let macOS coalesce the wakeup (battery)
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
