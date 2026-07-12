@@ -35,9 +35,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// early with the ✕ button).
     private let assistantDisplayDuration: TimeInterval = 15.0
 
-    /// How long you must hold the key before recording begins. Brief taps under
-    /// this do nothing. Tune to taste.
-    private let holdActivationDelay: TimeInterval = 0.2
 
     // MARK: - Lifecycle
 
@@ -128,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.beginRecording()
         }
         armWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + holdActivationDelay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Settings.shared.holdActivationDelay, execute: work)
     }
 
     private func keyUp() {

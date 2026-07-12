@@ -276,6 +276,26 @@ struct SettingsView: View {
             }
             .toggleStyle(.switch)
             .tint(accent)
+
+            Divider().overlay(.white.opacity(0.08))
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Hold delay")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                    Spacer()
+                    Text(String(format: "%.2fs", settings.holdActivationDelay))
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(accent)
+                }
+                Slider(value: $settings.holdActivationDelay, in: 0...0.6, step: 0.05)
+                    .tint(accent)
+                Text("How long to hold your key before recording starts. Shorter = snappier; longer avoids accidental taps.")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
