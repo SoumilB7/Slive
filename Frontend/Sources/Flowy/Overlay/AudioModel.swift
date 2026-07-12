@@ -28,9 +28,8 @@ final class AudioModel: ObservableObject {
     private var timer: Timer?
     private var startDate: Date?
 
-    // Visualiser shape dials.
-    private let waveCeiling: Float = 0.82   // max bar height (fraction of pill)
-    private let waveDensity = 0.95          // higher = more sine humps across the pill
+    // Visualiser dial — the tallest the centre bar can reach.
+    private let waveCeiling: Float = 0.92
 
     // Fast rise, gentle fall — the classic "lively meter" feel.
     private let attack: Float = 0.55
@@ -92,8 +91,8 @@ final class AudioModel: ObservableObject {
     func pushLevels(_ bands: [Float], rms: Float) {
         guard bands.count == bandCount else { return }
         targetLevels = bands
-        // Drives the wave amplitude — normal speech should reach a good height.
-        targetGlow = min(1, rms * 9)
+        // Drives the wave amplitude — bump so it grows tall and reactive.
+        targetGlow = min(1, rms * 12)
     }
 
     // MARK: - 60 fps easing
@@ -118,16 +117,18 @@ final class AudioModel: ObservableObject {
         glow = glow + (targetGlow - glow) * gRate
 
         let listening = phase == .listening
-        // Soft-capped amplitude; grows with your voice, with a gentle idle floor.
-        var amp = waveCeiling * tanhf(glow / waveCeiling)
+        // Grows with your voice and reaches high; soft-capped near the top.
+        var amp = waveCeiling * tanhf(glow / 0.5)
         if listening { amp = max(amp, 0.14) }
 
-        // Static sine wave (does NOT travel) — several humps across the pill,
-        // growing vertically from the centre with volume.
+        // A SINGLE hump — tall in the centre, tapering to both edges — that
+        // grows vertically with volume. Static (does not travel).
         var newLevels = [Float](repeating: 0, count: bandCount)
-        for i in 0..<bandCount {
-            let wave = 0.5 + 0.5 * Float(sin(Double(i) * waveDensity))
-            newLevels[i] = amp * (0.4 + 0.6 * wave)
+        let n = bandCount
+        for i in 0..<n {
+            let p = n > 1 ? Double(i) / Double(n - 1) : 0.5
+            let arch = Float(sin(.pi * p))          // 0 at edges → 1 at centre
+            newLevels[i] = amp * (0.16 + 0.84 * arch)
         }
         levels = newLevels
 
