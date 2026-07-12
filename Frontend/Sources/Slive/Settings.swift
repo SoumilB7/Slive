@@ -28,6 +28,8 @@ final class Settings: ObservableObject {
         static let groundTruthProvider = "groundTruthProvider"
         static let groundTruthModel = "groundTruthModel"
         static let groundTruthBaseURL = "groundTruthBaseURL"
+        static let localQuantized = "localQuantized"
+        static let localMemLimitGB = "localMemLimitGB"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -197,6 +199,29 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(groundTruthBaseURL, forKey: Keys.groundTruthBaseURL) }
     }
 
+    /// Local provider: load models int8-quantized (≈ half the RAM of bf16,
+    /// near-identical output). Default on; applies from the next local ask
+    /// (flipping it reloads the model).
+    @Published var localQuantized: Bool {
+        didSet { UserDefaults.standard.set(localQuantized, forKey: Keys.localQuantized) }
+    }
+    /// Local provider: ceiling on a running model's memory, in GB. Models that
+    /// can't plausibly fit are refused with a clear error before loading.
+    @Published var localMemLimitGB: Double {
+        didSet { UserDefaults.standard.set(localMemLimitGB, forKey: Keys.localMemLimitGB) }
+    }
+
+    /// Snapshot of the local-inference knobs, safe to read off the main actor —
+    /// the HTTP clients build request bodies on background executors.
+    nonisolated static func localInferenceOptions() -> (quantized: Bool, memGB: Double) {
+        let d = UserDefaults.standard
+        let quantized = d.object(forKey: Keys.localQuantized) == nil
+            ? true : d.bool(forKey: Keys.localQuantized)
+        let mem = d.object(forKey: Keys.localMemLimitGB) == nil
+            ? 10.0 : d.double(forKey: Keys.localMemLimitGB)
+        return (quantized, mem)
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -276,6 +301,9 @@ final class Settings: ObservableObject {
         if gtModel == "gpt-4o-audio-preview" { gtModel = "gpt-audio" }
         groundTruthModel = gtModel
         groundTruthBaseURL = UserDefaults.standard.string(forKey: Keys.groundTruthBaseURL) ?? ""
+        let localOpts = Self.localInferenceOptions()
+        localQuantized = localOpts.quantized
+        localMemLimitGB = localOpts.memGB
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.
         Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"

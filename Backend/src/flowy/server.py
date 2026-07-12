@@ -119,6 +119,10 @@ class AssistantRequest(BaseModel):
     max_tokens: int = 1024
     images: list[ImageItem] | None = None
     history: list[HistoryItem] | None = None
+    # Local-provider knobs (ignored for cloud providers): int8 weight-only
+    # quantization and the resident-memory ceiling in GB.
+    local_quantized: bool = True
+    local_mem_gb: float | None = None
 
     _clean_key = field_validator("api_key")(_clean_api_key)
 
@@ -137,6 +141,8 @@ async def assistant_endpoint(req: AssistantRequest) -> JSONResponse:
             max_tokens=req.max_tokens,
             images=[img.model_dump() for img in req.images] if req.images else None,
             history=[h.model_dump() for h in req.history] if req.history else None,
+            local_quantized=req.local_quantized,
+            local_mem_gb=req.local_mem_gb,
         )
     except ValueError as exc:
         # Bad input or a provider error we could parse — client's problem.
@@ -170,6 +176,8 @@ async def assistant_stream_endpoint(req: AssistantRequest) -> StreamingResponse:
                 history=(
                     [h.model_dump() for h in req.history] if req.history else None
                 ),
+                local_quantized=req.local_quantized,
+                local_mem_gb=req.local_mem_gb,
             ):
                 yield json.dumps({"delta": delta}) + "\n"
         except Exception as exc:  # noqa: BLE001 - report any failure inline
@@ -192,6 +200,8 @@ class TranscribeLLMRequest(BaseModel):
     audio_b64: str
     media_type: str = "audio/wav"
     base_url: str | None = None
+    local_quantized: bool = True
+    local_mem_gb: float | None = None
 
     _clean_key = field_validator("api_key")(_clean_api_key)
 
@@ -206,6 +216,8 @@ async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
             audio_b64=req.audio_b64,
             media_type=req.media_type,
             base_url=req.base_url,
+            local_quantized=req.local_quantized,
+            local_mem_gb=req.local_mem_gb,
         )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})

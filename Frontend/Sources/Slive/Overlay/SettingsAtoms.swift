@@ -232,6 +232,31 @@ struct KeyStatusPill: View {
     }
 }
 
+/// The Local provider's runtime knobs — quantization and the memory ceiling.
+/// Shown beside the model picker wherever a local model is chosen (Assistant,
+/// Ground Truth); one shared setting pair, so the two surfaces stay in sync.
+struct LocalInferenceControls: View {
+    @ObservedObject var settings: Settings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ToggleRow(
+                title: "Quantized",
+                caption: "8-bit weights — 30–50% less memory, near-identical answers. Flipping this reloads the model on the next ask.",
+                isOn: $settings.localQuantized
+            )
+            SliderRow(
+                title: "Memory limit",
+                value: $settings.localMemLimitGB,
+                range: 2...12,
+                step: 1,
+                valueText: "\(Int(settings.localMemLimitGB)) GB",
+                caption: "A model that can't fit under the limit is refused with an error instead of freezing the Mac."
+            )
+        }
+    }
+}
+
 /// KeyStatusPill's stand-in for the Local provider: there is no key to show —
 /// the model runs on this Mac.
 struct OnDevicePill: View {

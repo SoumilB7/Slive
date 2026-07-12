@@ -54,6 +54,9 @@ struct AssistantClient {
         let max_tokens: Int
         let images: [ImageInput]?
         let history: [HistoryItem]?
+        // Local-provider knobs; nil (omitted) for cloud providers.
+        let local_quantized: Bool?
+        let local_mem_gb: Double?
     }
     private struct OKPayload: Decodable { let text: String }
     private struct ErrPayload: Decodable { let error: String }
@@ -109,6 +112,7 @@ struct AssistantClient {
     private func makeBody(_ text: String, config: AssistantConfig, apiKey: String,
                           images: [ImageInput]?, history: [HistoryItem]?) -> RequestBody {
         let provider = config.provider
+        let localOpts = provider.isLocal ? Settings.localInferenceOptions() : nil
         return RequestBody(
             text: text,
             provider: provider.wire,
@@ -118,7 +122,9 @@ struct AssistantClient {
             system_prompt: PromptLibrary.resolvedSystemPrompt(for: config),
             max_tokens: 1024,
             images: (images?.isEmpty ?? true) ? nil : images,
-            history: (history?.isEmpty ?? true) ? nil : history
+            history: (history?.isEmpty ?? true) ? nil : history,
+            local_quantized: localOpts?.quantized,
+            local_mem_gb: localOpts?.memGB
         )
     }
 

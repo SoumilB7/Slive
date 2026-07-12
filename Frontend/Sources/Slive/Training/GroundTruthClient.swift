@@ -31,6 +31,9 @@ struct GroundTruthClient {
         let audio_b64: String
         let media_type: String
         let base_url: String?
+        // Local-provider knobs; nil (omitted) for cloud providers.
+        let local_quantized: Bool?
+        let local_mem_gb: Double?
     }
 
     private struct ResponseBody: Decodable {
@@ -56,13 +59,16 @@ struct GroundTruthClient {
         }
 
         let audio = try Data(contentsOf: audioURL)
+        let localOpts = provider.isLocal ? Settings.localInferenceOptions() : nil
         let body = RequestBody(
             provider: provider.wire,
             model: model,
             api_key: apiKey,
             audio_b64: audio.base64EncodedString(),
             media_type: "audio/wav",
-            base_url: (baseURL?.isEmpty ?? true) ? nil : baseURL)
+            base_url: (baseURL?.isEmpty ?? true) ? nil : baseURL,
+            local_quantized: localOpts?.quantized,
+            local_mem_gb: localOpts?.memGB)
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"

@@ -208,6 +208,10 @@ struct TrainingSettingsView: View {
                 }
             }
 
+            if settings.groundTruthProvider.isLocal {
+                LocalInferenceControls(settings: settings)
+            }
+
             HStack(spacing: 10) {
                 Button {
                     bulkTranscribe()

@@ -153,6 +153,8 @@ async def answer(
     max_tokens: int = 1024,
     images: list[dict[str, str]] | None = None,
     history: list[dict[str, str]] | None = None,
+    local_quantized: bool = True,
+    local_mem_gb: float | None = None,
 ) -> str:
     """Send ``text`` to an LLM provider and return the assistant's reply.
 
@@ -172,7 +174,7 @@ async def answer(
         return await run_in_threadpool(
             local_infer.chat, model, api_key or None, system_prompt or "",
             history or [], text, [img.get("data", "") for img in (images or [])],
-            max_tokens,
+            max_tokens, local_quantized, local_mem_gb or local_infer.DEFAULT_MEM_GB,
         )
     if not api_key:
         raise ValueError("Missing api_key")
@@ -221,6 +223,8 @@ async def answer_stream(
     max_tokens: int = 1024,
     images: list[dict[str, str]] | None = None,
     history: list[dict[str, str]] | None = None,
+    local_quantized: bool = True,
+    local_mem_gb: float | None = None,
 ) -> AsyncIterator[str]:
     """Like ``answer`` but yields the reply incrementally as text deltas.
 
@@ -235,7 +239,7 @@ async def answer_stream(
         reply = await run_in_threadpool(
             local_infer.chat, model, api_key or None, system_prompt or "",
             history or [], text, [img.get("data", "") for img in (images or [])],
-            max_tokens,
+            max_tokens, local_quantized, local_mem_gb or local_infer.DEFAULT_MEM_GB,
         )
         if reply:
             yield reply
@@ -603,6 +607,8 @@ async def transcribe_audio(
     audio_b64: str,
     media_type: str = "audio/wav",
     base_url: str | None = None,
+    local_quantized: bool = True,
+    local_mem_gb: float | None = None,
 ) -> str:
     """Ask an audio-capable multimodal model for a verbatim transcription.
 
@@ -617,6 +623,7 @@ async def transcribe_audio(
         from flowy import local_infer
         return await run_in_threadpool(
             local_infer.transcribe, model, api_key or None, audio_b64, media_type,
+            448, local_quantized, local_mem_gb or local_infer.DEFAULT_MEM_GB,
         )
     if not api_key:
         raise ValueError("Missing api_key")
