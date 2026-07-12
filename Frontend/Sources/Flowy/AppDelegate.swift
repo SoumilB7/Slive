@@ -224,47 +224,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Assistant path: send the transcript to the LLM (keeping the loading dots
-    /// up), then show the answer in the floating box.
-    private func runAssistant(on transcript: String) async {
+    /// Assistant path: stream the LLM's answer into a fixed-size box, growing
+    /// the text as tokens arrive, then settle the box to the final size.
+    @MainActor private func runAssistant(on transcript: String) async {
         let question = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else {
-            await MainActor.run { self.model.finishListening(); self.hideOverlaySoon() }
-            return
+            model.finishListening(); hideOverlaySoon(); return
         }
         let config = Settings.shared.assistantConfig
         let key = Settings.shared.apiKey(for: config.provider)
+
+        // Switch the overlay to the streaming answer box.
+        model.beginStreaming()
+        overlay.resize(to: OverlayMetrics.streamingPanelSize)
+        overlay.setInteractive(true)
+
+        var accumulated = ""
         do {
-            let answer = try await assistant.ask(question, config: config, apiKey: key)
-            if Task.isCancelled { return }
-            await MainActor.run { self.finishAssist(answer: answer) }
+            for try await delta in assistant.askStream(question, config: config, apiKey: key) {
+                if Task.isCancelled { return }
+                accumulated += delta
+                model.updateStreaming(accumulated)
+            }
         } catch {
             if Task.isCancelled { return }
-            await MainActor.run { self.finishAssist(error: String(describing: error)) }
+            if accumulated.isEmpty {
+                finalizeAssist("⚠️ \(error)", collapseAfter: 6.0)
+            } else {
+                finalizeAssist(accumulated + "\n\n⚠️ \(error)")
+            }
+            return
         }
+        if Task.isCancelled { return }
+        finalizeAssist(accumulated)
     }
 
-    /// Show an assistant answer in the box (kept up longer so it can be read).
-    @MainActor private func finishAssist(answer: String) {
-        guard model.phase == .transcribing else { return }
+    /// Settle the streamed answer into a final, text-sized box (kept up longer
+    /// so it can be read), and record it in history.
+    @MainActor private func finalizeAssist(_ answer: String,
+                                           collapseAfter seconds: TimeInterval? = nil) {
         let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             model.finishListening(); hideOverlaySoon(); return
         }
         HistoryStore.shared.add(trimmed)
-        model.showResult(trimmed)
+        model.showResult(trimmed)   // clears streaming, sets final text
         overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
         overlay.setInteractive(true)
-        scheduleCollapse(after: assistantDisplayDuration)
-    }
-
-    /// Surface an assistant failure in the box instead of an empty result.
-    @MainActor private func finishAssist(error: String) {
-        guard model.phase == .transcribing else { return }
-        model.showResult(error)
-        overlay.resize(to: OverlayMetrics.panelSize(for: error))
-        overlay.setInteractive(true)
-        scheduleCollapse(after: 6.0)
+        scheduleCollapse(after: seconds ?? assistantDisplayDuration)
     }
 
     /// Encode on a background queue without blocking a cooperative-pool thread on

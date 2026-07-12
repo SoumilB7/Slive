@@ -16,14 +16,16 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from flowy.assistant import answer as assistant_answer
+from flowy.assistant import answer_stream as assistant_answer_stream
 from flowy.assistant import list_models as assistant_list_models
 from flowy.transcribe import load_model, transcribe, warm_up
 
@@ -114,6 +116,34 @@ async def assistant_endpoint(req: AssistantRequest) -> JSONResponse:
         logger.exception("Assistant request failed")
         return JSONResponse(status_code=502, content={"error": str(exc)})
     return JSONResponse(status_code=200, content={"text": reply})
+
+
+@app.post("/assistant/stream")
+async def assistant_stream_endpoint(req: AssistantRequest) -> StreamingResponse:
+    """Stream the assistant's reply as newline-delimited JSON.
+
+    Each line is one JSON object: {"delta": "..."} for a text chunk,
+    {"error": "..."} if the provider call fails, and a final {"done": true}.
+    """
+    async def gen():
+        try:
+            async for delta in assistant_answer_stream(
+                text=req.text,
+                provider=req.provider,
+                model=req.model,
+                api_key=req.api_key,
+                base_url=req.base_url,
+                system_prompt=req.system_prompt,
+                max_tokens=req.max_tokens,
+            ):
+                yield json.dumps({"delta": delta}) + "\n"
+        except Exception as exc:  # noqa: BLE001 - report any failure inline
+            logger.exception("Assistant stream failed")
+            yield json.dumps({"error": str(exc)}) + "\n"
+        else:
+            yield json.dumps({"done": True}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 class ModelsRequest(BaseModel):

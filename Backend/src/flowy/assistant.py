@@ -11,7 +11,9 @@ Supported providers: "anthropic", "openai", "gemini", and "openai_compatible"
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -100,6 +102,180 @@ async def answer(
                 url=f"{base_url.rstrip('/')}/chat/completions",
             )
         raise ValueError(f"Unknown provider: {provider}")
+
+
+async def answer_stream(
+    text: str,
+    provider: str,
+    model: str,
+    api_key: str,
+    base_url: str | None = None,
+    system_prompt: str | None = None,
+    max_tokens: int = 1024,
+) -> AsyncIterator[str]:
+    """Like ``answer`` but yields the reply incrementally as text deltas.
+
+    Uses each provider's server-sent-events streaming API. Raises ValueError on
+    the same conditions as ``answer`` (missing key/text, bad status, unknown
+    provider); partial output already yielded stays yielded.
+    """
+    if not text or not text.strip():
+        raise ValueError("Empty prompt text")
+    if not api_key:
+        raise ValueError("Missing api_key")
+
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        if provider == "anthropic":
+            async for d in _stream_anthropic(
+                client, text, model, api_key, system_prompt, max_tokens
+            ):
+                yield d
+        elif provider in ("openai", "openai_compatible"):
+            if provider == "openai_compatible" and not base_url:
+                raise ValueError("base_url is required for openai_compatible")
+            url = (
+                "https://api.openai.com/v1/chat/completions"
+                if provider == "openai"
+                else f"{base_url.rstrip('/')}/chat/completions"
+            )
+            async for d in _stream_openai(
+                client, text, model, api_key, system_prompt, max_tokens, url
+            ):
+                yield d
+        elif provider == "gemini":
+            async for d in _stream_gemini(
+                client, text, model, api_key, system_prompt, max_tokens
+            ):
+                yield d
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+
+
+def _sse_data(line: str) -> str | None:
+    """Return the payload of an SSE ``data:`` line, or None for other lines."""
+    if line.startswith("data:"):
+        return line[len("data:"):].strip()
+    return None
+
+
+async def _raise_for_stream_status(provider: str, r: httpx.Response) -> None:
+    """Read the body of a failed streamed response, then raise ValueError."""
+    if r.is_success:
+        return
+    await r.aread()
+    _raise_for_status(provider, r)
+
+
+async def _stream_anthropic(
+    client: httpx.AsyncClient,
+    text: str,
+    model: str,
+    api_key: str,
+    system_prompt: str | None,
+    max_tokens: int,
+) -> AsyncIterator[str]:
+    body: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "messages": [{"role": "user", "content": text}],
+    }
+    if system_prompt:
+        body["system"] = system_prompt
+    async with client.stream(
+        "POST",
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=body,
+    ) as r:
+        await _raise_for_stream_status("anthropic", r)
+        async for line in r.aiter_lines():
+            data = _sse_data(line)
+            if not data:
+                continue
+            try:
+                evt = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if evt.get("type") == "content_block_delta":
+                piece = evt.get("delta", {}).get("text")
+                if piece:
+                    yield piece
+
+
+async def _stream_openai(
+    client: httpx.AsyncClient,
+    text: str,
+    model: str,
+    api_key: str,
+    system_prompt: str | None,
+    max_tokens: int,
+    url: str,
+) -> AsyncIterator[str]:
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": text})
+    body: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "messages": messages,
+    }
+    async with client.stream(
+        "POST", url, headers={"Authorization": f"Bearer {api_key}"}, json=body
+    ) as r:
+        await _raise_for_stream_status("openai", r)
+        async for line in r.aiter_lines():
+            data = _sse_data(line)
+            if data is None or data == "[DONE]":
+                continue
+            try:
+                evt = json.loads(data)
+                piece = evt["choices"][0]["delta"].get("content")
+            except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                continue
+            if piece:
+                yield piece
+
+
+async def _stream_gemini(
+    client: httpx.AsyncClient,
+    text: str,
+    model: str,
+    api_key: str,
+    system_prompt: str | None,
+    max_tokens: int,
+) -> AsyncIterator[str]:
+    body: dict[str, Any] = {
+        "contents": [{"role": "user", "parts": [{"text": text}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }
+    if system_prompt:
+        body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:streamGenerateContent?alt=sse&key={api_key}"
+    )
+    async with client.stream("POST", url, json=body) as r:
+        await _raise_for_stream_status("gemini", r)
+        async for line in r.aiter_lines():
+            data = _sse_data(line)
+            if not data:
+                continue
+            try:
+                evt = json.loads(data)
+                parts = evt["candidates"][0]["content"]["parts"]
+            except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                continue
+            for part in parts:
+                piece = part.get("text")
+                if piece:
+                    yield piece
 
 
 async def list_models(
