@@ -1,9 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Owns the Settings/home window. While it's open Flowy behaves like a normal
-/// app (dock icon, keyboard focus); when it closes we drop back to a quiet
-/// menu-bar agent.
+/// Owns the Settings/home window. Flowy is a normal app (persistent Dock icon),
+/// so closing this window just hides it — the app keeps running.
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     var audiosPath: String = ""
     var onOpenAudios: () -> Void = {}
@@ -39,13 +38,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             window = w
         }
 
-        NSApp.setActivationPolicy(.regular)      // dock icon + focus while open
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        // Back to a quiet background agent.
-        NSApp.setActivationPolicy(.accessory)
     }
 }

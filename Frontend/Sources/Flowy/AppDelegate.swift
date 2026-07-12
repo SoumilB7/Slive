@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)   // menu-bar agent, no Dock icon
+        NSApp.setActivationPolicy(.regular)   // normal app: keep a Dock icon
 
         setupMenuBar()
         wireAudioAndHotkey()
@@ -42,6 +42,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkey.stop()
+    }
+
+    /// Clicking the Dock icon (no windows open) reopens the home window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openSettings() }
+        return true
+    }
+
+    /// Closing the window must NOT quit Flowy — it keeps listening for the key.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     // MARK: - Wiring
