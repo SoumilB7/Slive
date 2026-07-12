@@ -44,7 +44,9 @@ else
     SIGN_ARGS=(--sign -)
     echo "▸ Signing (ad-hoc — grants reset on rebuild; run setup-signing.sh for persistence)"
 fi
-codesign --force --deep "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
+# --options runtime = Hardened Runtime: blocks code injection / debugger attach
+# into Flowy, so no other local process can hijack its permissions.
+codesign --force --deep --options runtime "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
     echo "  (codesign warning ignored)"
 }
 
@@ -60,8 +62,8 @@ if [[ "${1:-}" == "install" ]]; then
     sleep 0.3
     rm -rf "$DEST"
     cp -R "$APP" "$DEST"
-    # Re-sign the installed copy with the same identity.
-    codesign --force --deep "${SIGN_ARGS[@]}" "$DEST" >/dev/null 2>&1 || true
+    # Re-sign the installed copy with the same identity + Hardened Runtime.
+    codesign --force --deep --options runtime "${SIGN_ARGS[@]}" "$DEST" >/dev/null 2>&1 || true
     LAUNCH_TARGET="$DEST"
     echo "✓ Installed: $DEST"
 fi
