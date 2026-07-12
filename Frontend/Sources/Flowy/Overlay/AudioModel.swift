@@ -27,7 +27,10 @@ final class AudioModel: ObservableObject {
 
     private var timer: Timer?
     private var startDate: Date?
-    private var wavePhase: Double = 0
+
+    // Visualiser shape dials.
+    private let waveCeiling: Float = 0.82   // max bar height (fraction of pill)
+    private let waveDensity = 0.95          // higher = more sine humps across the pill
 
     // Fast rise, gentle fall — the classic "lively meter" feel.
     private let attack: Float = 0.55
@@ -110,23 +113,21 @@ final class AudioModel: ObservableObject {
     }
 
     private func tick() {
-        wavePhase += 0.16
-
         // Ease overall loudness for smooth vertical growth/shrink.
         let gRate: Float = targetGlow > glow ? attack : decay
         glow = glow + (targetGlow - glow) * gRate
 
         let listening = phase == .listening
-        // Soft-capped amplitude (~0.6 max); a little idle motion while listening
-        // so it breathes even in silence.
-        var amp = 0.6 * tanhf(glow / 0.6)
-        if listening { amp = max(amp, 0.10) }
+        // Soft-capped amplitude; grows with your voice, with a gentle idle floor.
+        var amp = waveCeiling * tanhf(glow / waveCeiling)
+        if listening { amp = max(amp, 0.14) }
 
-        // Smooth travelling sine across the bars — grows vertically with volume.
+        // Static sine wave (does NOT travel) — several humps across the pill,
+        // growing vertically from the centre with volume.
         var newLevels = [Float](repeating: 0, count: bandCount)
         for i in 0..<bandCount {
-            let wave = 0.5 + 0.5 * Float(sin(wavePhase + Double(i) * 0.5))
-            newLevels[i] = amp * (0.3 + 0.7 * wave)
+            let wave = 0.5 + 0.5 * Float(sin(Double(i) * waveDensity))
+            newLevels[i] = amp * (0.4 + 0.6 * wave)
         }
         levels = newLevels
 

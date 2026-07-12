@@ -12,16 +12,16 @@ struct OverlayView: View {
             .scaleEffect(visible ? 1 : 0.9)
             .opacity(visible ? 1 : 0)
             .offset(y: visible ? 0 : 4)
-            .frame(width: 180, height: 56)              // container (shadow spill)
+            .frame(width: 200, height: 66)              // container (shadow spill)
             .animation(.spring(response: 0.28, dampingFraction: 0.85), value: model.phase)
             .allowsHitTesting(false)
     }
 
     private var pill: some View {
         WaveformView(levels: model.levels)
-            .frame(width: 70, height: 26)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .frame(width: 84, height: 34)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
             .background(Capsule().fill(Color.black.opacity(0.92)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
