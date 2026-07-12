@@ -10,9 +10,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem?
     private var recordStart: Date?
-    private var autoHideWorkItem: DispatchWorkItem?
+    private var armWorkItem: DispatchWorkItem?
 
-    private let minDuration: TimeInterval = 0.4
+    /// How long you must hold the key before recording begins. Brief taps under
+    /// this do nothing. Tune to taste.
+    private let holdActivationDelay: TimeInterval = 1.5
 
     // MARK: - Lifecycle
 
@@ -48,23 +50,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.onLevels = { [weak self] bands, rms in
             self?.model.pushLevels(bands, rms: rms)
         }
-        hotkey.onStart = { [weak self] in self?.startRecording() }
-        hotkey.onStop = { [weak self] in self?.stopRecording() }
+        hotkey.onStart = { [weak self] in self?.keyDown() }
+        hotkey.onStop = { [weak self] in self?.keyUp() }
     }
 
-    // MARK: - Record / Save flow
+    // MARK: - Hold-to-talk flow
 
-    private func startRecording() {
+    private func keyDown() {
+        // Arm: recording begins only if the key is still held after the delay.
+        armWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.armWorkItem = nil
+            self?.beginRecording()
+        }
+        armWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdActivationDelay, execute: work)
+    }
+
+    private func keyUp() {
+        if let pending = armWorkItem {
+            // Released before the hold threshold → do nothing at all.
+            pending.cancel()
+            armWorkItem = nil
+            return
+        }
+        stopRecording()
+    }
+
+    private func beginRecording() {
         guard !recorder.isRecording else { return }
-        autoHideWorkItem?.cancel()
-
         model.beginListening()
         overlay.show()
-
         recordStart = Date()
         if !recorder.start() {
-            model.fail("Mic unavailable")
-            scheduleAutoHide()
+            NSLog("Flowy: mic unavailable")
+            model.finishListening()
+            hideOverlaySoon()
         }
     }
 
@@ -73,49 +94,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let duration = recordStart.map { Date().timeIntervalSince($0) } ?? 0
         let wavURL = recorder.stop()
 
-        // Discard accidental taps.
-        if duration < minDuration || wavURL == nil {
-            wavURL.map { try? FileManager.default.removeItem(at: $0) }
-            model.tooShort()
-            scheduleAutoHide()
-            return
-        }
+        // Fade the pill away — no confirmation shown.
+        model.finishListening()
+        hideOverlaySoon()
 
-        model.beginSaving()
-        model.keepAnimating()
-
+        guard let wavURL else { return }
         let destination = audiosDirectory().appendingPathComponent(makeFilename())
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self, let wavURL else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
             defer { try? FileManager.default.removeItem(at: wavURL) }
             do {
                 let mp3 = try Mp3Encoder.encode(wavURL: wavURL, to: destination)
-                NSLog("Flowy: saved \(mp3.path)")
-                DispatchQueue.main.async {
-                    self.model.finishSaved(seconds: duration)
-                    self.scheduleAutoHide()
-                }
+                NSLog("Flowy: saved \(mp3.path) (\(String(format: "%.1f", duration))s)")
             } catch {
-                NSLog("Flowy: \(error)")
-                DispatchQueue.main.async {
-                    self.model.fail("Save failed")
-                    self.scheduleAutoHide()
-                }
+                NSLog("Flowy: save failed — \(error)")
             }
         }
     }
 
-    private func scheduleAutoHide() {
-        autoHideWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
+    private func hideOverlaySoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self else { return }
-            // Don't hide if a new recording started in the meantime.
-            if self.model.phase == .listening { return }
-            self.model.reset()
+            if self.model.phase == .listening { return }   // a new hold began
             self.overlay.hide()
+            self.model.reset()
         }
-        autoHideWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25, execute: work)
     }
 
     // MARK: - Paths
