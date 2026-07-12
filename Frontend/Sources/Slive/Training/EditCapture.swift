@@ -59,8 +59,15 @@ final class EditCapture {
     /// Returns nil when there's no readable, non-secure editable field (so the
     /// copy-box path and password fields are never captured).
     func capturePre() -> Pre? {
-        guard AXIsProcessTrusted(), let el = Self.focusedElement() else { return nil }
-        guard !Self.isSecure(el), Self.isEditable(el) else { return nil }
+        // Classification is PasteEngine's — deliberately the SAME gate that
+        // decides whether we type at all. Keeping a second copy here meant the
+        // two could disagree (they did: capture refused Electron fields that
+        // typed fine), so typing and capture must always agree by construction.
+        guard AXIsProcessTrusted(), let focused = Self.focusedElement() else { return nil }
+        guard !PasteEngine.isSecure(focused), let el = PasteEngine.editableTarget(focused) else {
+            Log.training("capturePre skipped — not an editable text context")
+            return nil
+        }
         let ns = (Self.stringValue(el) ?? "") as NSString
         let caret = min(Self.caretOffset(el) ?? ns.length, ns.length)
         let leftStart = max(0, caret - Self.anchorLen)
@@ -215,13 +222,8 @@ final class EditCapture {
 
     // MARK: - AX helpers
 
-    private static func focusedElement() -> AXUIElement? {
-        var value: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(
-            AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &value)
-        guard err == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
-    }
+    /// Shared with PasteEngine so focus + classification can never diverge.
+    private static func focusedElement() -> AXUIElement? { PasteEngine.focusedElement() }
 
     private static func stringValue(_ el: AXUIElement) -> String? {
         var v: CFTypeRef?
@@ -240,27 +242,4 @@ final class EditCapture {
         return range.location + range.length
     }
 
-    private static func isSecure(_ el: AXUIElement) -> Bool {
-        if roleString(el, kAXRoleAttribute) == "AXSecureTextField" { return true }
-        if roleString(el, kAXSubroleAttribute) == (kAXSecureTextFieldSubrole as String) { return true }
-        return false
-    }
-
-    private static func isEditable(_ el: AXUIElement) -> Bool {
-        let role = roleString(el, kAXRoleAttribute)
-        if role == (kAXTextFieldRole as String) || role == (kAXTextAreaRole as String) { return true }
-        var settable = DarwinBoolean(false)
-        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success,
-           settable.boolValue, stringValue(el) != nil {
-            return true
-        }
-        return false
-    }
-
-    private static func roleString(_ el: AXUIElement, _ attr: String) -> String? {
-        var v: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, attr as CFString, &v) == .success,
-              let v, CFGetTypeID(v) == CFStringGetTypeID() else { return nil }
-        return (v as! CFString) as String
-    }
 }
