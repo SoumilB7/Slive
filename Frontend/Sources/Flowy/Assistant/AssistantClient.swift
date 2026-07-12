@@ -38,6 +38,12 @@ struct AssistantClient {
         let data: String
     }
 
+    /// One prior conversation turn: role is "user" or "assistant".
+    struct HistoryItem: Encodable {
+        let role: String
+        let content: String
+    }
+
     private struct RequestBody: Encodable {
         let text: String
         let provider: String
@@ -47,6 +53,7 @@ struct AssistantClient {
         let system_prompt: String?
         let max_tokens: Int
         let images: [ImageInput]?
+        let history: [HistoryItem]?
     }
     private struct OKPayload: Decodable { let text: String }
     private struct ErrPayload: Decodable { let error: String }
@@ -100,7 +107,7 @@ struct AssistantClient {
 
     /// Build the shared POST body for a prompt.
     private func makeBody(_ text: String, config: AssistantConfig, apiKey: String,
-                          images: [ImageInput]?) -> RequestBody {
+                          images: [ImageInput]?, history: [HistoryItem]?) -> RequestBody {
         let provider = config.provider
         return RequestBody(
             text: text,
@@ -110,14 +117,15 @@ struct AssistantClient {
             base_url: provider.needsBaseURL ? config.baseURL : nil,
             system_prompt: PromptLibrary.resolvedSystemPrompt(for: config),
             max_tokens: 1024,
-            images: (images?.isEmpty ?? true) ? nil : images
+            images: (images?.isEmpty ?? true) ? nil : images,
+            history: (history?.isEmpty ?? true) ? nil : history
         )
     }
 
     /// Stream the assistant's reply as it's generated, yielding text deltas.
     /// The consumer accumulates them. Finishes (throwing) on any failure.
     func askStream(_ text: String, config: AssistantConfig, apiKey: String,
-                   images: [ImageInput]? = nil)
+                   images: [ImageInput]? = nil, history: [HistoryItem]? = nil)
         -> AsyncThrowingStream<String, Error>
     {
         AsyncThrowingStream { continuation in
@@ -131,7 +139,7 @@ struct AssistantClient {
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.httpBody = try JSONEncoder().encode(
-                        makeBody(text, config: config, apiKey: apiKey, images: images))
+                        makeBody(text, config: config, apiKey: apiKey, images: images, history: history))
                     request.timeoutInterval = timeout
 
                     let cfg = URLSessionConfiguration.ephemeral
@@ -165,11 +173,11 @@ struct AssistantClient {
     /// Send `text` to the assistant using `config` (+ its Keychain key) and
     /// return the answer. Throws with a human-readable message on failure.
     func ask(_ text: String, config: AssistantConfig, apiKey: String,
-             images: [ImageInput]? = nil) async throws -> String {
+             images: [ImageInput]? = nil, history: [HistoryItem]? = nil) async throws -> String {
         let provider = config.provider
         guard !apiKey.isEmpty else { throw AssistantError.missingKey(provider.displayName) }
 
-        let body = makeBody(text, config: config, apiKey: apiKey, images: images)
+        let body = makeBody(text, config: config, apiKey: apiKey, images: images, history: history)
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"

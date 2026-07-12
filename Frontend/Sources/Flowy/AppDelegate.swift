@@ -23,10 +23,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var collapseWorkItem: DispatchWorkItem? // pending result auto-dismiss
     private var currentAction: HotkeyAction = .dictate  // which shortcut is recording
 
+    // In-memory assistant conversation (never persisted). `chatActive` is set
+    // only by tapping "Continue"; the next assistant call then continues it.
+    private var conversation: [AssistantClient.HistoryItem] = []
+    private var chatActive = false
+    private var pendingTurn: (question: String, answer: String)?
+
     /// How long a result box stays on screen before collapsing.
     private let resultDisplayDuration: TimeInterval = 6.0
-    /// Assistant answers stay up longer — you need time to read them.
-    private let assistantDisplayDuration: TimeInterval = 30.0
+    /// Assistant answers stay up longer — you need time to read them (dismiss
+    /// early with the ✕ button).
+    private let assistantDisplayDuration: TimeInterval = 15.0
 
     /// How long you must hold the key before recording begins. Brief taps under
     /// this do nothing. Tune to taste.
@@ -96,6 +103,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotkey.onStart = { [weak self] action in self?.keyDown(action) }
         hotkey.onStop = { [weak self] _ in self?.keyUp() }
+        model.onDismiss = { [weak self] in self?.dismissOverlay() }
+        model.onContinue = { [weak self] in self?.continueChat() }
+    }
+
+    /// User tapped ✕ — cancel any in-flight work, end the chat, and collapse now.
+    private func dismissOverlay() {
+        transcribeTask?.cancel(); transcribeTask = nil
+        collapseWorkItem?.cancel(); collapseWorkItem = nil
+        chatActive = false
+        conversation.removeAll()
+        pendingTurn = nil
+        collapseOverlay()
     }
 
     // MARK: - Hold-to-talk flow
@@ -157,10 +176,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the overlay up and show a loading state while we save + transcribe.
         model.beginTranscribing()
 
-        // Encode to a TEMP MP3 that we delete right after — recordings are not
-        // persisted; the audio only exists long enough to reach the backend.
-        let destination = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flowy-\(UUID().uuidString).mp3")
         let transcriber = self.transcriber
         // Captured on the main thread; sent as vocabulary hints to the backend.
         let hotwords = Settings.shared.hotwords
@@ -172,19 +187,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Strong `self` capture: the task always returns (breaking any cycle),
         // and a new recording cancels it so a stale UI update never lands.
         transcribeTask = Task {
-            // 1. Encode the WAV → MP3 (off the main thread).
-            let mp3: URL
-            do {
-                mp3 = try await Self.encodeMp3(wavURL: wavURL, to: destination)
-                NSLog("Flowy: encoded \(String(format: "%.1f", duration))s of audio")
-            } catch {
-                NSLog("Flowy: encode failed — \(error)")
-                try? FileManager.default.removeItem(at: wavURL)
-                await MainActor.run { self.finishTranscription(text: nil) }
-                return
-            }
-            try? FileManager.default.removeItem(at: wavURL)
-            defer { try? FileManager.default.removeItem(at: mp3) }   // never persisted
+            // Send the recorded WAV straight to the backend. Skipping MP3
+            // encoding removes a step (and a subprocess) from the latency path;
+            // the backend resamples internally. Deleted right after — never
+            // persisted.
+            defer { try? FileManager.default.removeItem(at: wavURL) }
+            NSLog("Flowy: captured \(String(format: "%.1f", duration))s of audio")
 
             if Task.isCancelled { return }
 
@@ -202,12 +210,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             //    the backend back and retry once before surfacing an error.
             var transcript: String?
             do {
-                transcript = try await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt)
+                transcript = try await transcriber.transcribe(wavURL, hotwords: hotwords, prompt: prompt)
             } catch {
                 NSLog("Flowy: transcription failed — \(error); retrying after ensuring backend")
                 if Task.isCancelled { return }
                 if await self.backend.ensureHealthy() {
-                    transcript = try? await transcriber.transcribe(mp3, hotwords: hotwords, prompt: prompt)
+                    transcript = try? await transcriber.transcribe(wavURL, hotwords: hotwords, prompt: prompt)
                 }
             }
             if Task.isCancelled { return }
@@ -237,6 +245,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let config = Settings.shared.assistantConfig
         let key = Settings.shared.apiKey(for: config.provider)
 
+        // Continue the previous chat only if the user tapped "Continue" after the
+        // last answer; otherwise this is a fresh conversation.
+        let continuing = chatActive
+        chatActive = false
+        if !continuing { conversation.removeAll() }
+        let history = conversation.isEmpty ? nil : conversation
+
         // Optionally attach a full-screen screenshot (captured off the main
         // thread so the blocking subprocess doesn't stall the UI).
         var images: [AssistantClient.ImageInput]? = nil
@@ -255,51 +270,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var accumulated = ""
         do {
-            for try await delta in assistant.askStream(question, config: config, apiKey: key, images: images) {
+            for try await delta in assistant.askStream(
+                question, config: config, apiKey: key, images: images, history: history
+            ) {
                 if Task.isCancelled { return }
                 accumulated += delta
                 model.updateStreaming(accumulated)
             }
         } catch {
             if Task.isCancelled { return }
-            if accumulated.isEmpty {
-                finalizeAssist("⚠️ \(error)", collapseAfter: 6.0)
-            } else {
-                finalizeAssist(accumulated + "\n\n⚠️ \(error)")
-            }
+            let shown = accumulated.isEmpty ? "⚠️ \(error)" : accumulated + "\n\n⚠️ \(error)"
+            showAssistantError(shown)
             return
         }
         if Task.isCancelled { return }
-        finalizeAssist(accumulated)
+        finalizeAssist(question: question, answer: accumulated)
     }
 
-    /// Settle the streamed answer into a final, text-sized box (kept up longer
-    /// so it can be read), and record it in history.
-    @MainActor private func finalizeAssist(_ answer: String,
-                                           collapseAfter seconds: TimeInterval? = nil) {
+    /// Settle the streamed answer into a final, text-sized box with a Continue
+    /// footer, remember the turn (for a possible continuation), and record it.
+    @MainActor private func finalizeAssist(question: String, answer: String) {
         let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            model.finishListening(); hideOverlaySoon(); return
+            pendingTurn = nil; model.finishListening(); hideOverlaySoon(); return
         }
         HistoryStore.shared.add(trimmed)
-        model.showResult(trimmed)   // clears streaming, sets final text
-        overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
+        pendingTurn = (question, trimmed)
+        model.showAssistantResult(trimmed)
+        overlay.resize(to: OverlayMetrics.assistantPanelSize(for: trimmed))
         overlay.setInteractive(true)
-        scheduleCollapse(after: seconds ?? assistantDisplayDuration)
+        scheduleCollapse(after: assistantDisplayDuration)
     }
 
-    /// Encode on a background queue without blocking a cooperative-pool thread on
-    /// `Process.waitUntilExit()`.
-    private static func encodeMp3(wavURL: URL, to destination: URL) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    continuation.resume(returning: try Mp3Encoder.encode(wavURL: wavURL, to: destination))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
+    /// Show an assistant failure (no Continue footer) and collapse soon.
+    @MainActor private func showAssistantError(_ text: String) {
+        pendingTurn = nil
+        model.showResult(text)
+        overlay.resize(to: OverlayMetrics.panelSize(for: text))
+        overlay.setInteractive(true)
+        scheduleCollapse(after: 6.0)
+    }
+
+    /// User tapped "Continue": stash this turn into the conversation and hide the
+    /// box (keeping chat state) so the next assistant keybind continues it.
+    private func continueChat() {
+        if let t = pendingTurn {
+            conversation.append(AssistantClient.HistoryItem(role: "user", content: t.question))
+            conversation.append(AssistantClient.HistoryItem(role: "assistant", content: t.answer))
         }
+        pendingTurn = nil
+        chatActive = true
+        collapseWorkItem?.cancel(); collapseWorkItem = nil
+        overlay.hide()
+        model.reset()
     }
 
     /// Result path: grow the overlay to show `text`, then auto-collapse. On a nil

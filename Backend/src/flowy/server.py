@@ -91,6 +91,11 @@ class ImageItem(BaseModel):
     data: str
 
 
+class HistoryItem(BaseModel):
+    role: str
+    content: str
+
+
 class AssistantRequest(BaseModel):
     text: str
     provider: str
@@ -100,6 +105,7 @@ class AssistantRequest(BaseModel):
     system_prompt: str | None = None
     max_tokens: int = 1024
     images: list[ImageItem] | None = None
+    history: list[HistoryItem] | None = None
 
 
 @app.post("/assistant")
@@ -115,6 +121,7 @@ async def assistant_endpoint(req: AssistantRequest) -> JSONResponse:
             system_prompt=req.system_prompt,
             max_tokens=req.max_tokens,
             images=[img.model_dump() for img in req.images] if req.images else None,
+            history=[h.model_dump() for h in req.history] if req.history else None,
         )
     except ValueError as exc:
         # Bad input or a provider error we could parse — client's problem.
@@ -144,6 +151,9 @@ async def assistant_stream_endpoint(req: AssistantRequest) -> StreamingResponse:
                 max_tokens=req.max_tokens,
                 images=(
                     [img.model_dump() for img in req.images] if req.images else None
+                ),
+                history=(
+                    [h.model_dump() for h in req.history] if req.history else None
                 ),
             ):
                 yield json.dumps({"delta": delta}) + "\n"

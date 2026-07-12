@@ -97,6 +97,51 @@ def _gemini_parts(
     return parts
 
 
+# A history turn is {"role": "user"|"assistant", "content": str} (text only).
+
+def _anthropic_messages(
+    text: str,
+    images: list[dict[str, str]] | None,
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, Any]]:
+    """Prior turns, then the current user message (with any images)."""
+    messages: list[dict[str, Any]] = []
+    for h in history or []:
+        messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": _anthropic_content(text, images)})
+    return messages
+
+
+def _openai_messages(
+    text: str,
+    system_prompt: str | None,
+    images: list[dict[str, str]] | None,
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, Any]]:
+    """System (optional), prior turns, then the current user message."""
+    messages: list[dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    for h in history or []:
+        messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": _openai_content(text, images)})
+    return messages
+
+
+def _gemini_contents(
+    text: str,
+    images: list[dict[str, str]] | None,
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, Any]]:
+    """Prior turns (assistant → 'model'), then the current user content."""
+    contents: list[dict[str, Any]] = []
+    for h in history or []:
+        role = "model" if h["role"] == "assistant" else "user"
+        contents.append({"role": role, "parts": [{"text": h["content"]}]})
+    contents.append({"role": "user", "parts": _gemini_parts(text, images)})
+    return contents
+
+
 async def answer(
     text: str,
     provider: str,
@@ -106,6 +151,7 @@ async def answer(
     system_prompt: str | None = None,
     max_tokens: int = 1024,
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     """Send ``text`` to an LLM provider and return the assistant's reply.
 
@@ -127,17 +173,17 @@ async def answer(
         if provider == "anthropic":
             return await _answer_anthropic(
                 client, text, model, api_key, system_prompt, max_tokens,
-                images=images,
+                images=images, history=history,
             )
         if provider == "openai":
             return await _answer_openai(
                 client, text, model, api_key, system_prompt, max_tokens,
-                token_field="max_completion_tokens", images=images,
+                token_field="max_completion_tokens", images=images, history=history,
             )
         if provider == "gemini":
             return await _answer_gemini(
                 client, text, model, api_key, system_prompt, max_tokens,
-                images=images,
+                images=images, history=history,
             )
         if provider == "openai_compatible":
             if not base_url:
@@ -152,6 +198,7 @@ async def answer(
                 url=f"{base_url.rstrip('/')}/chat/completions",
                 token_field="max_tokens",
                 images=images,
+                history=history,
             )
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -165,6 +212,7 @@ async def answer_stream(
     system_prompt: str | None = None,
     max_tokens: int = 1024,
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[str]:
     """Like ``answer`` but yields the reply incrementally as text deltas.
 
@@ -181,7 +229,7 @@ async def answer_stream(
         if provider == "anthropic":
             async for d in _stream_anthropic(
                 client, text, model, api_key, system_prompt, max_tokens,
-                images=images,
+                images=images, history=history,
             ):
                 yield d
         elif provider in ("openai", "openai_compatible"):
@@ -195,13 +243,13 @@ async def answer_stream(
                 token_field = "max_tokens"
             async for d in _stream_openai(
                 client, text, model, api_key, system_prompt, max_tokens, url,
-                token_field=token_field, images=images,
+                token_field=token_field, images=images, history=history,
             ):
                 yield d
         elif provider == "gemini":
             async for d in _stream_gemini(
                 client, text, model, api_key, system_prompt, max_tokens,
-                images=images,
+                images=images, history=history,
             ):
                 yield d
         else:
@@ -231,12 +279,13 @@ async def _stream_anthropic(
     system_prompt: str | None,
     max_tokens: int,
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[str]:
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
         "stream": True,
-        "messages": [{"role": "user", "content": _anthropic_content(text, images)}],
+        "messages": _anthropic_messages(text, images, history),
     }
     if system_prompt:
         body["system"] = system_prompt
@@ -275,11 +324,9 @@ async def _stream_openai(
     url: str,
     token_field: str = "max_completion_tokens",
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[str]:
-    messages: list[dict[str, Any]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": _openai_content(text, images)})
+    messages = _openai_messages(text, system_prompt, images, history)
     body: dict[str, Any] = {
         "model": model,
         token_field: max_tokens,
@@ -311,9 +358,10 @@ async def _stream_gemini(
     system_prompt: str | None,
     max_tokens: int,
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[str]:
     body: dict[str, Any] = {
-        "contents": [{"role": "user", "parts": _gemini_parts(text, images)}],
+        "contents": _gemini_contents(text, images, history),
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
     if system_prompt:
@@ -411,12 +459,13 @@ async def _answer_anthropic(
     system_prompt: str | None,
     max_tokens: int,
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     """Call the Anthropic Messages API and return the reply text."""
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": _anthropic_content(text, images)}],
+        "messages": _anthropic_messages(text, images, history),
     }
     if system_prompt:
         body["system"] = system_prompt
@@ -448,6 +497,7 @@ async def _answer_openai(
     url: str = "https://api.openai.com/v1/chat/completions",
     token_field: str = "max_completion_tokens",
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     """Call an OpenAI-style chat completions API and return the reply text.
 
@@ -455,10 +505,7 @@ async def _answer_openai(
     (and o-series/GPT-5) require ``max_completion_tokens``; third-party
     OpenAI-compatible servers still expect ``max_tokens`` — hence ``token_field``.
     """
-    messages: list[dict[str, Any]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": _openai_content(text, images)})
+    messages = _openai_messages(text, system_prompt, images, history)
     body: dict[str, Any] = {
         "model": model,
         token_field: max_tokens,
@@ -486,10 +533,11 @@ async def _answer_gemini(
     system_prompt: str | None,
     max_tokens: int,
     images: list[dict[str, str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     """Call the Gemini generateContent API and return the reply text."""
     body: dict[str, Any] = {
-        "contents": [{"role": "user", "parts": _gemini_parts(text, images)}],
+        "contents": _gemini_contents(text, images, history),
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
     if system_prompt:
