@@ -16,9 +16,10 @@ import tempfile
 from threading import Lock
 from typing import Any
 
-# Model size for faster-whisper. "base" is a good accuracy/speed balance on CPU;
-# fall back to "tiny" if "base" is too slow/large in a given environment.
-MODEL_SIZE = os.environ.get("FLOWY_WHISPER_MODEL", "base")
+# Model for faster-whisper. "tiny.en" is the fast default (~1.8s for a 7s clip
+# on an M4, accurate for clear English dictation). Override with
+# FLOWY_WHISPER_MODEL: "base.en" for more accuracy, "base" for multilingual.
+MODEL_SIZE = os.environ.get("FLOWY_WHISPER_MODEL", "tiny.en")
 
 _model: Any = None
 _model_lock = Lock()
@@ -34,8 +35,11 @@ def _get_model() -> Any:
             # Imported lazily so importing this module is cheap.
             from faster_whisper import WhisperModel
 
-            # int8 on CPU keeps memory + latency low and works everywhere.
-            _model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+            # int8 on CPU keeps memory + latency low and works everywhere;
+            # more threads on Apple Silicon shortens transcription time.
+            _model = WhisperModel(
+                MODEL_SIZE, device="cpu", compute_type="int8", cpu_threads=8
+            )
     return _model
 
 
@@ -64,7 +68,18 @@ def transcribe(audio_bytes: bytes) -> str:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
 
-        segments, _info = model.transcribe(tmp_path, beam_size=5)
+        # Speed: greedy decoding (beam_size=1) instead of a 5-wide beam, VAD to
+        # skip silence, no cross-segment conditioning, and skip language
+        # detection for English-only models. Much faster, negligible quality loss
+        # for short dictation.
+        lang = "en" if MODEL_SIZE.endswith(".en") else None
+        segments, _info = model.transcribe(
+            tmp_path,
+            beam_size=1,
+            language=lang,
+            vad_filter=True,
+            condition_on_previous_text=False,
+        )
         text = "".join(segment.text for segment in segments)
         return text.strip()
     finally:
