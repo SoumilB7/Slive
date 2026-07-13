@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorder()
     private let hotkey = HotkeyMonitor()
     private let settingsWindow = SettingsWindowController()
-    private let whisper = WhisperEngine()   // on-device STT (Neural Engine)
+    private let whisper = TranscriptionModel.shared   // on-device STT (Neural Engine)
     private let assistant = AssistantClient()
     private let backend = BackendManager()
 
@@ -66,12 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.hotkey = Settings.shared.hotkey
         hotkey.assistantHotkey = Settings.shared.assistantHotkey
 
-        // Preload the on-device transcription model (downloads once) so the first
-        // dictation is instant; reload it when the user changes the model.
+        // Preload the on-device transcription model IF it's already downloaded
+        // (never auto-downloads — the user does that from Settings). Refresh the
+        // status when the selected model changes.
         Settings.shared.onWhisperModelChange = { [weak self] model in
-            Task { await self?.whisper.load(model) }
+            self?.whisper.preloadIfDownloaded(model)
         }
-        Task { await whisper.load(Settings.shared.whisperModel) }
+        whisper.preloadIfDownloaded(Settings.shared.whisperModel)
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
@@ -193,16 +194,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if Task.isCancelled { return }
 
             // 1. Transcribe ON-DEVICE with WhisperKit (Neural Engine) — no backend
-            //    needed for STT. The model is preloaded at launch.
-            var transcript: String?
-            do {
-                transcript = try await whisper.transcribe(wavURL, model: whisperModel)
-            } catch {
-                NSLog("Slive: WhisperKit transcription failed — \(error)")
-            }
+            //    needed for STT. Returns nil if the model isn't ready (not
+            //    downloaded / still preparing) — we then tell the user instead of
+            //    hanging on the spinner.
+            let transcript = await whisper.transcribe(wavURL, model: whisperModel)
             if Task.isCancelled { return }
-            guard let text = transcript else {
-                await MainActor.run { self.finishTranscription(text: nil) }
+            guard let text = transcript, !text.isEmpty else {
+                await MainActor.run { self.handleNoTranscript() }
                 return
             }
 
@@ -305,6 +303,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                    : OverlayMetrics.assistantPanelSize(for: trimmed))
         overlay.setInteractive(true)
         scheduleCollapse(after: assistantDisplayDuration)
+    }
+
+    /// Empty/failed transcript. If the model isn't ready, say so (with what to
+    /// do); otherwise just fade the overlay (silence / a mis-hit key).
+    @MainActor private func handleNoTranscript() {
+        let message: String?
+        switch whisper.status {
+        case .notDownloaded:
+            message = "Transcription model isn't downloaded yet — open Settings → General to download it."
+        case .downloading(let p):
+            message = "Downloading the transcription model… \(Int(p * 100))%"
+        case .preparing:
+            message = "Preparing the model for the Neural Engine (first time only)…"
+        case .failed(let e):
+            message = "Transcription model failed to load: \(e)"
+        case .ready:
+            message = nil   // genuinely empty (silence) — just fade
+        }
+        guard let message else {
+            model.finishListening(); hideOverlaySoon(); return
+        }
+        model.showResult(message)
+        overlay.resize(to: OverlayMetrics.panelSize(for: message))
+        overlay.setInteractive(true)
+        scheduleCollapse(after: 5.0)
     }
 
     /// Show an assistant failure (no Continue footer) and collapse soon.

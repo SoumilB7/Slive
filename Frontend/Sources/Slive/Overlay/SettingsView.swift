@@ -8,6 +8,7 @@ struct SettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject var permissions: PermissionsModel
     @ObservedObject private var history = HistoryStore.shared
+    @ObservedObject private var transcription = TranscriptionModel.shared
     var onRelaunch: () -> Void
 
     private let accent = Color(hue: 0.50, saturation: 0.68, brightness: 0.86)
@@ -315,7 +316,7 @@ struct SettingsView: View {
     ]
 
     private var modelPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Transcription model")
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.92))
@@ -331,11 +332,48 @@ struct SettingsView: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .tint(accent)
-            Text("Runs on-device (Apple Neural Engine) — private and fast. Switching downloads the model once.")
+
+            modelStatusRow
+
+            Text("Runs on-device (Apple Neural Engine) — private and fast. Each model downloads once.")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.5))
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .onAppear { transcription.refresh(for: settings.whisperModel) }
+        .onChange(of: settings.whisperModel) { _, m in transcription.refresh(for: m) }
+    }
+
+    /// Status + Download control for the selected transcription model.
+    @ViewBuilder private var modelStatusRow: some View {
+        HStack(spacing: 10) {
+            switch transcription.status {
+            case .ready:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("Ready").foregroundStyle(.white.opacity(0.8))
+            case .notDownloaded:
+                Image(systemName: "arrow.down.circle").foregroundStyle(accent)
+                Text("Not downloaded").foregroundStyle(.white.opacity(0.7))
+                Spacer()
+                Button("Download") {
+                    Task { await transcription.download(settings.whisperModel) }
+                }
+                .buttonStyle(.borderedProminent).tint(accent).controlSize(.small)
+            case .downloading(let p):
+                ProgressView(value: p).frame(width: 120)
+                Text("Downloading \(Int(p * 100))%").foregroundStyle(.white.opacity(0.7))
+            case .preparing:
+                ProgressView().controlSize(.small)
+                Text("Preparing for the Neural Engine…").foregroundStyle(.white.opacity(0.7))
+            case .failed(let e):
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(e).foregroundStyle(.orange.opacity(0.9)).lineLimit(2)
+                Spacer()
+                Button("Retry") { Task { await transcription.download(settings.whisperModel) } }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
+        }
+        .font(.system(size: 12, weight: .medium, design: .rounded))
     }
 
     // MARK: - Vocabulary
