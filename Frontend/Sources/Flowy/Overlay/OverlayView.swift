@@ -57,6 +57,13 @@ enum OverlayMetrics {
         let b = boxSize(for: text)
         return CGSize(width: b.width + margin * 2, height: b.height + margin * 2)
     }
+
+    /// Fixed box used while an answer streams in (no per-token resizing).
+    static let streamingBoxSize = CGSize(width: maxBoxWidth, height: 200)
+    static var streamingPanelSize: CGSize {
+        CGSize(width: streamingBoxSize.width + margin * 2,
+               height: streamingBoxSize.height + margin * 2)
+    }
 }
 
 /// A tiny, quiet black pill that sits just above the bottom edge. It shows a
@@ -84,6 +91,7 @@ struct OverlayView: View {
     }
 
     private var containerSize: CGSize {
+        if model.streaming { return OverlayMetrics.streamingPanelSize }
         if case .result(let t) = model.phase { return OverlayMetrics.panelSize(for: t) }
         return OverlayMetrics.pillSize
     }
@@ -141,21 +149,31 @@ struct OverlayView: View {
     // MARK: - Result (grown box, sized to the text)
 
     private func resultBox(_ text: String) -> some View {
-        let box = OverlayMetrics.boxSize(for: text)
+        // While streaming, use a fixed box (no per-token resize); otherwise size
+        // to the final text.
+        let box = model.streaming ? OverlayMetrics.streamingBoxSize
+                                  : OverlayMetrics.boxSize(for: text)
         // Text column is the box minus its padding, the button, and the gap.
         let textWidth = box.width - OverlayMetrics.hInset * 2
             - OverlayMetrics.copyReserve
-        return ScrollView(.vertical, showsIndicators: true) {
-            Text(text)
-                .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
-                .foregroundStyle(.white.opacity(0.95))
-                .multilineTextAlignment(.leading)
-                .lineSpacing(1)
-                .textSelection(.enabled)
-                .frame(width: textWidth, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, OverlayMetrics.hInset)
-                .padding(.vertical, OverlayMetrics.vInset)
+        return ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(text)
+                    .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(1)
+                    .textSelection(.enabled)
+                    .frame(width: textWidth, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, OverlayMetrics.hInset)
+                    .padding(.vertical, OverlayMetrics.vInset)
+                // Anchor so we can keep the newest text in view while streaming.
+                Color.clear.frame(height: 1).id("streamEnd")
+            }
+            .onChange(of: text) { _, _ in
+                if model.streaming { proxy.scrollTo("streamEnd", anchor: .bottom) }
+            }
         }
             .frame(width: box.width, height: box.height, alignment: .topLeading)
             // Copy button pinned to the top-right so it stays put as text scrolls.

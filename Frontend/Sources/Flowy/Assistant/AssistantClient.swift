@@ -85,13 +85,16 @@ struct AssistantClient {
         return payload.models
     }
 
-    /// Send `text` to the assistant using `config` (+ its Keychain key) and
-    /// return the answer. Throws with a human-readable message on failure.
-    func ask(_ text: String, config: AssistantConfig, apiKey: String) async throws -> String {
-        let provider = config.provider
-        guard !apiKey.isEmpty else { throw AssistantError.missingKey(provider.displayName) }
+    private struct StreamChunk: Decodable {
+        let delta: String?
+        let error: String?
+        let done: Bool?
+    }
 
-        let body = RequestBody(
+    /// Build the shared POST body for a prompt.
+    private func makeBody(_ text: String, config: AssistantConfig, apiKey: String) -> RequestBody {
+        let provider = config.provider
+        return RequestBody(
             text: text,
             provider: provider.wire,
             model: config.model(for: provider),
@@ -100,6 +103,61 @@ struct AssistantClient {
             system_prompt: PromptLibrary.resolvedSystemPrompt(for: config),
             max_tokens: 1024
         )
+    }
+
+    /// Stream the assistant's reply as it's generated, yielding text deltas.
+    /// The consumer accumulates them. Finishes (throwing) on any failure.
+    func askStream(_ text: String, config: AssistantConfig, apiKey: String)
+        -> AsyncThrowingStream<String, Error>
+    {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard !apiKey.isEmpty else {
+                        throw AssistantError.missingKey(config.provider.displayName)
+                    }
+                    var request = URLRequest(
+                        url: URL(string: "http://127.0.0.1:50711/assistant/stream")!)
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = try JSONEncoder().encode(makeBody(text, config: config, apiKey: apiKey))
+                    request.timeoutInterval = timeout
+
+                    let cfg = URLSessionConfiguration.ephemeral
+                    cfg.timeoutIntervalForRequest = timeout
+                    cfg.timeoutIntervalForResource = timeout
+                    cfg.waitsForConnectivity = false
+                    let session = URLSession(configuration: cfg)
+
+                    let (bytes, response) = try await session.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else { throw AssistantError.notHTTP }
+                    guard http.statusCode == 200 else { throw AssistantError.badStatus(http.statusCode) }
+
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        guard let data = line.data(using: .utf8),
+                              let chunk = try? JSONDecoder().decode(StreamChunk.self, from: data)
+                        else { continue }
+                        if let err = chunk.error { throw AssistantError.server(err) }
+                        if chunk.done == true { break }
+                        if let d = chunk.delta { continuation.yield(d) }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Send `text` to the assistant using `config` (+ its Keychain key) and
+    /// return the answer. Throws with a human-readable message on failure.
+    func ask(_ text: String, config: AssistantConfig, apiKey: String) async throws -> String {
+        let provider = config.provider
+        guard !apiKey.isEmpty else { throw AssistantError.missingKey(provider.displayName) }
+
+        let body = makeBody(text, config: config, apiKey: apiKey)
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"

@@ -22,6 +22,9 @@ final class AudioModel: ObservableObject {
     @Published private(set) var levels: [Float]
     @Published private(set) var glow: Float = 0        // eased RMS, drives the halo
     @Published private(set) var elapsed: TimeInterval = 0
+    /// True while an assistant answer is streaming in, so the box uses a fixed
+    /// size and auto-scrolls instead of resizing on every token.
+    @Published private(set) var streaming = false
 
     let bandCount: Int
 
@@ -49,6 +52,7 @@ final class AudioModel: ObservableObject {
     // MARK: - Lifecycle
 
     func beginListening() {
+        streaming = false
         phase = .listening
         elapsed = 0
         startDate = Date()
@@ -78,9 +82,24 @@ final class AudioModel: ObservableObject {
 
     /// Backend returned text — grow the pill into a box showing it.
     func showResult(_ text: String) {
+        streaming = false
         phase = .result(text: text)
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
+    }
+
+    /// Start streaming an assistant answer into a fixed-size box.
+    func beginStreaming() {
+        streaming = true
+        phase = .result(text: "")
+        targetLevels = [Float](repeating: 0, count: bandCount)
+        targetGlow = 0
+    }
+
+    /// Update the streaming answer text (box stays fixed size, scrolls).
+    func updateStreaming(_ text: String) {
+        guard streaming else { return }
+        phase = .result(text: text)
     }
 
     func finishSaved(seconds: Double) {
@@ -97,6 +116,7 @@ final class AudioModel: ObservableObject {
 
     func reset() {
         phase = .idle
+        streaming = false
         startDate = nil
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
