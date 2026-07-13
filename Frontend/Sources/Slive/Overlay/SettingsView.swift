@@ -310,7 +310,8 @@ struct SettingsView: View {
         var id: String { model }
     }
     private let modelChoices: [ModelChoice] = [
-        .init(label: "Fast", model: "base.en", detail: "Quickest, good accuracy · ~150 MB"),
+        .init(label: "Tiny", model: "tiny.en", detail: "Fastest, basic accuracy · ~75 MB"),
+        .init(label: "Fast", model: "base.en", detail: "Quick, good accuracy · ~150 MB"),
         .init(label: "Balanced", model: "large-v3-v20240930_626MB", detail: "Recommended — accurate & fast · ~600 MB"),
         .init(label: "Accurate", model: "large-v3", detail: "Highest accuracy, a touch slower · ~1.5 GB"),
     ]
