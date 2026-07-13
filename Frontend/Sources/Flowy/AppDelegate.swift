@@ -263,8 +263,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Switch the overlay to the streaming answer box.
-        model.beginStreaming()
+        // Switch the overlay to the streaming answer box. When continuing, show
+        // the prior turns above the new answer so it reads as one conversation.
+        let priorTurns = conversation.map {
+            AudioModel.ChatTurn(role: $0.role, text: $0.content)
+        }
+        model.beginStreaming(priorTurns: priorTurns, question: question)
         overlay.resize(to: OverlayMetrics.streamingPanelSize)
         overlay.setInteractive(true)
 
@@ -296,8 +300,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         HistoryStore.shared.add(trimmed)
         pendingTurn = (question, trimmed)
+        let wasChat = model.isChat
         model.showAssistantResult(trimmed)
-        overlay.resize(to: OverlayMetrics.assistantPanelSize(for: trimmed))
+        // Chat transcripts use the fixed scrolling box; a fresh single answer
+        // sizes to its text.
+        overlay.resize(to: wasChat ? OverlayMetrics.assistantStreamingPanelSize
+                                   : OverlayMetrics.assistantPanelSize(for: trimmed))
         overlay.setInteractive(true)
         scheduleCollapse(after: assistantDisplayDuration)
     }

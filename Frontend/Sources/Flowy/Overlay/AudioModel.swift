@@ -5,6 +5,13 @@ import SwiftUI
 /// toward those targets so the bars feel fluid and alive rather than jittery.
 final class AudioModel: ObservableObject {
 
+    /// One displayed conversation turn (role is "user" or "assistant").
+    struct ChatTurn: Identifiable, Equatable {
+        let id = UUID()
+        let role: String
+        let text: String
+    }
+
     enum Phase: Equatable {
         case idle
         case listening
@@ -36,6 +43,14 @@ final class AudioModel: ObservableObject {
     /// True while showing an assistant answer (streaming or final) — drives the
     /// "Continue" footer button.
     @Published private(set) var assistantResult = false
+    /// Prior conversation turns shown above the current answer when continuing a
+    /// chat (empty for a fresh, single question).
+    @Published private(set) var priorTurns: [ChatTurn] = []
+    /// The current question being answered — shown as a user bubble in chat mode.
+    @Published private(set) var currentQuestion: String = ""
+
+    /// Whether to render the box as a multi-turn transcript.
+    var isChat: Bool { !priorTurns.isEmpty }
 
     let bandCount: Int
 
@@ -96,13 +111,15 @@ final class AudioModel: ObservableObject {
     func showResult(_ text: String) {
         streaming = false
         assistantResult = false
+        priorTurns = []
+        currentQuestion = ""
         phase = .result(text: text)
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
     }
 
     /// Final assistant answer — like `showResult` but flags it so the Continue
-    /// footer shows.
+    /// footer shows. Keeps the transcript (priorTurns/currentQuestion) in place.
     func showAssistantResult(_ text: String) {
         streaming = false
         assistantResult = true
@@ -111,10 +128,13 @@ final class AudioModel: ObservableObject {
         targetGlow = 0
     }
 
-    /// Start streaming an assistant answer into a fixed-size box.
-    func beginStreaming() {
+    /// Start streaming an assistant answer into a fixed-size box. `priorTurns`
+    /// are shown above the answer when continuing a chat.
+    func beginStreaming(priorTurns: [ChatTurn] = [], question: String = "") {
         streaming = true
         assistantResult = true
+        self.priorTurns = priorTurns
+        self.currentQuestion = question
         phase = .result(text: "")
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
@@ -143,6 +163,8 @@ final class AudioModel: ObservableObject {
         streaming = false
         assistantListening = false
         assistantResult = false
+        priorTurns = []
+        currentQuestion = ""
         startDate = nil
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
