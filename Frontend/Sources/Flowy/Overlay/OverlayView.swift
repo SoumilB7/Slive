@@ -17,11 +17,13 @@ enum OverlayMetrics {
     static let minBoxHeight: CGFloat = 30
     static let cornerRadius: CGFloat = 14
 
-    static let copyButtonWidth: CGFloat = 16   // width reserved for the copy button
-    static let copyGap: CGFloat = 8            // gap between text and copy button
+    static let copyButtonWidth: CGFloat = 16    // width reserved for the copy button
+    static let dismissButtonWidth: CGFloat = 16 // width reserved for the ✕ button
+    static let copyGap: CGFloat = 8             // gap between text and the buttons
+    static let buttonGap: CGFloat = 6           // gap between the two buttons
 
-    /// Total horizontal room the copy button (plus its gap) claims inside the box.
-    static let copyReserve: CGFloat = copyButtonWidth + copyGap
+    /// Total horizontal room the copy + dismiss buttons (plus gaps) claim.
+    static let copyReserve: CGFloat = copyGap + copyButtonWidth + buttonGap + dismissButtonWidth
 
     /// Font used for both rendering (SwiftUI) and measurement (AppKit).
     static func roundedFont(size: CGFloat) -> NSFont {
@@ -64,6 +66,19 @@ enum OverlayMetrics {
         CGSize(width: streamingBoxSize.width + margin * 2,
                height: streamingBoxSize.height + margin * 2)
     }
+
+    /// Extra height added below an assistant answer for the "Continue" button.
+    static let continueFooterHeight: CGFloat = 34
+
+    /// Panel sizes for an assistant answer (box + Continue footer).
+    static func assistantPanelSize(for text: String) -> CGSize {
+        let p = panelSize(for: text)
+        return CGSize(width: p.width, height: p.height + continueFooterHeight)
+    }
+    static var assistantStreamingPanelSize: CGSize {
+        CGSize(width: streamingPanelSize.width,
+               height: streamingPanelSize.height + continueFooterHeight)
+    }
 }
 
 /// A tiny, quiet black pill that sits just above the bottom edge. It shows a
@@ -95,7 +110,10 @@ struct OverlayView: View {
 
     private var containerSize: CGSize {
         if model.streaming { return OverlayMetrics.streamingPanelSize }
-        if case .result(let t) = model.phase { return OverlayMetrics.panelSize(for: t) }
+        if case .result(let t) = model.phase {
+            return model.assistantResult ? OverlayMetrics.assistantPanelSize(for: t)
+                                          : OverlayMetrics.panelSize(for: t)
+        }
         return OverlayMetrics.pillSize
     }
 
@@ -165,7 +183,34 @@ struct OverlayView: View {
 
     // MARK: - Result (grown box, sized to the text)
 
+    private let teal = Color(hue: 0.50, saturation: 0.68, brightness: 0.86)
+
+    /// The result presentation: the answer box, plus a "Continue" button below
+    /// it for assistant answers.
     private func resultBox(_ text: String) -> some View {
+        VStack(spacing: 8) {
+            answerBox(text)
+            if model.assistantResult && !model.streaming {
+                Button { model.onContinue?() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.turn.down.right")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Continue")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(teal.opacity(0.32)))
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .help("Keep this chat — your next assistant question continues it")
+            }
+        }
+    }
+
+    private func answerBox(_ text: String) -> some View {
         // While streaming, use a fixed box (no per-token resize); otherwise size
         // to the final text.
         let box = model.streaming ? OverlayMetrics.streamingBoxSize
@@ -196,11 +241,15 @@ struct OverlayView: View {
             }
         }
             .frame(width: box.width, height: box.height, alignment: .topLeading)
-            // Copy button pinned to the top-right so it stays put as text scrolls.
+            // Copy + dismiss buttons pinned to the top-right so they stay put as
+            // text scrolls.
             .overlay(alignment: .topTrailing) {
-                CopyButton(text: text)
-                    .padding(.top, OverlayMetrics.vInset)
-                    .padding(.trailing, OverlayMetrics.hInset)
+                HStack(spacing: OverlayMetrics.buttonGap) {
+                    CopyButton(text: text)
+                    DismissButton { model.onDismiss?() }
+                }
+                .padding(.top, OverlayMetrics.vInset)
+                .padding(.trailing, OverlayMetrics.hInset)
             }
             .background(
                 RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous)
@@ -241,6 +290,23 @@ private struct CopyButton: View {
         }
         .buttonStyle(.plain)
         .help("Copy")
+    }
+}
+
+/// A small ✕ that dismisses the result box immediately.
+private struct DismissButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(width: OverlayMetrics.dismissButtonWidth, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Dismiss")
     }
 }
 

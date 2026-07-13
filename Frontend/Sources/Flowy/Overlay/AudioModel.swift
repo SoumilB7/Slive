@@ -18,6 +18,11 @@ final class AudioModel: ObservableObject {
         case result(text: String)
     }
 
+    /// Invoked when the user taps the dismiss (✕) button on a result box.
+    var onDismiss: (() -> Void)?
+    /// Invoked when the user taps "Continue" under an assistant answer.
+    var onContinue: (() -> Void)?
+
     @Published var phase: Phase = .idle
     @Published private(set) var levels: [Float]
     @Published private(set) var glow: Float = 0        // eased RMS, drives the halo
@@ -28,6 +33,9 @@ final class AudioModel: ObservableObject {
     /// True while the CURRENT recording is for the assistant (fn+ctrl) rather
     /// than plain dictation — drives which listening animation the pill shows.
     @Published private(set) var assistantListening = false
+    /// True while showing an assistant answer (streaming or final) — drives the
+    /// "Continue" footer button.
+    @Published private(set) var assistantResult = false
 
     let bandCount: Int
 
@@ -84,9 +92,20 @@ final class AudioModel: ObservableObject {
         targetGlow = 0
     }
 
-    /// Backend returned text — grow the pill into a box showing it.
+    /// Backend returned text (dictation, or an error) — grow the pill into a box.
     func showResult(_ text: String) {
         streaming = false
+        assistantResult = false
+        phase = .result(text: text)
+        targetLevels = [Float](repeating: 0, count: bandCount)
+        targetGlow = 0
+    }
+
+    /// Final assistant answer — like `showResult` but flags it so the Continue
+    /// footer shows.
+    func showAssistantResult(_ text: String) {
+        streaming = false
+        assistantResult = true
         phase = .result(text: text)
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
@@ -95,6 +114,7 @@ final class AudioModel: ObservableObject {
     /// Start streaming an assistant answer into a fixed-size box.
     func beginStreaming() {
         streaming = true
+        assistantResult = true
         phase = .result(text: "")
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
@@ -122,6 +142,7 @@ final class AudioModel: ObservableObject {
         phase = .idle
         streaming = false
         assistantListening = false
+        assistantResult = false
         startDate = nil
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
