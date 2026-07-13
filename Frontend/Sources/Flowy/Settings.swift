@@ -15,6 +15,7 @@ final class Settings: ObservableObject {
         static let autoInsert = "autoInsert"
         static let hotwords = "hotwords"
         static let contextPrompt = "contextPrompt"
+        static let holdActivationDelay = "holdActivationDelay"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -77,6 +78,12 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(contextPrompt, forKey: Keys.contextPrompt) }
     }
 
+    /// How long you must hold the key before recording begins (seconds). Brief
+    /// taps under this do nothing. Default 0.2s.
+    @Published var holdActivationDelay: Double {
+        didSet { UserDefaults.standard.set(holdActivationDelay, forKey: Keys.holdActivationDelay) }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -110,6 +117,11 @@ final class Settings: ObservableObject {
         }
         hotwords = UserDefaults.standard.string(forKey: Keys.hotwords) ?? ""
         contextPrompt = UserDefaults.standard.string(forKey: Keys.contextPrompt) ?? ""
+        if UserDefaults.standard.object(forKey: Keys.holdActivationDelay) == nil {
+            holdActivationDelay = 0.2
+        } else {
+            holdActivationDelay = UserDefaults.standard.double(forKey: Keys.holdActivationDelay)
+        }
     }
 
     // MARK: - Assistant API keys (Keychain-backed)
