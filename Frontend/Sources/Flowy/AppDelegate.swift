@@ -130,14 +130,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseWorkItem?.cancel()
         collapseWorkItem = nil
 
-        model.beginListening()
+        model.beginListening(assistant: currentAction == .assist)
         overlay.show()
         recordStart = Date()
         if !recorder.start() {
             NSLog("Flowy: mic unavailable")
             model.finishListening()
             hideOverlaySoon()
+            return
         }
+        // Subtle audio cue that a call activated — distinct per call type.
+        FeedbackPlayer.shared.playActivation(for: currentAction)
     }
 
     private func stopRecording() {

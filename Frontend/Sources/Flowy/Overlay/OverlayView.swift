@@ -78,6 +78,9 @@ struct OverlayView: View {
     private var isListening: Bool {
         if case .listening = model.phase { return true }; return false
     }
+    /// Dictation listen (waveform pill) vs. assistant listen (black-hole pill).
+    private var isDictationListening: Bool { isListening && !model.assistantListening }
+    private var isAssistantListening: Bool { isListening && model.assistantListening }
     private var isTranscribing: Bool {
         if case .transcribing = model.phase { return true }; return false
     }
@@ -99,8 +102,12 @@ struct OverlayView: View {
     var body: some View {
         ZStack {
             listeningPill
-                .opacity(isListening ? 1 : 0)
-                .scaleEffect(isListening ? 1 : 0.9)
+                .opacity(isDictationListening ? 1 : 0)
+                .scaleEffect(isDictationListening ? 1 : 0.9)
+
+            assistantListeningPill
+                .opacity(isAssistantListening ? 1 : 0)
+                .scaleEffect(isAssistantListening ? 1 : 0.9)
 
             transcribingPill(active: isTranscribing)
                 .opacity(isTranscribing ? 1 : 0)
@@ -130,6 +137,16 @@ struct OverlayView: View {
             .background(Capsule().fill(Color.black.opacity(0.92)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
+    }
+
+    // MARK: - Assistant listening (black-hole orbit pill)
+
+    private var assistantListeningPill: some View {
+        // A round "ball" instead of the wide waveform capsule — the view draws
+        // its own dark disc + orbiting mass, centered in the pill container.
+        BlackHoleOrbitView(active: isAssistantListening)
+            .frame(width: 40, height: 40)
             .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
     }
 
