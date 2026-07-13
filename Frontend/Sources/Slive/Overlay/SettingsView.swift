@@ -291,10 +291,51 @@ struct SettingsView: View {
                     .foregroundStyle(.white.opacity(0.5))
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider().overlay(.white.opacity(0.08))
+
+            modelPicker
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(card)
+    }
+
+    /// On-device (Neural Engine) transcription model — accuracy vs. speed.
+    private struct ModelChoice: Identifiable {
+        let label: String
+        let model: String
+        let detail: String
+        var id: String { model }
+    }
+    private let modelChoices: [ModelChoice] = [
+        .init(label: "Fast", model: "base.en", detail: "quickest, decent accuracy"),
+        .init(label: "Balanced", model: "large-v3-v20240930_626MB", detail: "recommended — accurate & fast on the Neural Engine (~600 MB)"),
+        .init(label: "Accurate", model: "large-v3", detail: "highest accuracy, a bit slower (~1.5 GB)"),
+    ]
+
+    private var modelPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Transcription model")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+            Picker("", selection: $settings.whisperModel) {
+                ForEach(modelChoices) { c in
+                    Text("\(c.label) · \(c.detail)").tag(c.model)
+                }
+                // Keep any custom/previously-saved model selectable.
+                if !modelChoices.contains(where: { $0.model == settings.whisperModel }) {
+                    Text(settings.whisperModel).tag(settings.whisperModel)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .tint(accent)
+            Text("Runs on-device (Apple Neural Engine) — private and fast. Switching downloads the model once.")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: - Vocabulary

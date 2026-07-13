@@ -16,6 +16,7 @@ final class Settings: ObservableObject {
         static let hotwords = "hotwords"
         static let contextPrompt = "contextPrompt"
         static let holdActivationDelay = "holdActivationDelay"
+        static let whisperModel = "whisperModel"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -23,6 +24,9 @@ final class Settings: ObservableObject {
     var onHotkeyChange: ((Hotkey) -> Void)?
     /// Fired whenever the assistant hotkey changes (nil = disabled).
     var onAssistantHotkeyChange: ((Hotkey?) -> Void)?
+    /// Fired when the transcription model changes, so the backend can restart
+    /// with the new FLOWY_WHISPER_MODEL.
+    var onWhisperModelChange: ((String) -> Void)?
 
     /// The user-recorded push-to-talk shortcut. Persisted as JSON.
     @Published var hotkey: Hotkey {
@@ -84,6 +88,15 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(holdActivationDelay, forKey: Keys.holdActivationDelay) }
     }
 
+    /// WhisperKit model the on-device (Neural Engine) transcriber loads. Changing
+    /// it reloads WhisperKit; the new model downloads once.
+    @Published var whisperModel: String {
+        didSet {
+            UserDefaults.standard.set(whisperModel, forKey: Keys.whisperModel)
+            onWhisperModelChange?(whisperModel)
+        }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -122,6 +135,10 @@ final class Settings: ObservableObject {
         } else {
             holdActivationDelay = UserDefaults.standard.double(forKey: Keys.holdActivationDelay)
         }
+        // Default to the WhisperKit-recommended turbo model — accurate and fast
+        // on the Neural Engine, ~600 MB.
+        whisperModel = UserDefaults.standard.string(forKey: Keys.whisperModel)
+            ?? "large-v3-v20240930_626MB"
     }
 
     // MARK: - Assistant API keys (Keychain-backed)
