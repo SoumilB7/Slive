@@ -131,10 +131,12 @@ final class Settings: ObservableObject {
         KeychainStore.get(provider.keychainAccount) ?? ""
     }
 
-    /// Store (or clear, when empty) a provider's API key. Also nudges observers
-    /// so the settings UI reflects the change.
+    /// Store (or clear, when empty) a provider's API key. Trimmed so a stray
+    /// newline/space (common when pasting) can't produce an illegal HTTP header.
+    /// Also nudges observers so the settings UI reflects the change.
     func setAPIKey(_ key: String, for provider: AssistantProvider) {
-        KeychainStore.set(key, for: provider.keychainAccount)
+        let clean = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        KeychainStore.set(clean, for: provider.keychainAccount)
         objectWillChange.send()
     }
 
