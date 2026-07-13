@@ -310,28 +310,40 @@ struct SettingsView: View {
         var id: String { model }
     }
     private let modelChoices: [ModelChoice] = [
-        .init(label: "Fast", model: "base.en", detail: "quickest, decent accuracy"),
-        .init(label: "Balanced", model: "large-v3-v20240930_626MB", detail: "recommended — accurate & fast on the Neural Engine (~600 MB)"),
-        .init(label: "Accurate", model: "large-v3", detail: "highest accuracy, a bit slower (~1.5 GB)"),
+        .init(label: "Fast", model: "base.en", detail: "Quickest, good accuracy · ~150 MB"),
+        .init(label: "Balanced", model: "large-v3-v20240930_626MB", detail: "Recommended — accurate & fast · ~600 MB"),
+        .init(label: "Accurate", model: "large-v3", detail: "Highest accuracy, a touch slower · ~1.5 GB"),
     ]
+
+    private var selectedModelDetail: String {
+        modelChoices.first { $0.model == settings.whisperModel }?.detail
+            ?? "Custom model · \(settings.whisperModel)"
+    }
 
     private var modelPicker: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Transcription model")
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.92))
-            Picker("", selection: $settings.whisperModel) {
-                ForEach(modelChoices) { c in
-                    Text("\(c.label) · \(c.detail)").tag(c.model)
+            HStack(spacing: 10) {
+                Picker("", selection: $settings.whisperModel) {
+                    ForEach(modelChoices) { c in
+                        Text(c.label).tag(c.model)
+                    }
+                    // Keep any custom/previously-saved model selectable.
+                    if !modelChoices.contains(where: { $0.model == settings.whisperModel }) {
+                        Text("Custom").tag(settings.whisperModel)
+                    }
                 }
-                // Keep any custom/previously-saved model selectable.
-                if !modelChoices.contains(where: { $0.model == settings.whisperModel }) {
-                    Text(settings.whisperModel).tag(settings.whisperModel)
-                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(accent)
+                .fixedSize()
+                Text(selectedModelDetail)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.55))
+                Spacer()
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .tint(accent)
 
             modelStatusRow
 
