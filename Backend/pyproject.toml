@@ -8,6 +8,7 @@ dependencies = [
   "accelerate>=1.10.0",
   "fastapi>=0.139.0",
   "faster-whisper>=1.2.1",
+  "httpx>=0.27",
   "librosa>=0.11.0",
   "pillow>=11.3.0",
   "soundfile>=0.13.1",

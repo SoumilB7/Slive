@@ -7,28 +7,57 @@ import CoreGraphics
 /// NSEvent monitor (the Settings window is focused during recording), so it
 /// needs no special permission and never leaks the keys into the app.
 struct HotkeyRecorderView: View {
+    /// Which shortcut this recorder edits.
+    enum Target { case dictation, assistant }
+
     @ObservedObject private var settings = Settings.shared
     var accent: Color
+    var target: Target = .dictation
+    var title: String = "Push-to-talk shortcut"
+    var subtitle: String = "Hold this to talk. A modifier + key is suppressed while held."
 
     @State private var recording = false
     @State private var monitor: Any?
     @State private var maxModifiers: UInt64 = 0
 
+    /// Current shortcut for this target (assistant may be unset).
+    private var current: Hotkey? {
+        switch target {
+        case .dictation: return settings.hotkey
+        case .assistant: return settings.assistantHotkey
+        }
+    }
+
+    private var buttonLabel: String {
+        if recording { return "Recording…" }
+        return current?.label ?? "Record"
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Push-to-talk shortcut")
+                Text(title)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.92))
                 Text(recording
                      ? "Press it now — a modifier alone, or a modifier + key (⌥ /). Esc cancels."
-                     : "Hold this to talk. A modifier + key is suppressed while held.")
+                     : subtitle)
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.5))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            Button(recording ? "Recording…" : settings.hotkey.label) {
+            if target == .assistant && current != nil && !recording {
+                Button {
+                    settings.assistantHotkey = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .help("Clear assistant shortcut")
+            }
+            Button(buttonLabel) {
                 recording ? cancel() : startRecording()
             }
             .buttonStyle(.borderedProminent)
@@ -55,7 +84,10 @@ struct HotkeyRecorderView: View {
     }
 
     private func commit(_ hotkey: Hotkey) {
-        settings.hotkey = hotkey
+        switch target {
+        case .dictation: settings.hotkey = hotkey
+        case .assistant: settings.assistantHotkey = hotkey
+        }
         cancel()
     }
 

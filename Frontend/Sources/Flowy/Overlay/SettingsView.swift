@@ -12,6 +12,13 @@ struct SettingsView: View {
 
     private let accent = Color(hue: 0.50, saturation: 0.68, brightness: 0.86)
 
+    /// Top-level sections: plain dictation vs. the LLM assistant.
+    private enum Section: String, CaseIterable, Identifiable {
+        case dictation = "Dictation"
+        case assistant = "Assistant"
+        var id: String { rawValue }
+    }
+
     private enum Tab: String, CaseIterable, Identifiable {
         case general = "General"
         case permissions = "Permissions"
@@ -20,33 +27,44 @@ struct SettingsView: View {
         var id: String { rawValue }
     }
 
+    @State private var section: Section = .dictation
     @State private var tab: Tab = .general
 
     var body: some View {
         VStack(spacing: 0) {
             brandHeader
-            tabBar
+            sectionSwitcher
                 .padding(.horizontal, 24)
-                .padding(.bottom, 4)
-            ScrollView {
-                VStack(spacing: 22) {
-                    switch tab {
-                    case .general:
-                        steps
-                        keyPicker
-                        generalSection
-                    case .permissions:
-                        permissionsSection
-                    case .vocabulary:
-                        vocabularySection
-                    case .history:
-                        historySection
+                .padding(.bottom, 10)
+
+            switch section {
+            case .dictation:
+                tabBar
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 4)
+                ScrollView {
+                    VStack(spacing: 22) {
+                        switch tab {
+                        case .general:
+                            steps
+                            keyPicker
+                            generalSection
+                        case .permissions:
+                            permissionsSection
+                        case .vocabulary:
+                            vocabularySection
+                        case .history:
+                            historySection
+                        }
                     }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 20)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 20)
-                .frame(maxWidth: .infinity)
+            case .assistant:
+                AssistantSettingsView(settings: settings, accent: accent)
             }
+
             footer
                 .padding(.bottom, 16)
         }
@@ -54,6 +72,19 @@ struct SettingsView: View {
         .background(background)
         .onAppear { permissions.startWatching() }
         .onDisappear { permissions.stopWatching() }
+    }
+
+    /// The top-level Dictation ↔ Assistant switch. Styled a touch larger than
+    /// the sub-tab bar so the hierarchy reads clearly.
+    private var sectionSwitcher: some View {
+        Picker("", selection: $section) {
+            ForEach(Section.allCases) { s in
+                Text(s.rawValue).tag(s)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.large)
     }
 
     private var background: some View {

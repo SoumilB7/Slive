@@ -35,5 +35,8 @@
     <!-- Baked at build time: the Backend/ dir whose .venv runs the STT server. -->
     <key>FlowyBackendDir</key>
     <string>__BACKEND_DIR__</string>
+    <!-- Baked at build time: the repo's /prompts folder for assistant prompts. -->
+    <key>FlowyPromptsDir</key>
+    <string>__PROMPTS_DIR__</string>
 </dict>
 </plist>

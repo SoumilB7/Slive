@@ -27,8 +27,11 @@ cp "$BIN" "$CONTENTS/MacOS/Flowy"
 # Backend/ dir whose .venv runs the transcription server (auto-launched by the app).
 mkdir -p "$AUDIOS_DIR"
 BACKEND_DIR="$REPO_DIR/Backend"
+PROMPTS_DIR="$REPO_DIR/Backend/prompts"
+mkdir -p "$PROMPTS_DIR"
 sed -e "s|__AUDIOS_DIR__|$AUDIOS_DIR|g" \
     -e "s|__BACKEND_DIR__|$BACKEND_DIR|g" \
+    -e "s|__PROMPTS_DIR__|$PROMPTS_DIR|g" \
     Resources/Info.plist.template > "$CONTENTS/Info.plist"
 
 # App icon.
