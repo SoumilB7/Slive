@@ -131,10 +131,20 @@ final class BackendManager: ObservableObject {
             return
         }
 
+        // Run the interpreter under a "Slive Backend" name so Activity Monitor
+        // shows it as Slive's, not "python3.13". Best-effort — falls back to the
+        // plain venv python if the rename can't be set up.
+        let launch = namedInterpreter(dir: dir, venvPython: python)
+
         let p = Process()
-        p.executableURL = python
+        p.executableURL = launch.exe
         p.arguments = ["-m", "flowy.server"]
         p.currentDirectoryURL = dir
+        if let extraPath = launch.pythonPath {
+            var env = ProcessInfo.processInfo.environment
+            env["PYTHONPATH"] = env["PYTHONPATH"].map { "\(extraPath):\($0)" } ?? extraPath
+            p.environment = env
+        }
 
         let logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("slive-backend.log")
@@ -155,10 +165,43 @@ final class BackendManager: ObservableObject {
             try p.run()
             process = p
             status = .starting
-            NSLog("Slive: backend starting (pid \(p.processIdentifier)). Log: \(logURL.path)")
+            NSLog("Slive: backend starting (pid \(p.processIdentifier)) as \(launch.exe.lastPathComponent).")
         } catch {
             NSLog("Slive: failed to start backend — \(error)")
         }
+    }
+
+    /// Resolve the venv's real interpreter and expose it under a "Slive Backend"
+    /// hard link beside itself, so `execve` names the process after the link
+    /// (macOS names a process after its real executable — a symlink won't do).
+    /// The link lives next to the real python so its `@rpath` still resolves;
+    /// because it then runs as the *base* interpreter (no venv auto-config), we
+    /// hand it the venv site-packages + `src` via PYTHONPATH. Returns the plain
+    /// venv python (no PYTHONPATH) if any step fails.
+    private func namedInterpreter(dir: URL, venvPython: URL) -> (exe: URL, pythonPath: String?) {
+        let fallback: (URL, String?) = (venvPython, nil)
+        let real = venvPython.resolvingSymlinksInPath()
+        let fm = FileManager.default
+        // Must have resolved OUT of the venv to a real interpreter with a
+        // sibling lib/ (so the hard link's @rpath finds libpython).
+        guard real != venvPython, !real.path.contains("/.venv/"),
+              fm.isExecutableFile(atPath: real.path) else { return fallback }
+
+        let link = real.deletingLastPathComponent().appendingPathComponent("Slive Backend")
+        if !fm.fileExists(atPath: link.path) {
+            do { try fm.linkItem(at: real, to: link) }
+            catch { NSLog("Slive: process rename skipped — \(error)"); return fallback }
+        }
+
+        // Find the venv site-packages (python3.x/site-packages).
+        let lib = dir.appendingPathComponent(".venv/lib")
+        guard let subs = try? fm.contentsOfDirectory(at: lib, includingPropertiesForKeys: nil),
+              let site = subs.first(where: { $0.lastPathComponent.hasPrefix("python") })?
+                  .appendingPathComponent("site-packages"),
+              fm.fileExists(atPath: site.path) else { return fallback }
+
+        let src = dir.appendingPathComponent("src").path
+        return (link, "\(site.path):\(src)")
     }
 
     // MARK: - Health
