@@ -18,7 +18,7 @@ struct HistoryEntry: Codable, Identifiable {
 /// burst of long dictations within the window stays under ~400 KB on disk.
 ///
 /// Persisted as atomic JSON at
-/// `~/Library/Application Support/Flowy/history.json`. Corrupt or missing
+/// `~/Library/Application Support/Slive/history.json`. Corrupt or missing
 /// files degrade to an empty catalogue rather than crashing.
 final class HistoryStore: ObservableObject {
     static let shared = HistoryStore()
@@ -40,7 +40,7 @@ final class HistoryStore: ObservableObject {
 
     /// Serialises all mutation + persistence off the main thread; `@Published`
     /// writes are always hopped back to main.
-    private let queue = DispatchQueue(label: "com.flowy.history")
+    private let queue = DispatchQueue(label: "com.slive.history")
     private var pruneTimer: DispatchSourceTimer?
 
     private let fileURL: URL
@@ -49,7 +49,7 @@ final class HistoryStore: ObservableObject {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let dir = base.appendingPathComponent("Flowy", isDirectory: true)
+        let dir = base.appendingPathComponent("Slive", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("history.json")
 
@@ -158,7 +158,7 @@ final class HistoryStore: ObservableObject {
             let data = try encoder.encode(list)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            NSLog("Flowy: history persist failed: \(error)")
+            NSLog("Slive: history persist failed: \(error)")
         }
     }
 

@@ -13,7 +13,7 @@ enum PromptLibrary {
         if let env = ProcessInfo.processInfo.environment["FLOWY_PROMPTS_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: env, isDirectory: true)
         }
-        if let baked = Bundle.main.object(forInfoDictionaryKey: "FlowyPromptsDir") as? String,
+        if let baked = Bundle.main.object(forInfoDictionaryKey: "SlivePromptsDir") as? String,
            !baked.isEmpty, !baked.contains("__PROMPTS_DIR__") {
             return URL(fileURLWithPath: baked, isDirectory: true)
         }

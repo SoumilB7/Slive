@@ -158,7 +158,7 @@ final class Settings: ObservableObject {
                 }
             }
         } catch {
-            NSLog("Flowy: launch-at-login toggle failed: \(error)")
+            NSLog("Slive: launch-at-login toggle failed: \(error)")
         }
     }
 }

@@ -28,7 +28,7 @@ final class BackendManager: ObservableObject {
         if let env = ProcessInfo.processInfo.environment["FLOWY_BACKEND_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: env)
         }
-        if let baked = Bundle.main.object(forInfoDictionaryKey: "FlowyBackendDir") as? String,
+        if let baked = Bundle.main.object(forInfoDictionaryKey: "SliveBackendDir") as? String,
            !baked.isEmpty, !baked.contains("__BACKEND_DIR__") {
             return URL(fileURLWithPath: baked)
         }
@@ -122,12 +122,12 @@ final class BackendManager: ObservableObject {
 
     private func spawn() {
         guard let dir = backendDir else {
-            NSLog("Flowy: backend dir not configured — cannot start the server.")
+            NSLog("Slive: backend dir not configured — cannot start the server.")
             return
         }
         let python = dir.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            NSLog("Flowy: venv python missing at \(python.path) — run `uv sync` in Backend/.")
+            NSLog("Slive: venv python missing at \(python.path) — run `uv sync` in Backend/.")
             return
         }
 
@@ -137,7 +137,7 @@ final class BackendManager: ObservableObject {
         p.currentDirectoryURL = dir
 
         let logURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flowy-backend.log")
+            .appendingPathComponent("slive-backend.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         if let handle = try? FileHandle(forWritingTo: logURL) {
             p.standardOutput = handle
@@ -155,9 +155,9 @@ final class BackendManager: ObservableObject {
             try p.run()
             process = p
             status = .starting
-            NSLog("Flowy: backend starting (pid \(p.processIdentifier)). Log: \(logURL.path)")
+            NSLog("Slive: backend starting (pid \(p.processIdentifier)). Log: \(logURL.path)")
         } catch {
-            NSLog("Flowy: failed to start backend — \(error)")
+            NSLog("Slive: failed to start backend — \(error)")
         }
     }
 

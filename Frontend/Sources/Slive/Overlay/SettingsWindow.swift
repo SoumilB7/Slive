@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Owns the Settings/home window. Flowy is a normal app (persistent Dock icon),
+/// Owns the Settings/home window. Slive is a normal app (persistent Dock icon),
 /// so closing this window just hides it — the app keeps running.
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     var onRelaunch: () -> Void = {}
@@ -24,7 +24,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                 backing: .buffered,
                 defer: false
             )
-            w.title = "Flowy"
+            w.title = "Slive"
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.isMovableByWindowBackground = true

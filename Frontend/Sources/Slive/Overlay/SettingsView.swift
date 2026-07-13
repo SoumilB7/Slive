@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Flowy's home / settings screen. Doubles as the "what is this" surface:
+/// Slive's home / settings screen. Doubles as the "what is this" surface:
 /// a hero, a three-step explainer, the push-to-talk key picker, and live
 /// permission status you can grant in place.
 struct SettingsView: View {
@@ -101,14 +101,9 @@ struct SettingsView: View {
     private var brandHeader: some View {
         HStack(spacing: 12) {
             BrandMark(size: 44)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Flowy")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("Hold a key. Speak. It's typed.")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.55))
-            }
+            Text("Slive")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
             Spacer()
         }
         .padding(.horizontal, 24)
@@ -454,7 +449,7 @@ struct SettingsView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        Text("Flowy lives in your menu bar · v0.1")
+        Text("Slive lives in your menu bar · v0.1")
             .font(.system(size: 11, weight: .medium, design: .rounded))
             .foregroundStyle(.white.opacity(0.35))
             .padding(.top, 2)

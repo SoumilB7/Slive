@@ -1,8 +1,6 @@
 <div align="center">
 
-# 🎙️ Flowy
-
-### Hold a key. Speak. It's typed.
+# 🎙️ Slive
 
 A local, push-to-talk voice tool for macOS.
 Your voice becomes text — or an AI answer — wherever your cursor is.
@@ -24,14 +22,14 @@ Transcription happens **on your Mac**. Nothing leaves it — unless you turn on 
 ## Setup — about 2 minutes
 
 ```bash
-git clone <your-repo-url> Flowy
-cd Flowy
+git clone <your-repo-url> Slive
+cd Slive
 ./setup.sh
 ```
 
 `./setup.sh` installs everything, builds the app, and launches it. ☕
 
-Then **one manual step** (macOS requires it): in the Flowy window, hit **Grant** on each permission, then **Relaunch**.
+Then **one manual step** (macOS requires it): in the Slive window, hit **Grant** on each permission, then **Relaunch**.
 
 | | |
 |---|---|
@@ -47,7 +45,7 @@ Then **one manual step** (macOS requires it): in the Flowy window, hit **Grant**
 
 ## Under the hood
 
-Flowy is two pieces — a Mac app and a tiny local server it starts for you:
+Slive is two pieces — a Mac app and a tiny local server it starts for you:
 
 | | | |
 |---|---|---|

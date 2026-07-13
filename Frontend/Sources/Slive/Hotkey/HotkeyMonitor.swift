@@ -64,7 +64,7 @@ final class HotkeyMonitor {
         // Monitoring, a chord needs Accessibility.
         _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
         _ = Self.ensureAccessibility(prompt: false)
-        NSLog("Flowy: InputMonitoring=\(Self.inputMonitoringGranted) Accessibility=\(AXIsProcessTrusted())")
+        NSLog("Slive: InputMonitoring=\(Self.inputMonitoringGranted) Accessibility=\(AXIsProcessTrusted())")
 
         installTap()
         if !tapGranted { startPolling() }
@@ -126,7 +126,7 @@ final class HotkeyMonitor {
         runLoopSource = src
         installedConsuming = consuming
         startHealthCheck()
-        NSLog("Flowy: ✅ hotkey tap installed (\(consuming ? "consume" : "listen")).")
+        NSLog("Slive: ✅ hotkey tap installed (\(consuming ? "consume" : "listen")).")
         return true
     }
 
@@ -143,7 +143,7 @@ final class HotkeyMonitor {
         let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             if self.tapGranted {
-                NSLog("Flowy: permission granted — re-arming hotkey tap.")
+                NSLog("Slive: permission granted — re-arming hotkey tap.")
                 self.reinstallTap()
                 timer.invalidate(); self.pollTimer = nil
             }

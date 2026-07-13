@@ -121,12 +121,20 @@ enum PasteEngine {
     /// Type `text` into the frontmost app one character at a time via synthetic
     /// Unicode key events. Works anywhere a keyboard works — Electron, VS Code,
     /// terminals — because it *is* keyboard input, not a paste, and it never
-    /// touches the clipboard. Flowy's overlay is non-activating, so the user's
+    /// touches the clipboard. Slive's overlay is non-activating, so the user's
     /// app stays frontmost and receives the keystrokes.
     private static func typeOut(_ text: String) {
         guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
-        for character in text {
-            let utf16 = Array(String(character).utf16)
+        // A single key event can carry a whole run of characters, so type in
+        // small chunks instead of one event per character — far fewer events,
+        // so long transcripts land almost instantly. A short pause between
+        // chunks keeps fast apps from dropping input.
+        let chars = Array(text)
+        let chunkSize = 12
+        var i = 0
+        while i < chars.count {
+            let chunk = String(chars[i..<min(i + chunkSize, chars.count)])
+            let utf16 = Array(chunk.utf16)
             utf16.withUnsafeBufferPointer { buffer in
                 if let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) {
                     down.keyboardSetUnicodeString(stringLength: buffer.count,
@@ -139,7 +147,8 @@ enum PasteEngine {
                     up.post(tap: .cghidEventTap)
                 }
             }
-            usleep(1200)   // ~1.2ms pacing so fast apps don't drop characters
+            i += chunkSize
+            usleep(1200)   // brief pacing between chunks
         }
     }
 }

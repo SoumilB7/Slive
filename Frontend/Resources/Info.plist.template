@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Flowy</string>
+    <string>Slive</string>
     <key>CFBundleDisplayName</key>
-    <string>Flowy</string>
+    <string>Slive</string>
     <key>CFBundleExecutable</key>
-    <string>Flowy</string>
+    <string>Slive</string>
     <key>CFBundleIdentifier</key>
-    <string>com.flowy.overlay</string>
+    <string>com.slive.app</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -22,7 +22,7 @@
     <key>LSUIElement</key>
     <false/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Flowy records your voice while you hold the talk key, then transcribes it locally.</string>
+    <string>Slive records your voice while you hold the talk key, then transcribes it locally.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>CFBundleIconFile</key>
@@ -30,10 +30,10 @@
     <key>CFBundleIconName</key>
     <string>AppIcon</string>
     <!-- Baked at build time: the Backend/ dir whose .venv runs the STT server. -->
-    <key>FlowyBackendDir</key>
+    <key>SliveBackendDir</key>
     <string>__BACKEND_DIR__</string>
     <!-- Baked at build time: the repo's /prompts folder for assistant prompts. -->
-    <key>FlowyPromptsDir</key>
+    <key>SlivePromptsDir</key>
     <string>__PROMPTS_DIR__</string>
 </dict>
 </plist>

@@ -1,6 +1,6 @@
 import Foundation
 
-/// An LLM provider Flowy's assistant mode can talk to. The `wire` value must
+/// An LLM provider Slive's assistant mode can talk to. The `wire` value must
 /// match the `provider` strings the Python `/assistant` endpoint understands.
 enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
     case anthropic
@@ -73,7 +73,7 @@ struct AssistantConfig: Codable, Equatable {
     var attachScreenshot: Bool
 
     static let defaultSystemPrompt =
-        "You are Flowy, a concise voice assistant. The user speaks a question or "
+        "You are Slive, a concise voice assistant. The user speaks a question or "
         + "request; answer directly and briefly in plain text with no markdown."
 
     static let `default` = AssistantConfig(

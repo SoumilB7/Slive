@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Flowy — one-command setup. From a fresh clone, run:  ./setup.sh
+# Slive — one-command setup. From a fresh clone, run:  ./setup.sh
 #
 # It installs everything needed, builds + installs the app, and pre-downloads the
 # transcription model. The only things it can't do for you are the macOS GUI
@@ -34,7 +34,7 @@ step "Setting up the Python backend (uv sync)…"
 ( cd Backend && uv sync )
 
 # 4. Stable self-signed identity so macOS remembers the permissions.
-if ! security find-certificate -c "Flowy Local Signing" >/dev/null 2>&1; then
+if ! security find-certificate -c "Slive Local Signing" >/dev/null 2>&1; then
     step "Creating the signing identity (one time)…"
     ( cd Frontend && ./setup-signing.sh )
 fi
@@ -44,14 +44,14 @@ step "Downloading the transcription model (one time, ~75 MB)…"
 ( cd Backend && .venv/bin/python -c "from flowy.transcribe import load_model; load_model()" )
 
 # 6. Build + install the app (signs with the stable identity).
-step "Building and installing Flowy.app…"
+step "Building and installing Slive.app…"
 ( cd Frontend && ./build.sh install )
 
 cat <<'DONE'
 
-✅ Flowy is installed and running (menu bar + Dock).
+✅ Slive is installed and running (menu bar + Dock).
 
-   ONE manual step left — grant permissions in the Flowy window, then Quit & Reopen:
+   ONE manual step left — grant permissions in the Slive window, then Quit & Reopen:
      • Microphone        — record your voice
      • Input Monitoring  — detect your push-to-talk key
      • Accessibility     — type transcripts into text fields (optional)

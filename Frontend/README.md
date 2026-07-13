@@ -1,4 +1,4 @@
-# Flowy — the Mac app (Frontend)
+# Slive — the Mac app (Frontend)
 
 The Swift/SwiftUI macOS app: it listens for your push-to-talk key, records your
 voice, shows the floating overlay, and either **types the text** into the focused
@@ -32,16 +32,16 @@ each checkout's own paths into `Info.plist` at build time.
 macOS ties permission grants (Microphone, Input Monitoring, Accessibility, Screen
 Recording) to an app's **code signature**. Ad-hoc signing changes every build, so
 macOS forgets your grants each time. `setup-signing.sh` makes a stable
-**self-signed** identity — "Flowy Local Signing" — so you grant permissions
+**self-signed** identity — "Slive Local Signing" — so you grant permissions
 **once** and they stick across rebuilds. It's the free local equivalent of a paid
 Apple Developer ID (which you'd only need to *distribute* the app).
-Undo with `security delete-identity -c "Flowy Local Signing"`.
+Undo with `security delete-identity -c "Slive Local Signing"`.
 
 ---
 
 ## The map
 
-All source is under `Sources/Flowy/`.
+All source is under `Sources/Slive/`.
 
 | Area | Files | What it does |
 |---|---|---|
@@ -76,7 +76,7 @@ The provider/endpoint contract lives in [`../Backend/README.md`](../Backend/READ
 
 ## Permissions
 
-Granted in the Flowy window (Settings → Permissions), each takes effect only
+Granted in the Slive window (Settings → Permissions), each takes effect only
 **after a relaunch** (a macOS cache quirk, not a bug — there's a Relaunch button):
 
 - **Microphone** — record your voice *(required)*
@@ -84,9 +84,9 @@ Granted in the Flowy window (Settings → Permissions), each takes effect only
 - **Accessibility** — type into text fields, and consume key-chord shortcuts *(needed for auto-type)*
 - **Screen Recording** — only if you turn on "attach a screenshot" for the assistant
 
-If a toggle looks ON in System Settings but Flowy shows it as not granted, the
+If a toggle looks ON in System Settings but Slive shows it as not granted, the
 grant is stale — reset and re-grant:
 
 ```bash
-tccutil reset Accessibility com.flowy.overlay      # or Microphone / ListenEvent / ScreenCapture
+tccutil reset Accessibility com.slive.app      # or Microphone / ListenEvent / ScreenCapture
 ```

@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)   // normal app: Dock icon + Cmd-Tab
 
-        // Keep the global hotkey + overlay alive when Flowy has no open window
+        // Keep the global hotkey + overlay alive when Slive has no open window
         // and sits in the background — otherwise App Nap throttles the event tap.
         activityToken = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .automaticTerminationDisabled],
@@ -69,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.start()   // self-arms once Input Monitoring is granted
 
         // First launch, or a missing permission → show the home window so the
-        // user sees what Flowy does and can grant permissions in place.
+        // user sees what Slive does and can grant permissions in place.
         if Settings.shared.isFirstRun || !HotkeyMonitor.inputMonitoringGranted {
             openSettings()
             Settings.shared.markFirstRunComplete()
@@ -87,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Closing the window must NOT quit Flowy — it keeps listening for the key.
+    /// Closing the window must NOT quit Slive — it keeps listening for the key.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -150,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.show()
         recordStart = Date()
         if !recorder.start() {
-            NSLog("Flowy: mic unavailable")
+            NSLog("Slive: mic unavailable")
             model.finishListening()
             hideOverlaySoon()
             return
@@ -189,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the backend resamples internally. Deleted right after — never
             // persisted.
             defer { try? FileManager.default.removeItem(at: wavURL) }
-            NSLog("Flowy: captured \(String(format: "%.1f", duration))s of audio")
+            NSLog("Slive: captured \(String(format: "%.1f", duration))s of audio")
 
             if Task.isCancelled { return }
 
@@ -209,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 transcript = try await transcriber.transcribe(wavURL, hotwords: hotwords, prompt: prompt)
             } catch {
-                NSLog("Flowy: transcription failed — \(error); retrying after ensuring backend")
+                NSLog("Slive: transcription failed — \(error); retrying after ensuring backend")
                 if Task.isCancelled { return }
                 if await self.backend.ensureHealthy() {
                     transcript = try? await transcriber.transcribe(wavURL, hotwords: hotwords, prompt: prompt)
@@ -402,7 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About Flowy",
+        appMenu.addItem(withTitle: "About Slive",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
@@ -410,14 +410,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Flowy",
+        appMenu.addItem(withTitle: "Hide Slive",
                         action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(withTitle: "Hide Others",
                                          action: #selector(NSApplication.hideOtherApplications(_:)),
                                          keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Flowy",
+        appMenu.addItem(withTitle: "Quit Slive",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         // Window menu — Minimize, Zoom, Close.
@@ -443,12 +443,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusItem.button(in: NSStatusBar.system)
         item.button?.image = NSImage(
             systemSymbolName: "waveform",
-            accessibilityDescription: "Flowy"
+            accessibilityDescription: "Slive"
         )
         item.button?.image?.isTemplate = true
 
         let menu = NSMenu()
-        let header = NSMenuItem(title: "Flowy", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: "Slive", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
 
@@ -468,7 +468,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         // Quit has no explicit target: it travels the responder chain to NSApp.
-        menu.addItem(NSMenuItem(title: "Quit Flowy",
+        menu.addItem(NSMenuItem(title: "Quit Slive",
                                 action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
         statusItem = item
@@ -480,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Reflect the backend status in the menu-bar item (tooltip + menu line).
     private func updateBackendStatusUI(_ status: BackendManager.Status) {
-        statusItem?.button?.toolTip = "Flowy — backend: \(status.rawValue)"
+        statusItem?.button?.toolTip = "Slive — backend: \(status.rawValue)"
         backendStatusItem?.title = "Backend: \(status.rawValue)"
     }
 
@@ -494,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scheduleCollapse(after: 3.5)
     }
 
-    /// Quit and reopen Flowy. Required after granting Input Monitoring, because
+    /// Quit and reopen Slive. Required after granting Input Monitoring, because
     /// macOS caches that permission until the app is relaunched.
     @objc private func relaunchApp() {
         let path = Bundle.main.bundlePath

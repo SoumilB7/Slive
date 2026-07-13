@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Flowy's logo, drawn in code so it stays crisp at any size and matches the
+/// Slive's logo, drawn in code so it stays crisp at any size and matches the
 /// overlay's palette: a gradient squircle with a white waveform.
 struct BrandMark: View {
     var size: CGFloat = 64

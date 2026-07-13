@@ -3,7 +3,7 @@ import AppKit
 import ApplicationServices
 import IOKit.hid
 
-/// Live view of the two permissions Flowy needs, so the Settings window can
+/// Live view of the two permissions Slive needs, so the Settings window can
 /// show real status and offer one-tap granting. Polls while the window is open.
 final class PermissionsModel: ObservableObject {
     @Published var micGranted = false

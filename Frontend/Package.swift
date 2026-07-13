@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "Flowy",
+    name: "Slive",
     platforms: [
         .macOS(.v14)
     ],
     targets: [
         .executableTarget(
-            name: "Flowy",
-            path: "Sources/Flowy",
+            name: "Slive",
+            path: "Sources/Slive",
             swiftSettings: [
                 // Pragmatic: keep Swift 5 language mode to avoid strict-concurrency
                 // friction between the audio thread and @MainActor UI updates.
