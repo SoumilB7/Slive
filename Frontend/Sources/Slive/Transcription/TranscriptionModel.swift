@@ -1,6 +1,23 @@
 import Foundation
 import WhisperKit
 
+private struct TimeoutError: Error {}
+
+/// Run `operation`, failing with `TimeoutError` if it doesn't finish in time.
+private func withTimeout<T>(seconds: UInt64,
+                            _ operation: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            throw TimeoutError()
+        }
+        guard let result = try await group.next() else { throw TimeoutError() }
+        group.cancelAll()
+        return result
+    }
+}
+
 /// Manages the on-device (WhisperKit / Neural Engine) transcription model:
 /// checks whether it's downloaded, downloads it in-app with progress, loads it,
 /// and transcribes. Observable so Settings can show status and a Download button.
@@ -33,14 +50,41 @@ final class TranscriptionModel: ObservableObject {
             .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml")
     }
 
-    /// True if `model`'s files are already on disk.
+    // MARK: - Bundled model (ships in the app; no download, fully offline)
+
+    /// Folder of a model shipped inside the app bundle, if present.
+    private func bundledModelFolder(_ model: String) -> URL? {
+        guard let res = Bundle.main.resourceURL else { return nil }
+        let folder = res.appendingPathComponent("BundledModels/openai_whisper-\(model)")
+        let ok = FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent("AudioEncoder.mlmodelc").path)
+        return ok ? folder : nil
+    }
+
+    /// Root the bundled tokenizer lives under (HubApi layout: <root>/models/openai/…).
+    private var bundledTokenizerRoot: URL? {
+        Bundle.main.resourceURL?.appendingPathComponent("BundledTokenizers")
+    }
+
+    /// True if `model` is available without a download — bundled OR on disk.
     func isDownloaded(_ model: String) -> Bool {
+        if bundledModelFolder(model) != nil { return true }
         guard let subs = try? FileManager.default.contentsOfDirectory(
             at: modelsRoot, includingPropertiesForKeys: nil) else { return false }
         return subs.contains { folder in
             folder.lastPathComponent.hasSuffix(model)
                 && FileManager.default.fileExists(
                     atPath: folder.appendingPathComponent("AudioEncoder.mlmodelc").path)
+        }
+    }
+
+    /// Delete a downloaded model folder so a fresh download can recover a stale
+    /// or partial one. (Bundled models are untouched.)
+    func removeDownloaded(_ model: String) {
+        guard let subs = try? FileManager.default.contentsOfDirectory(
+            at: modelsRoot, includingPropertiesForKeys: nil) else { return }
+        for folder in subs where folder.lastPathComponent.hasSuffix(model) {
+            try? FileManager.default.removeItem(at: folder)
         }
     }
 
@@ -79,21 +123,50 @@ final class TranscriptionModel: ObservableObject {
         await load(model)
     }
 
-    /// Load an already-downloaded model (compiles for the ANE the first time).
+    /// Load an already-downloaded (or bundled) model. Compiles for the ANE the
+    /// first time. Bounded by a timeout so it can never hang on "Preparing"
+    /// forever — on timeout it fails with a message the user can act on.
     private func load(_ model: String) async {
         self.model = model
         status = .preparing
+
+        let config: WhisperKitConfig
+        if let bundled = bundledModelFolder(model) {
+            // Fully offline: load the app-bundled model + tokenizer, no network.
+            config = WhisperKitConfig(model: model,
+                                      modelFolder: bundled.path,
+                                      tokenizerFolder: bundledTokenizerRoot,
+                                      load: true,
+                                      download: false)
+        } else {
+            config = WhisperKitConfig(model: model, load: true, download: true)
+        }
+
+        // Large models can take a couple of minutes to specialize the first time;
+        // bundled/tiny is seconds. Give a generous ceiling, then bail.
+        let timeout: UInt64 = bundledModelFolder(model) != nil ? 60 : 240
         do {
-            let config = WhisperKitConfig(model: model, load: true, download: true)
-            let p = try await WhisperKit(config)
+            let p = try await withTimeout(seconds: timeout) { try await WhisperKit(config) }
             pipe = p
             loadedModel = model
             status = .ready
             NSLog("Slive: WhisperKit ready (\(model)).")
+        } catch is TimeoutError {
+            status = .failed("Timed out preparing this model. Try Re-download, or pick a smaller model.")
+            NSLog("Slive: WhisperKit load timed out for \(model)")
         } catch {
             status = .failed(error.localizedDescription)
             NSLog("Slive: WhisperKit load failed — \(error)")
         }
+    }
+
+    /// Delete the on-disk copy of `model` and download it fresh (recovers a
+    /// stale/partial download). No-op look for bundled models.
+    func redownload(_ model: String) async {
+        pipe = nil
+        loadedModel = nil
+        removeDownloaded(model)
+        await download(model)
     }
 
     /// Transcribe `url` if the model is ready (loading it on demand when it's

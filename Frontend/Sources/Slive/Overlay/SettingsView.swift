@@ -364,6 +364,10 @@ struct SettingsView: View {
             case .ready:
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text("Ready").foregroundStyle(.white.opacity(0.8))
+                Spacer()
+                Button("Re-download") { Task { await transcription.redownload(settings.whisperModel) } }
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.45))
             case .notDownloaded:
                 Image(systemName: "arrow.down.circle").foregroundStyle(accent)
                 Text("Not downloaded").foregroundStyle(.white.opacity(0.7))
@@ -382,7 +386,7 @@ struct SettingsView: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(e).foregroundStyle(.orange.opacity(0.9)).lineLimit(2)
                 Spacer()
-                Button("Retry") { Task { await transcription.download(settings.whisperModel) } }
+                Button("Re-download") { Task { await transcription.redownload(settings.whisperModel) } }
                     .buttonStyle(.bordered).controlSize(.small)
             }
         }

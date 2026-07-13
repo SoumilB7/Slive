@@ -36,6 +36,15 @@ if [[ -f Resources/AppIcon.icns ]]; then
     cp Resources/AppIcon.icns "$CONTENTS/Resources/AppIcon.icns"
 fi
 
+# Bundle the default (tiny) transcription model + tokenizer so first launch needs
+# no download and works fully offline.
+if [[ -d Resources/BundledModels ]]; then
+    cp -R Resources/BundledModels "$CONTENTS/Resources/BundledModels"
+fi
+if [[ -d Resources/BundledTokenizers ]]; then
+    cp -R Resources/BundledTokenizers "$CONTENTS/Resources/BundledTokenizers"
+fi
+
 # Prefer a stable self-signed identity if the user created one — then macOS TCC
 # (Microphone / Input Monitoring) remembers grants across REBUILDS, not just
 # relaunches. Falls back to ad-hoc otherwise (grants reset on each rebuild).
