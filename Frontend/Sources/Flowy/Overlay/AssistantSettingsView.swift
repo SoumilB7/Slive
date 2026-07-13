@@ -121,6 +121,22 @@ struct AssistantSettingsView: View {
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.5))
             }
+
+            Divider().overlay(.white.opacity(0.08))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $settings.assistantConfig.attachScreenshot) {
+                    Text("Attach a full-screen screenshot")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                }
+                .toggleStyle(.switch)
+                .tint(accent)
+                Text("When on, a screenshot of your screen is sent with every assistant question. Needs Screen Recording permission (macOS asks the first time).")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -69,6 +69,8 @@ struct AssistantConfig: Codable, Equatable {
     var promptName: String
     /// Inline system prompt, used when `promptName` is empty (Custom).
     var systemPrompt: String
+    /// When on, a full-screen screenshot is attached to every assistant call.
+    var attachScreenshot: Bool
 
     static let defaultSystemPrompt =
         "You are Flowy, a concise voice assistant. The user speaks a question or "
@@ -79,7 +81,8 @@ struct AssistantConfig: Codable, Equatable {
         models: [:],
         baseURL: "",
         promptName: "assistant",   // the shipped prompts/assistant.md
-        systemPrompt: defaultSystemPrompt
+        systemPrompt: defaultSystemPrompt,
+        attachScreenshot: false
     )
 
     /// Effective model for a provider — the override if set, else its default.
@@ -90,5 +93,22 @@ struct AssistantConfig: Codable, Equatable {
 
     mutating func setModel(_ value: String, for p: AssistantProvider) {
         models[p.rawValue] = value
+    }
+}
+
+extension AssistantConfig {
+    /// Tolerant decoding: any missing field (e.g. one added in a later version)
+    /// falls back to its default instead of failing the whole decode and wiping
+    /// the user's saved settings. Defined in an extension so the memberwise
+    /// initializer is preserved.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decodeIfPresent(AssistantProvider.self, forKey: .provider) ?? .anthropic
+        models = try c.decodeIfPresent([String: String].self, forKey: .models) ?? [:]
+        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+        promptName = try c.decodeIfPresent(String.self, forKey: .promptName) ?? "assistant"
+        systemPrompt = try c.decodeIfPresent(String.self, forKey: .systemPrompt)
+            ?? Self.defaultSystemPrompt
+        attachScreenshot = try c.decodeIfPresent(Bool.self, forKey: .attachScreenshot) ?? false
     }
 }

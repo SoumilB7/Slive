@@ -237,6 +237,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let config = Settings.shared.assistantConfig
         let key = Settings.shared.apiKey(for: config.provider)
 
+        // Optionally attach a full-screen screenshot (captured off the main
+        // thread so the blocking subprocess doesn't stall the UI).
+        var images: [AssistantClient.ImageInput]? = nil
+        if config.attachScreenshot {
+            if let shot = await Task.detached(priority: .userInitiated, operation: {
+                ScreenCapture.fullScreenBase64()
+            }).value {
+                images = [AssistantClient.ImageInput(media_type: shot.mediaType, data: shot.data)]
+            }
+        }
+
         // Switch the overlay to the streaming answer box.
         model.beginStreaming()
         overlay.resize(to: OverlayMetrics.streamingPanelSize)
@@ -244,7 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var accumulated = ""
         do {
-            for try await delta in assistant.askStream(question, config: config, apiKey: key) {
+            for try await delta in assistant.askStream(question, config: config, apiKey: key, images: images) {
                 if Task.isCancelled { return }
                 accumulated += delta
                 model.updateStreaming(accumulated)
