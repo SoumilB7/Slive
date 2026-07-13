@@ -8,7 +8,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 FRONTEND_DIR="$(pwd)"
 REPO_DIR="$(cd .. && pwd)"
-AUDIOS_DIR="$REPO_DIR/Audios"
 CONFIG="release"
 
 echo "▸ Compiling (swift build -c $CONFIG)…"
@@ -23,14 +22,12 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BIN" "$CONTENTS/MacOS/Flowy"
 
-# Bake absolute paths into Info.plist: where to save recordings, and the
-# Backend/ dir whose .venv runs the transcription server (auto-launched by the app).
-mkdir -p "$AUDIOS_DIR"
+# Bake absolute paths into Info.plist: the Backend/ dir whose .venv runs the
+# transcription server (auto-launched by the app), and the prompts folder.
 BACKEND_DIR="$REPO_DIR/Backend"
 PROMPTS_DIR="$REPO_DIR/Backend/prompts"
 mkdir -p "$PROMPTS_DIR"
-sed -e "s|__AUDIOS_DIR__|$AUDIOS_DIR|g" \
-    -e "s|__BACKEND_DIR__|$BACKEND_DIR|g" \
+sed -e "s|__BACKEND_DIR__|$BACKEND_DIR|g" \
     -e "s|__PROMPTS_DIR__|$PROMPTS_DIR|g" \
     Resources/Info.plist.template > "$CONTENTS/Info.plist"
 
@@ -63,7 +60,6 @@ codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN
 }
 
 echo "✓ Built: $APP"
-echo "  Audios → $AUDIOS_DIR"
 
 LAUNCH_TARGET="$APP"
 
