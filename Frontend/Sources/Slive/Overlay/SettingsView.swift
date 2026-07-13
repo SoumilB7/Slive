@@ -295,6 +295,26 @@ struct SettingsView: View {
 
             Divider().overlay(.white.opacity(0.08))
 
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Overlay opacity")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                    Spacer()
+                    Text("\(Int(settings.overlayOpacity * 100))%")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(accent)
+                }
+                Slider(value: $settings.overlayOpacity, in: 0.35...1.0, step: 0.01)
+                    .tint(accent)
+                Text("How see-through the floating pill and answer box are. Lower blends them into what's behind; text stays readable.")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider().overlay(.white.opacity(0.08))
+
             modelPicker
         }
         .padding(16)

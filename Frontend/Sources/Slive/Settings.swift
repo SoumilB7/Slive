@@ -16,6 +16,7 @@ final class Settings: ObservableObject {
         static let hotwords = "hotwords"
         static let contextPrompt = "contextPrompt"
         static let holdActivationDelay = "holdActivationDelay"
+        static let overlayOpacity = "overlayOpacity"
         static let whisperModel = "whisperModel"
         static let didFirstRun = "didFirstRun"
     }
@@ -88,6 +89,13 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(holdActivationDelay, forKey: Keys.holdActivationDelay) }
     }
 
+    /// Opacity of the floating overlay chrome — the pill, transcribing dots, and
+    /// answer box backgrounds. 1 = solid; lower = more see-through. Text stays
+    /// fully opaque so answers remain readable. Default 0.92.
+    @Published var overlayOpacity: Double {
+        didSet { UserDefaults.standard.set(overlayOpacity, forKey: Keys.overlayOpacity) }
+    }
+
     /// WhisperKit model the on-device (Neural Engine) transcriber loads. Changing
     /// it reloads WhisperKit; the new model downloads once.
     @Published var whisperModel: String {
@@ -134,6 +142,11 @@ final class Settings: ObservableObject {
             holdActivationDelay = 0.2
         } else {
             holdActivationDelay = UserDefaults.standard.double(forKey: Keys.holdActivationDelay)
+        }
+        if UserDefaults.standard.object(forKey: Keys.overlayOpacity) == nil {
+            overlayOpacity = 0.92
+        } else {
+            overlayOpacity = UserDefaults.standard.double(forKey: Keys.overlayOpacity)
         }
         // Default to the bundled tiny model so the first launch works instantly
         // and fully offline — the user can switch to a bigger one in Settings.
