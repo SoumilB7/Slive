@@ -37,25 +37,38 @@ final class BackendManager: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Start the backend (reuse if one is already up) and begin the watchdog.
+    /// Start the backend fresh and begin the watchdog.
+    ///
+    /// We deliberately do NOT reuse an already-running server: an orphan from a
+    /// crash, or a stale process from before a backend code change, would serve
+    /// old routes. So we kill any existing `flowy.server`, wait for the port to
+    /// free, then spawn our own — every launch runs current code.
     func start() {
         Task {
-            if await probeHealth() {
-                status = .running          // reuse an already-running server
-            } else {
-                spawnIfNeeded()
+            status = .starting
+            pkillServer(signal: "TERM")
+            // Wait until the old server stops answering (port released), then
+            // spawn. Bounded so a wedged process can't hang startup.
+            var waited = 0
+            while await probeHealth() && waited < 20 {
+                try? await Task.sleep(nanoseconds: 100_000_000)   // 0.1s
+                waited += 1
             }
+            if waited >= 20 { pkillServer(signal: "KILL") }        // force any holdout
+            spawn()
             startWatchdog()
         }
     }
 
     /// Terminate the backend on quit — the one we started, plus any reused/orphan
-    /// `flowy.server`, so ⌘Q always leaves nothing on the port.
+    /// `flowy.server`, so ⌘Q always leaves nothing on the port. SIGTERM first for
+    /// a clean uvicorn shutdown, then SIGKILL to guarantee nothing survives.
     func stop() {
         watchdog?.invalidate(); watchdog = nil
         if let p = process, p.isRunning { p.terminate() }
         process = nil
-        pkillServer()
+        pkillServer(signal: "TERM")
+        pkillServer(signal: "KILL")
         status = .offline
     }
 
@@ -162,10 +175,12 @@ final class BackendManager: ObservableObject {
         }
     }
 
-    private func pkillServer() {
+    /// Kill every `flowy.server` process with the given signal ("TERM"/"KILL").
+    /// Matches our own spawned server and any orphan/stale one on the port.
+    private func pkillServer(signal: String = "TERM") {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        task.arguments = ["-f", "flowy.server"]
+        task.arguments = ["-\(signal)", "-f", "flowy.server"]
         try? task.run()
         task.waitUntilExit()
     }
