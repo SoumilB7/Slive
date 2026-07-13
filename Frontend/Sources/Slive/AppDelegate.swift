@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Settings.shared.onWhisperModelChange = { [weak self] model in
             self?.whisper.preloadIfDownloaded(model)
         }
+        whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
         whisper.preloadIfDownloaded(Settings.shared.whisperModel)
 
         hotkey.start()   // self-arms once Input Monitoring is granted
