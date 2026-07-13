@@ -348,13 +348,13 @@ struct SettingsView: View {
 
             modelStatusRow
 
-            Text("Runs on-device (Apple Neural Engine) — private and fast. Each model downloads once.")
+            Text("Runs on-device on your Mac's GPU — private and fast. Each model downloads once.")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.5))
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .onAppear { transcription.refresh(for: settings.whisperModel) }
-        .onChange(of: settings.whisperModel) { _, m in transcription.refresh(for: m) }
+        .onAppear { transcription.select(settings.whisperModel) }
+        .onChange(of: settings.whisperModel) { _, m in transcription.select(m) }
     }
 
     /// Status + Download control for the selected transcription model.
@@ -379,9 +379,9 @@ struct SettingsView: View {
             case .downloading(let p):
                 ProgressView(value: p).frame(width: 120)
                 Text("Downloading \(Int(p * 100))%").foregroundStyle(.white.opacity(0.7))
-            case .preparing:
+            case .preparing(let stage):
                 ProgressView().controlSize(.small)
-                Text("Preparing for the Neural Engine…").foregroundStyle(.white.opacity(0.7))
+                Text("Preparing… (\(stage))").foregroundStyle(.white.opacity(0.7))
             case .failed(let e):
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(e).foregroundStyle(.orange.opacity(0.9)).lineLimit(2)

@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import WhisperKit
 
@@ -18,12 +19,17 @@ private func withTimeout<T>(seconds: UInt64,
     }
 }
 
-/// Manages the on-device (WhisperKit / Neural Engine) transcription model:
-/// checks whether it's downloaded, downloads it in-app with progress, loads it,
-/// and transcribes. Observable so Settings can show status and a Download button.
+/// Manages the on-device (WhisperKit) transcription model: checks whether it's
+/// downloaded, downloads it in-app with progress, loads it, and transcribes.
 ///
-/// The first load of a model compiles it for the Neural Engine ("Specializing"),
-/// which is slow *once* — surfaced here as `.preparing` instead of a silent hang.
+/// Design for responsiveness:
+/// - Models load on the **GPU** (`.cpuAndGPU`), NOT the Neural Engine. The ANE
+///   path needs a slow one-time "specialize" compile that can take minutes and
+///   sometimes stalls; GPU skips it, so switching models is quick and reliable.
+/// - Loading runs in the background and the **currently-loaded model keeps
+///   working** until the new one is ready — the app never freezes on a switch.
+/// - A live status (Downloading % / the WhisperKit load stage / Ready / Failed)
+///   plus a hard timeout mean it never sits on a silent, stuck spinner.
 @MainActor
 final class TranscriptionModel: ObservableObject {
     static let shared = TranscriptionModel()
@@ -32,21 +38,31 @@ final class TranscriptionModel: ObservableObject {
     enum Status: Equatable {
         case notDownloaded
         case downloading(Double)   // 0…1
-        case preparing             // loading + Neural-Engine specialization
+        case preparing(String)     // WhisperKit load stage (e.g. "Loading")
         case ready
         case failed(String)
     }
 
     @Published private(set) var status: Status = .notDownloaded
-    /// The model these statuses refer to.
+    /// The currently-selected model these statuses refer to.
     @Published private(set) var model: String = ""
 
-    private var pipe: WhisperKit?
+    private var pipe: WhisperKit?      // the working (loaded) model
     private var loadedModel: String?
+    private var loadingModel: String?  // model being prepared in the background
 
-    /// One basket for every downloaded model + tokenizer, in the app's own data
-    /// dir (not scattered in ~/Documents/huggingface). Passed to WhisperKit as
-    /// its `downloadBase` / `tokenizerFolder`.
+    /// GPU compute for every stage — avoids the slow Neural-Engine specialize.
+    private var computeOptions: ModelComputeOptions {
+        ModelComputeOptions(
+            melCompute: .cpuAndGPU,
+            audioEncoderCompute: .cpuAndGPU,
+            textDecoderCompute: .cpuAndGPU,
+            prefillCompute: .cpuOnly
+        )
+    }
+
+    // MARK: - Storage (one basket in the app's data dir)
+
     private var basket: URL {
         let dir = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -54,31 +70,20 @@ final class TranscriptionModel: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
+    private var modelsRoot: URL { basket.appendingPathComponent("models/argmaxinc/whisperkit-coreml") }
 
-    /// Where WhisperKit models land under the basket (HubApi layout).
-    private var modelsRoot: URL {
-        basket.appendingPathComponent("models/argmaxinc/whisperkit-coreml")
-    }
-
-    /// One-time: move any models WhisperKit previously downloaded to
-    /// ~/Documents/huggingface into the basket, so nothing re-downloads.
+    /// One-time: move any prior ~/Documents/huggingface downloads into the basket.
     func migrateOldDownloadsIfNeeded() {
         let old = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Documents/huggingface/models")
         let new = basket.appendingPathComponent("models")
         let fm = FileManager.default
         guard fm.fileExists(atPath: old.path), !fm.fileExists(atPath: new.path) else { return }
-        do {
-            try fm.moveItem(at: old, to: new)
-            NSLog("Slive: migrated model downloads into \(new.path)")
-        } catch {
-            NSLog("Slive: model migration skipped — \(error)")
-        }
+        try? fm.moveItem(at: old, to: new)
     }
 
-    // MARK: - Bundled model (ships in the app; no download, fully offline)
+    // MARK: - Bundled model (ships in the app; offline)
 
-    /// Folder of a model shipped inside the app bundle, if present.
     private func bundledModelFolder(_ model: String) -> URL? {
         guard let res = Bundle.main.resourceURL else { return nil }
         let folder = res.appendingPathComponent("BundledModels/openai_whisper-\(model)")
@@ -86,60 +91,52 @@ final class TranscriptionModel: ObservableObject {
             atPath: folder.appendingPathComponent("AudioEncoder.mlmodelc").path)
         return ok ? folder : nil
     }
-
-    /// Root the bundled tokenizer lives under (HubApi layout: <root>/models/openai/…).
     private var bundledTokenizerRoot: URL? {
         Bundle.main.resourceURL?.appendingPathComponent("BundledTokenizers")
     }
 
-    /// True if `model` is available without a download — bundled OR on disk.
+    /// Available without a download — bundled OR on disk.
     func isDownloaded(_ model: String) -> Bool {
         if bundledModelFolder(model) != nil { return true }
         guard let subs = try? FileManager.default.contentsOfDirectory(
             at: modelsRoot, includingPropertiesForKeys: nil) else { return false }
-        return subs.contains { folder in
-            folder.lastPathComponent.hasSuffix(model)
-                && FileManager.default.fileExists(
-                    atPath: folder.appendingPathComponent("AudioEncoder.mlmodelc").path)
+        return subs.contains { f in
+            f.lastPathComponent.hasSuffix(model)
+                && FileManager.default.fileExists(atPath: f.appendingPathComponent("AudioEncoder.mlmodelc").path)
         }
     }
 
-    /// Delete a downloaded model folder so a fresh download can recover a stale
-    /// or partial one. (Bundled models are untouched.)
-    func removeDownloaded(_ model: String) {
+    private func removeDownloaded(_ model: String) {
         guard let subs = try? FileManager.default.contentsOfDirectory(
             at: modelsRoot, includingPropertiesForKeys: nil) else { return }
-        for folder in subs where folder.lastPathComponent.hasSuffix(model) {
-            try? FileManager.default.removeItem(at: folder)
+        for f in subs where f.lastPathComponent.hasSuffix(model) { try? FileManager.default.removeItem(at: f) }
+    }
+
+    // MARK: - Selection / loading
+
+    /// Point at `model`: mark ready if already loaded, else load it in the
+    /// background if it's available (never auto-downloads). The previously loaded
+    /// model keeps working until this one is ready.
+    func select(_ model: String) {
+        self.model = model
+        if loadedModel == model, pipe != nil { status = .ready; return }
+        if loadingModel == model { return }               // already preparing
+        if isDownloaded(model) {
+            Task { await load(model) }
+        } else {
+            status = .notDownloaded
         }
     }
 
-    /// Reflect the on-disk state for `model` in `status` (no download). Call when
-    /// the picker changes or Settings appears.
-    func refresh(for model: String) {
-        self.model = model
-        if loadedModel == model, pipe != nil { status = .ready; return }
-        status = isDownloaded(model) ? .ready : .notDownloaded
-    }
-
-    /// If a model is already downloaded, load it into the Neural Engine in the
-    /// background so the first dictation is instant. Never downloads.
-    func preloadIfDownloaded(_ model: String) {
-        self.model = model
-        guard loadedModel != model || pipe == nil else { status = .ready; return }
-        guard isDownloaded(model) else { status = .notDownloaded; return }
-        Task { await self.load(model) }
-    }
-
-    /// Download (if needed) then load `model`, reporting progress. Idempotent.
+    /// Download (if needed) then load `model`, reporting progress.
     func download(_ model: String) async {
         self.model = model
         if loadedModel == model, pipe != nil { status = .ready; return }
         if !isDownloaded(model) {
             status = .downloading(0)
             do {
-                _ = try await WhisperKit.download(variant: model, downloadBase: basket) { [weak self] progress in
-                    Task { @MainActor in self?.status = .downloading(progress.fractionCompleted) }
+                _ = try await WhisperKit.download(variant: model, downloadBase: basket) { [weak self] p in
+                    Task { @MainActor in self?.status = .downloading(p.fractionCompleted) }
                 }
             } catch {
                 status = .failed("Download failed: \(error.localizedDescription)")
@@ -149,66 +146,71 @@ final class TranscriptionModel: ObservableObject {
         await load(model)
     }
 
-    /// Load an already-downloaded (or bundled) model. Compiles for the ANE the
-    /// first time. Bounded by a timeout so it can never hang on "Preparing"
-    /// forever — on timeout it fails with a message the user can act on.
-    private func load(_ model: String) async {
-        self.model = model
-        status = .preparing
+    /// Delete the on-disk copy and fetch fresh (recovers a stale/partial download).
+    func redownload(_ model: String) async {
+        if loadedModel == model { pipe = nil; loadedModel = nil }
+        removeDownloaded(model)
+        await download(model)
+    }
 
+    /// Load a downloaded/bundled model in the background (GPU, with live stage +
+    /// timeout). Swaps it in as the working model only when it's fully ready, so
+    /// the current one keeps serving dictation meanwhile.
+    private func load(_ model: String) async {
+        loadingModel = model
+        status = .preparing("Loading")
+
+        let bundled = bundledModelFolder(model)
+        let compute = computeOptions
+        let tokenizerRoot = bundled != nil ? bundledTokenizerRoot : basket
         let config: WhisperKitConfig
-        if let bundled = bundledModelFolder(model) {
-            // Fully offline: load the app-bundled model + tokenizer, no network.
-            config = WhisperKitConfig(model: model,
-                                      modelFolder: bundled.path,
-                                      tokenizerFolder: bundledTokenizerRoot,
-                                      load: true,
-                                      download: false)
+        if let bundled {
+            config = WhisperKitConfig(model: model, modelFolder: bundled.path,
+                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
+                                      prewarm: false, load: false, download: false)
         } else {
-            // Download + store models AND tokenizers in the one basket.
-            config = WhisperKitConfig(model: model,
-                                      downloadBase: basket,
-                                      tokenizerFolder: basket,
-                                      load: true,
-                                      download: true)
+            config = WhisperKitConfig(model: model, downloadBase: basket,
+                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
+                                      prewarm: false, load: false, download: true)
         }
 
-        // Large models can take a couple of minutes to specialize the first time;
-        // bundled/tiny is seconds. Give a generous ceiling, then bail.
-        let timeout: UInt64 = bundledModelFolder(model) != nil ? 60 : 240
         do {
-            let p = try await withTimeout(seconds: timeout) { try await WhisperKit(config) }
+            let p = try await withTimeout(seconds: 150) {
+                let kit = try await WhisperKit(config)           // setup only — fast
+                kit.modelStateCallback = { [weak self] _, new in
+                    Task { @MainActor in
+                        guard let self, self.loadingModel == model else { return }
+                        self.status = .preparing(new.description)  // live stage
+                    }
+                }
+                try await kit.loadModels()                        // GPU load — the work
+                return kit
+            }
             pipe = p
             loadedModel = model
-            status = .ready
-            NSLog("Slive: WhisperKit ready (\(model)).")
+            loadingModel = nil
+            if self.model == model { status = .ready }
+            NSLog("Slive: WhisperKit ready (\(model), GPU).")
         } catch is TimeoutError {
-            status = .failed("Timed out preparing this model. Try Re-download, or pick a smaller model.")
-            NSLog("Slive: WhisperKit load timed out for \(model)")
+            loadingModel = nil
+            status = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
         } catch {
+            loadingModel = nil
             status = .failed(error.localizedDescription)
             NSLog("Slive: WhisperKit load failed — \(error)")
         }
     }
 
-    /// Delete the on-disk copy of `model` and download it fresh (recovers a
-    /// stale/partial download). No-op look for bundled models.
-    func redownload(_ model: String) async {
-        pipe = nil
-        loadedModel = nil
-        removeDownloaded(model)
-        await download(model)
-    }
-
-    /// Transcribe `url` if the model is ready (loading it on demand when it's
-    /// already downloaded). Returns nil when the model isn't available yet — the
-    /// caller should tell the user to download it, NOT hang on a spinner.
+    /// Transcribe `url`. Uses whatever model is currently loaded (so dictation
+    /// stays responsive even while a different model loads). If nothing is loaded
+    /// yet, loads the selected one when it's available; returns nil otherwise so
+    /// the caller can tell the user what to do.
     func transcribe(_ url: URL, model: String) async -> String? {
-        if loadedModel != model || pipe == nil {
-            guard isDownloaded(model) else { refresh(for: model); return nil }
+        if pipe == nil {
+            guard isDownloaded(model) else { select(model); return nil }
             await load(model)
         }
-        guard let pipe, case .ready = status else { return nil }
+        guard let pipe else { return nil }
         do {
             let results = try await pipe.transcribe(
                 audioPath: url.path,
