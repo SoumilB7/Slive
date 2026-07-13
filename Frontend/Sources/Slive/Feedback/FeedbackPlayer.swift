@@ -4,12 +4,12 @@ import AVFoundation
 /// Plays a subtle, short synthesized audio cue when a hotkey action activates.
 ///
 /// The cues are generated in code (no external audio assets) and cached as PCM
-/// buffers so playback is instant. One of these plays exactly when microphone
-/// recording begins, so both cues are deliberately quiet (~0.25 gain) and short:
-/// - `.dictate`: a soft, bright "tick" — 1.6 kHz sine (+ light 2nd harmonic),
-///   ~70 ms with a fast exponential decay.
-/// - `.assist`: a deeper, rounder "tung" — 220 Hz sine (+ light 2nd harmonic),
-///   ~190 ms with a gentle exponential decay so it reads as a soft mallet.
+/// buffers so playback is instant. Both are deep, soft "dhum" thumps — a low
+/// fundamental that glides down in pitch (the drop is what makes it feel
+/// premium, not tinny) — kept quiet (~0.25 gain) since one plays right as
+/// recording begins:
+/// - `.dictate`: ~150→95 Hz, ~200 ms — a short deep "dhum".
+/// - `.assist`: ~128→72 Hz, ~300 ms — a deeper, longer "dhummm".
 ///
 /// Playback routes through a single persistent `AVAudioEngine` + player node.
 /// If engine setup or playback ever fails, we fall back to a system `NSSound`
@@ -45,27 +45,30 @@ final class FeedbackPlayer {
             interleaved: false
         )!
 
-        // Dictate: bright, high, very short tick.
+        // Dictate: a deep, soft "dhum" — a low fundamental that drops in pitch
+        // for a warm thump. No bright harmonics (those read as "tinny").
         dictateBuffer = Self.makeTone(
             format: format,
             sampleRate: sampleRate,
-            frequency: 1_600,          // ~1.6 kHz, bright
-            harmonic2Amplitude: 0.20,  // faint 2nd harmonic for a touch of "click"
-            duration: 0.070,           // ~70 ms
-            attack: 0.004,             // 4 ms attack to avoid a start click
-            decay: 45,                 // fast exponential decay
+            startFrequency: 150,       // starts low…
+            endFrequency: 95,          // …and glides down → "dhum"
+            harmonic2Amplitude: 0.14,  // just a little body, kept warm
+            duration: 0.200,           // ~200 ms
+            attack: 0.006,             // 6 ms attack to avoid a start click
+            decay: 10,                 // smooth decay
             gain: gain
         )
 
-        // Assist: deeper, rounder, soft-mallet thunk.
+        // Assist: deeper and longer — a rounded "dhummm" with more resonance.
         assistBuffer = Self.makeTone(
             format: format,
             sampleRate: sampleRate,
-            frequency: 220,            // ~220 Hz, deep and round
-            harmonic2Amplitude: 0.25,  // gentle body
-            duration: 0.190,           // ~190 ms
-            attack: 0.006,             // 6 ms attack
-            decay: 14,                 // gentle decay -> mallet/gong feel
+            startFrequency: 128,
+            endFrequency: 72,          // deeper drop
+            harmonic2Amplitude: 0.16,
+            duration: 0.300,           // ~300 ms
+            attack: 0.008,             // 8 ms attack
+            decay: 6.5,                // long, gentle tail
             gain: gain
         )
 
@@ -128,19 +131,22 @@ final class FeedbackPlayer {
     private func playFallback(for action: HotkeyAction) {
         let name: NSSound.Name
         switch action {
-        case .dictate: name = NSSound.Name("Tink")
-        case .assist:  name = NSSound.Name("Bottle")
+        case .dictate: name = NSSound.Name("Bottle")      // deeper than Tink
+        case .assist:  name = NSSound.Name("Submarine")   // deep sonar-ish
         }
         NSSound(named: name)?.play()
     }
 
     // MARK: - Tone synthesis
 
-    /// Builds a mono PCM buffer containing a decaying sine (with an optional light
-    /// 2nd harmonic), shaped by a short linear attack and an exponential decay.
+    /// Builds a mono PCM buffer containing a decaying sine whose pitch glides
+    /// from `startFrequency` down to `endFrequency` (the drop is what gives a
+    /// warm "dhum" thump), with an optional light 2nd harmonic for body, shaped
+    /// by a short attack and an exponential decay.
     ///
     /// - Parameters:
-    ///   - frequency: Fundamental frequency in Hz.
+    ///   - startFrequency / endFrequency: Pitch glides between these (Hz), giving
+    ///     the downward "dhum". Set them equal for a steady tone.
     ///   - harmonic2Amplitude: Relative amplitude of the 2nd harmonic (0 = pure sine).
     ///   - duration: Total length in seconds.
     ///   - attack: Linear fade-in time in seconds (avoids a start-of-buffer click).
@@ -149,7 +155,8 @@ final class FeedbackPlayer {
     private static func makeTone(
         format: AVAudioFormat,
         sampleRate: Double,
-        frequency: Double,
+        startFrequency: Double,
+        endFrequency: Double,
         harmonic2Amplitude: Double,
         duration: Double,
         attack: Double,
@@ -164,12 +171,16 @@ final class FeedbackPlayer {
 
         buffer.frameLength = frameCount
 
-        let angularStep = 2.0 * Double.pi * frequency / sampleRate
         let attackFrames = max(1.0, attack * sampleRate)
+        let ratio = endFrequency / startFrequency
+        var phase = 0.0   // integrated so the gliding pitch stays continuous
 
         for i in 0..<Int(frameCount) {
             let t = Double(i) / sampleRate
-            let phase = angularStep * Double(i)
+            let frac = t / duration
+            // Exponential glide from start → end frequency.
+            let freq = startFrequency * pow(ratio, frac)
+            phase += 2.0 * Double.pi * freq / sampleRate
 
             // Fundamental + light 2nd harmonic, normalized so the peak stays ~1.
             let raw = (sin(phase) + harmonic2Amplitude * sin(2.0 * phase))
