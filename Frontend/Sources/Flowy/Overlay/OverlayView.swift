@@ -108,6 +108,21 @@ struct OverlayView: View {
         return displayText
     }
 
+    /// Coarse phase identity for driving the container animation — stable while
+    /// the result text streams in.
+    private var phaseRank: Int {
+        switch model.phase {
+        case .idle: return 0
+        case .listening: return 1
+        case .transcribing: return 2
+        case .result: return 3
+        case .saving: return 4
+        case .saved: return 5
+        case .tooShort: return 6
+        case .error: return 7
+        }
+    }
+
     private var containerSize: CGSize {
         if model.streaming { return OverlayMetrics.streamingPanelSize }
         if case .result(let t) = model.phase {
@@ -137,7 +152,10 @@ struct OverlayView: View {
                 .scaleEffect(isResult ? 1 : 0.92)
         }
         .frame(width: containerSize.width, height: containerSize.height)
-        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.phase)
+        // Animate on the coarse phase (idle/listen/transcribe/result), NOT the
+        // per-token result text — otherwise every streamed token restarts the
+        // spring and the text never settles/paints.
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: phaseRank)
         // Click-through everywhere except while the result box is showing, so its
         // copy button can be clicked; the pill/transcribing states stay passive.
         .allowsHitTesting(isResult)

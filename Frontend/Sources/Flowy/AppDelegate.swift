@@ -273,13 +273,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.setInteractive(true)
 
         var accumulated = ""
+        var lastRender = Date.distantPast
         do {
             for try await delta in assistant.askStream(
                 question, config: config, apiKey: key, images: images, history: history
             ) {
                 if Task.isCancelled { return }
                 accumulated += delta
-                model.updateStreaming(accumulated)
+                // Tokens often arrive in bursts; draining them straight through
+                // on the main actor coalesces into a single paint. Update at most
+                // ~30fps and briefly yield to the run loop so each frame actually
+                // draws — the answer visibly types out.
+                if Date().timeIntervalSince(lastRender) >= 0.033 {
+                    lastRender = Date()
+                    model.updateStreaming(accumulated)
+                    try? await Task.sleep(nanoseconds: 3_000_000)
+                }
             }
         } catch {
             if Task.isCancelled { return }
