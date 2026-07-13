@@ -22,12 +22,12 @@ private func withTimeout<T>(seconds: UInt64,
 /// Manages the on-device (WhisperKit) transcription model: checks whether it's
 /// downloaded, downloads it in-app with progress, loads it, and transcribes.
 ///
-/// Design for responsiveness:
-/// - Models load on the **GPU** (`.cpuAndGPU`), NOT the Neural Engine. The ANE
-///   path needs a slow one-time "specialize" compile that can take minutes and
-///   sometimes stalls; GPU skips it, so switching models is quick and reliable.
-/// - Loading runs in the background and the **currently-loaded model keeps
-///   working** until the new one is ready — the app never freezes on a switch.
+/// Inference runs on WhisperKit's default compute (Neural Engine) for the fastest
+/// transcription. The ANE needs a slow one-time "specialize" compile per model —
+/// so the loading is built to never freeze or stick on it:
+/// - Loading runs in the **background** and the currently-loaded model keeps
+///   serving dictation until the new one is ready — the app never freezes on a
+///   switch. The first load of a model is the only slow one; it's cached after.
 /// - A live status (Downloading % / the WhisperKit load stage / Ready / Failed)
 ///   plus a hard timeout mean it never sits on a silent, stuck spinner.
 @MainActor
@@ -50,16 +50,6 @@ final class TranscriptionModel: ObservableObject {
     private var pipe: WhisperKit?      // the working (loaded) model
     private var loadedModel: String?
     private var loadingModel: String?  // model being prepared in the background
-
-    /// GPU compute for every stage — avoids the slow Neural-Engine specialize.
-    private var computeOptions: ModelComputeOptions {
-        ModelComputeOptions(
-            melCompute: .cpuAndGPU,
-            audioEncoderCompute: .cpuAndGPU,
-            textDecoderCompute: .cpuAndGPU,
-            prefillCompute: .cpuOnly
-        )
-    }
 
     // MARK: - Storage (one basket in the app's data dir)
 
@@ -161,16 +151,16 @@ final class TranscriptionModel: ObservableObject {
         status = .preparing("Loading")
 
         let bundled = bundledModelFolder(model)
-        let compute = computeOptions
         let tokenizerRoot = bundled != nil ? bundledTokenizerRoot : basket
+        // Default compute = Neural Engine (fastest transcription).
         let config: WhisperKitConfig
         if let bundled {
             config = WhisperKitConfig(model: model, modelFolder: bundled.path,
-                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
+                                      tokenizerFolder: tokenizerRoot,
                                       prewarm: false, load: false, download: false)
         } else {
             config = WhisperKitConfig(model: model, downloadBase: basket,
-                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
+                                      tokenizerFolder: tokenizerRoot,
                                       prewarm: false, load: false, download: true)
         }
 
@@ -190,7 +180,7 @@ final class TranscriptionModel: ObservableObject {
             loadedModel = model
             loadingModel = nil
             if self.model == model { status = .ready }
-            NSLog("Slive: WhisperKit ready (\(model), GPU).")
+            NSLog("Slive: WhisperKit ready (\(model)).")
         } catch is TimeoutError {
             loadingModel = nil
             status = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")

@@ -348,7 +348,7 @@ struct SettingsView: View {
 
             modelStatusRow
 
-            Text("Runs on-device on your Mac's GPU — private and fast. Each model downloads once.")
+            Text("Runs on-device (Apple Neural Engine) — private and fast. A new model takes a moment to prepare the first time.")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.5))
                 .fixedSize(horizontal: false, vertical: true)
