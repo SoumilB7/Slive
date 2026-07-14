@@ -10,6 +10,30 @@ import ApplicationServices
 /// secure/password field.
 enum PasteEngine {
 
+    /// Tag written onto every synthetic keystroke Slive posts (via the event's
+    /// `eventSourceUserData` field). The hotkey monitor uses it to ignore our own
+    /// typing so live dictation — which types WHILE the stream key is held —
+    /// doesn't look like the key was released.
+    static let syntheticMarker: Int64 = 0x5_11E_71DE   // "slive type"
+
+    /// Insert `delta` at the cursor of the focused editable field, if there is one
+    /// (used by live streaming dictation, which types small runs as you speak).
+    /// Same guards as `insertIfPossible`, but returns nothing and types
+    /// synchronously off the main thread. No-op if there's no editable focus.
+    @discardableResult
+    static func streamInsert(_ delta: String) -> Bool {
+        guard !delta.isEmpty else { return false }
+        let run = {
+            guard AXIsProcessTrusted(),
+                  let element = focusedElement(),
+                  !isSecure(element),
+                  isEditableTextField(element) else { return false }
+            DispatchQueue.global(qos: .userInitiated).async { typeOut(delta) }
+            return true
+        }
+        return Thread.isMainThread ? run() : DispatchQueue.main.sync(execute: run)
+    }
+
     /// Try to insert `text` at the cursor of the focused editable field.
     ///
     /// - Returns: `true` only if the text was actually inserted; `false`
@@ -139,11 +163,18 @@ enum PasteEngine {
                 if let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) {
                     down.keyboardSetUnicodeString(stringLength: buffer.count,
                                                   unicodeString: buffer.baseAddress)
+                    // Strip modifiers so a held stream key (e.g. ⌥) can't turn the
+                    // typed character into an accented glyph or a shortcut, and tag
+                    // it so our own hotkey tap ignores it.
+                    down.flags = []
+                    down.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
                     down.post(tap: .cghidEventTap)
                 }
                 if let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
                     up.keyboardSetUnicodeString(stringLength: buffer.count,
                                                 unicodeString: buffer.baseAddress)
+                    up.flags = []
+                    up.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
                     up.post(tap: .cghidEventTap)
                 }
             }

@@ -85,6 +85,7 @@ final class FeedbackPlayer {
         switch action {
         case .dictate: buffer = dictateBuffer
         case .assist:  buffer = assistBuffer
+        case .stream:  buffer = dictateBuffer   // shares the dictation "dhum"
         }
 
         guard engineReady, let buffer else {
@@ -133,6 +134,7 @@ final class FeedbackPlayer {
         switch action {
         case .dictate: name = NSSound.Name("Bottle")      // deeper than Tink
         case .assist:  name = NSSound.Name("Submarine")   // deep sonar-ish
+        case .stream:  name = NSSound.Name("Bottle")
         }
         NSSound(named: name)?.play()
     }

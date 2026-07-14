@@ -49,6 +49,7 @@ struct SettingsView: View {
                         case .general:
                             steps
                             keyPicker
+                            streamKeyPicker
                             generalSection
                         case .permissions:
                             permissionsSection
@@ -169,6 +170,28 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("PUSH-TO-TALK KEY")
             HotkeyRecorderView(accent: accent)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card)
+    }
+
+    // MARK: - Live streaming dictation key
+
+    private var streamKeyPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("LIVE DICTATION KEY")
+            HotkeyRecorderView(
+                accent: accent,
+                target: .stream,
+                title: "Live dictation shortcut",
+                subtitle: "Hold to transcribe as you speak — words type straight into the focused field, live. Best with the Tiny or Fast model."
+            )
+            if settings.streamHotkey == nil {
+                Text("Live dictation is off until you record a shortcut.")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.orange.opacity(0.9))
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

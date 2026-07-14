@@ -8,7 +8,7 @@ import CoreGraphics
 /// needs no special permission and never leaks the keys into the app.
 struct HotkeyRecorderView: View {
     /// Which shortcut this recorder edits.
-    enum Target { case dictation, assistant }
+    enum Target { case dictation, assistant, stream }
 
     @ObservedObject private var settings = Settings.shared
     var accent: Color
@@ -25,8 +25,12 @@ struct HotkeyRecorderView: View {
         switch target {
         case .dictation: return settings.hotkey
         case .assistant: return settings.assistantHotkey
+        case .stream:    return settings.streamHotkey
         }
     }
+
+    /// Optional shortcuts (assistant, stream) can be cleared back to disabled.
+    private var isClearable: Bool { target != .dictation }
 
     private var buttonLabel: String {
         if recording { return "Recording…" }
@@ -47,15 +51,15 @@ struct HotkeyRecorderView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            if target == .assistant && current != nil && !recording {
+            if isClearable && current != nil && !recording {
                 Button {
-                    settings.assistantHotkey = nil
+                    clearShortcut()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.white.opacity(0.4))
                 }
                 .buttonStyle(.plain)
-                .help("Clear assistant shortcut")
+                .help("Clear this shortcut")
             }
             Button(buttonLabel) {
                 recording ? cancel() : startRecording()
@@ -87,8 +91,17 @@ struct HotkeyRecorderView: View {
         switch target {
         case .dictation: settings.hotkey = hotkey
         case .assistant: settings.assistantHotkey = hotkey
+        case .stream:    settings.streamHotkey = hotkey
         }
         cancel()
+    }
+
+    private func clearShortcut() {
+        switch target {
+        case .dictation: break                     // the primary key can't be unset
+        case .assistant: settings.assistantHotkey = nil
+        case .stream:    settings.streamHotkey = nil
+        }
     }
 
     private func handle(_ event: NSEvent) {

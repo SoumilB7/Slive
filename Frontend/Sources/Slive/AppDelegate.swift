@@ -23,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var collapseWorkItem: DispatchWorkItem? // pending result auto-dismiss
     private var currentAction: HotkeyAction = .dictate  // which shortcut is recording
 
+    // Live streaming dictation: text already typed into the field (confirmed) and
+    // the still-forming tail (typed on release if it never confirmed).
+    private var liveTypedConfirmed = ""
+    private var liveTailRaw = ""
+
     // In-memory assistant conversation (never persisted). `chatActive` is set
     // only by tapping "Continue"; the next assistant call then continues it.
     private var conversation: [AssistantClient.HistoryItem] = []
@@ -63,8 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         Settings.shared.onHotkeyChange = { [weak self] hk in self?.hotkey.hotkey = hk }
         Settings.shared.onAssistantHotkeyChange = { [weak self] hk in self?.hotkey.assistantHotkey = hk }
+        Settings.shared.onStreamHotkeyChange = { [weak self] hk in self?.hotkey.streamHotkey = hk }
         hotkey.hotkey = Settings.shared.hotkey
         hotkey.assistantHotkey = Settings.shared.assistantHotkey
+        hotkey.streamHotkey = Settings.shared.streamHotkey
 
         // Preload the on-device transcription model IF it's already downloaded
         // (never auto-downloads — the user does that from Settings). Refresh the
@@ -129,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func dismissOverlay() {
         transcribeTask?.cancel(); transcribeTask = nil
         collapseWorkItem?.cancel(); collapseWorkItem = nil
+        whisper.stopLiveDictation()
         chatActive = false
         conversation.removeAll()
         pendingTurn = nil
@@ -142,8 +150,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         armWorkItem?.cancel()
         currentAction = action
         let work = DispatchWorkItem { [weak self] in
-            self?.armWorkItem = nil
-            self?.beginRecording()
+            guard let self else { return }
+            self.armWorkItem = nil
+            if action == .stream { self.beginLiveDictation() }
+            else { self.beginRecording() }
         }
         armWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Settings.shared.holdActivationDelay, execute: work)
@@ -156,7 +166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             armWorkItem = nil
             return
         }
-        stopRecording()
+        if currentAction == .stream { stopLiveDictation() }
+        else { stopRecording() }
     }
 
     private func beginRecording() {
@@ -221,7 +232,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             //    assistant shortcut needs the (always-on) Python backend to reach
             //    the LLM, so ensure it's up first, then stream the answer.
             switch action {
-            case .dictate:
+            case .dictate, .stream:
+                // `.stream` never reaches here (it uses the live path), but the
+                // file path falls back to plain dictation if it ever did.
                 await MainActor.run { self.finishTranscription(text: text) }
             case .assist:
                 if await self.backend.ensureHealthy() {
@@ -232,6 +245,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    // MARK: - Live streaming dictation
+
+    /// Start live dictation: stream transcription from the mic and type each
+    /// confirmed word straight into the focused field as you speak, showing the
+    /// still-forming tail in the overlay. Needs a model already loaded.
+    private func beginLiveDictation() {
+        guard !recorder.isRecording else { return }
+        transcribeTask?.cancel(); transcribeTask = nil
+        collapseWorkItem?.cancel(); collapseWorkItem = nil
+
+        // Streaming can't wait on a first-time model load — it needs one in
+        // memory now. If none is ready, tell the user and kick off a load.
+        guard whisper.isReady else {
+            whisper.select(Settings.shared.whisperModel)
+            let msg = "Preparing the transcription model — hold again in a moment."
+            model.showResult(msg)
+            overlay.show()
+            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
+            overlay.setInteractive(true)
+            scheduleCollapse(after: 3.5)
+            return
+        }
+
+        liveTypedConfirmed = ""
+        liveTailRaw = ""
+        model.beginLiveDictation()
+        overlay.show()
+        overlay.resize(to: OverlayMetrics.liveDictationPanelSize)
+        FeedbackPlayer.shared.playActivation(for: .stream)
+
+        let started = whisper.startLiveDictation { [weak self] confirmed, hypothesis, energy in
+            self?.onLiveUpdate(confirmed: confirmed, hypothesis: hypothesis, energy: energy)
+        }
+        if !started {
+            model.finishListening()
+            hideOverlaySoon()
+        }
+    }
+
+    /// A streaming update: type any newly-confirmed text into the field and show
+    /// the forming tail. Runs on the main actor.
+    @MainActor private func onLiveUpdate(confirmed: String, hypothesis: String, energy: Float) {
+        guard model.liveDictating else { return }   // ignore late callbacks
+
+        // Confirmed text only grows and is stable, so type just the new suffix.
+        if confirmed.count > liveTypedConfirmed.count, confirmed.hasPrefix(liveTypedConfirmed) {
+            var delta = String(confirmed.dropFirst(liveTypedConfirmed.count))
+            if liveTypedConfirmed.isEmpty { delta = String(delta.drop(while: { $0 == " " })) }
+            liveTypedConfirmed = confirmed
+            if !delta.isEmpty { PasteEngine.streamInsert(delta) }
+        } else if !confirmed.hasPrefix(liveTypedConfirmed) {
+            // Rare revision of already-confirmed text — resync without retyping so
+            // we never duplicate what's already in the field.
+            liveTypedConfirmed = confirmed
+        }
+
+        liveTailRaw = hypothesis
+        model.updateLiveTail(hypothesis)
+        model.pushStreamEnergy(energy)
+    }
+
+    /// Stop live dictation: end the stream, flush any tail that never confirmed
+    /// into the field, record the full text, and hide the overlay.
+    private func stopLiveDictation() {
+        whisper.stopLiveDictation()
+
+        // The hypothesis tail was shown but never confirmed → commit it now so
+        // nothing spoken is lost.
+        let tail = liveTailRaw
+        if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var delta = tail
+            if liveTypedConfirmed.isEmpty { delta = String(delta.drop(while: { $0 == " " })) }
+            PasteEngine.streamInsert(delta)
+        }
+
+        let full = (liveTypedConfirmed + " " + tail)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !full.isEmpty { HistoryStore.shared.add(full) }
+
+        liveTypedConfirmed = ""
+        liveTailRaw = ""
+        model.finishListening()
+        hideOverlaySoon()
     }
 
     /// Assistant path: stream the LLM's answer into a fixed-size box, growing

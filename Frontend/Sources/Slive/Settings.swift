@@ -10,6 +10,7 @@ final class Settings: ObservableObject {
     private enum Keys {
         static let hotkey = "hotkey"
         static let assistantHotkey = "assistantHotkey"
+        static let streamHotkey = "streamHotkey"
         static let assistantConfig = "assistantConfig"
         static let launchAtLogin = "launchAtLogin"
         static let autoInsert = "autoInsert"
@@ -25,6 +26,8 @@ final class Settings: ObservableObject {
     var onHotkeyChange: ((Hotkey) -> Void)?
     /// Fired whenever the assistant hotkey changes (nil = disabled).
     var onAssistantHotkeyChange: ((Hotkey?) -> Void)?
+    /// Fired whenever the live-streaming dictation hotkey changes (nil = disabled).
+    var onStreamHotkeyChange: ((Hotkey?) -> Void)?
     /// Fired when the transcription model changes, so the backend can restart
     /// with the new FLOWY_WHISPER_MODEL.
     var onWhisperModelChange: ((String) -> Void)?
@@ -49,6 +52,20 @@ final class Settings: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: Keys.assistantHotkey)
             }
             onAssistantHotkeyChange?(assistantHotkey)
+        }
+    }
+
+    /// Optional third shortcut for live-streaming dictation: transcribes as you
+    /// speak and types the words straight into the focused field. nil = disabled.
+    /// Persisted as JSON.
+    @Published var streamHotkey: Hotkey? {
+        didSet {
+            if let hk = streamHotkey, let data = try? JSONEncoder().encode(hk) {
+                UserDefaults.standard.set(data, forKey: Keys.streamHotkey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Keys.streamHotkey)
+            }
+            onStreamHotkeyChange?(streamHotkey)
         }
     }
 
@@ -122,6 +139,12 @@ final class Settings: ObservableObject {
             assistantHotkey = decoded
         } else {
             assistantHotkey = nil
+        }
+        if let data = UserDefaults.standard.data(forKey: Keys.streamHotkey),
+           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
+            streamHotkey = decoded
+        } else {
+            streamHotkey = nil
         }
         if let data = UserDefaults.standard.data(forKey: Keys.assistantConfig),
            let decoded = try? JSONDecoder().decode(AssistantConfig.self, from: data) {
