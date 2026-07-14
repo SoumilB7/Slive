@@ -70,15 +70,6 @@ enum OverlayMetrics {
     /// Extra height added below an assistant answer for the "Continue" button.
     static let continueFooterHeight: CGFloat = 34
 
-    /// Live dictation: a fixed-size caption (the words about to land) stacked
-    /// above the waveform pill. Fixed so it never resizes as the tail changes.
-    static let liveDictationBoxWidth: CGFloat = 320
-    static let liveDictationBoxHeight: CGFloat = 96
-    static var liveDictationPanelSize: CGSize {
-        CGSize(width: liveDictationBoxWidth + margin * 2,
-               height: liveDictationBoxHeight + margin * 2)
-    }
-
     /// Panel sizes for an assistant answer (box + Continue footer).
     static func assistantPanelSize(for text: String) -> CGSize {
         let p = panelSize(for: text)
@@ -107,9 +98,10 @@ struct OverlayView: View {
         if case .listening = model.phase { return true }; return false
     }
     /// Dictation listen (waveform pill) vs. assistant listen (black-hole pill).
-    private var isDictationListening: Bool { isListening && !model.assistantListening && !model.liveDictating }
+    // Live streaming dictation reuses the exact same waveform pill as normal
+    // dictation — visually identical; the text just types straight into the field.
+    private var isDictationListening: Bool { isListening && !model.assistantListening }
     private var isAssistantListening: Bool { isListening && model.assistantListening }
-    private var isLiveDictating: Bool { isListening && model.liveDictating }
     private var isTranscribing: Bool {
         if case .transcribing = model.phase { return true }; return false
     }
@@ -138,7 +130,6 @@ struct OverlayView: View {
     }
 
     private var containerSize: CGSize {
-        if isLiveDictating { return OverlayMetrics.liveDictationPanelSize }
         if model.streaming { return OverlayMetrics.streamingPanelSize }
         if case .result(let t) = model.phase {
             if model.isChat { return OverlayMetrics.assistantStreamingPanelSize }
@@ -157,10 +148,6 @@ struct OverlayView: View {
             assistantListeningPill
                 .opacity(isAssistantListening ? 1 : 0)
                 .scaleEffect(isAssistantListening ? 1 : 0.9)
-
-            liveDictationView
-                .opacity(isLiveDictating ? 1 : 0)
-                .scaleEffect(isLiveDictating ? 1 : 0.95)
 
             transcribingPill(active: isTranscribing)
                 .opacity(isTranscribing ? 1 : 0)
@@ -205,33 +192,6 @@ struct OverlayView: View {
             .frame(width: 40, height: 40)
             .opacity(chromeOpacity)
             .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
-    }
-
-    // MARK: - Live streaming dictation (caption + waveform pill)
-
-    private var liveDictationView: some View {
-        VStack(spacing: 10) {
-            // The words currently forming — they land in your field as they firm
-            // up. `.head` truncation keeps the newest words visible.
-            Text(model.liveTail.isEmpty ? "Listening…" : model.liveTail)
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(model.liveTail.isEmpty ? 0.4 : 0.92))
-                .lineLimit(2)
-                .truncationMode(.head)
-                .multilineTextAlignment(.center)
-                .frame(width: OverlayMetrics.liveDictationBoxWidth - 28, height: 40)
-                .padding(.horizontal, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.black.opacity(chromeOpacity))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(.white.opacity(0.06), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
-            listeningPill
-        }
     }
 
     // MARK: - Transcribing (loading dots in the same pill)

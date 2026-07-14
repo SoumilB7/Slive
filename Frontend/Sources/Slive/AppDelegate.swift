@@ -273,8 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         liveTypedConfirmed = ""
         liveTailRaw = ""
         model.beginLiveDictation()
-        overlay.show()
-        overlay.resize(to: OverlayMetrics.liveDictationPanelSize)
+        overlay.show()   // same small waveform pill as normal dictation
         FeedbackPlayer.shared.playActivation(for: .stream)
 
         let started = whisper.startLiveDictation { [weak self] confirmed, hypothesis, energy in
