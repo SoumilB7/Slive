@@ -102,6 +102,16 @@ final class TranscriptionModel: ObservableObject {
         for f in subs where f.lastPathComponent.hasSuffix(model) { try? FileManager.default.removeItem(at: f) }
     }
 
+    /// Release the loaded model from memory. Called on quit: the OS reclaims the
+    /// process's memory on exit regardless, but dropping the WhisperKit instance
+    /// deterministically frees its Core ML / Neural Engine resources first, and
+    /// abandons any in-flight background load so nothing lingers.
+    func shutdown() {
+        pipe = nil
+        loadedModel = nil
+        loadingModel = nil
+    }
+
     // MARK: - Selection / loading
 
     /// Point at `model`: mark ready if already loaded, else load it in the
