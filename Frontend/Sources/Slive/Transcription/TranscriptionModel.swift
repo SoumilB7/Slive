@@ -173,7 +173,7 @@ final class TranscriptionModel: ObservableObject {
             textDecoder: pipe.textDecoder,
             tokenizer: tokenizer,
             audioProcessor: pipe.audioProcessor,
-            decodingOptions: streamOptions(),
+            decodingOptions: decodeOptions(),
             // Confirm text after just one trailing segment (default is 2) so the
             // stable prefix grows sooner.
             requiredSegmentsForConfirmation: 1,
@@ -213,15 +213,19 @@ final class TranscriptionModel: ObservableObject {
     func transcribeSamples(_ samples: [Float], model: String) async -> String? {
         guard let pipe = pipes[model], samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
         let results: [TranscriptionResult]? =
-            try? await pipe.transcribe(audioArray: samples, decodeOptions: streamOptions())
+            try? await pipe.transcribe(audioArray: samples, decodeOptions: decodeOptions())
         guard let results else { return nil }
         return Self.cleanStreamText(results.map { $0.text }.joined())
     }
 
-    /// Clean-text decode options shared by the live stream and the final pass.
-    private func streamOptions() -> DecodingOptions {
+    /// Decode options shared by every transcription path (file dictation, the live
+    /// stream, and the final pass). `withoutTimestamps` matters for short clips:
+    /// with timestamps on (WhisperKit's default) a <1s utterance often decodes to
+    /// no content token at all — so quick dictations returned empty and nothing
+    /// typed. `skipSpecialTokens` keeps `<|…|>` control tokens out of the text.
+    private func decodeOptions() -> DecodingOptions {
         var options = DecodingOptions(language: "en")
-        options.skipSpecialTokens = true   // no <|…|> control tokens
+        options.skipSpecialTokens = true
         options.withoutTimestamps = true
         return options
     }
@@ -343,7 +347,7 @@ final class TranscriptionModel: ObservableObject {
         do {
             let results = try await pipe.transcribe(
                 audioPath: url.path,
-                decodeOptions: DecodingOptions(language: "en")
+                decodeOptions: decodeOptions()
             )
             return results
                 .map { $0.text }
