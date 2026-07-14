@@ -16,22 +16,27 @@ enum PasteEngine {
     /// doesn't look like the key was released.
     static let syntheticMarker: Int64 = 0x5_11E_71DE   // "slive type"
 
-    /// Insert `delta` at the cursor of the focused editable field, if there is one
-    /// (used by live streaming dictation, which types small runs as you speak).
-    /// Same guards as `insertIfPossible`, but returns nothing and types
-    /// synchronously off the main thread. No-op if there's no editable focus.
-    @discardableResult
-    static func streamInsert(_ delta: String) -> Bool {
-        guard !delta.isEmpty else { return false }
+    /// Serial queue for live streaming edits, so consecutive backspace+type
+    /// steps run strictly in order and never interleave their key events.
+    private static let streamQueue = DispatchQueue(label: "com.slive.app.streamtype", qos: .userInitiated)
+
+    /// Live-editing step for streaming dictation: delete `deleteCount` characters
+    /// (backspace) then type `insert`, into the focused editable field. This is
+    /// how the tail is corrected in place as the recogniser revises it. Same
+    /// guards as `insertIfPossible`; no-op if there's no editable focus.
+    static func streamEdit(deleteCount: Int, insert: String) {
+        guard deleteCount > 0 || !insert.isEmpty else { return }
         let run = {
             guard AXIsProcessTrusted(),
                   let element = focusedElement(),
                   !isSecure(element),
-                  isEditableTextField(element) else { return false }
-            DispatchQueue.global(qos: .userInitiated).async { typeOut(delta) }
-            return true
+                  isEditableTextField(element) else { return }
+            streamQueue.async {
+                if deleteCount > 0 { sendBackspaces(deleteCount) }
+                if !insert.isEmpty { typeOut(insert) }
+            }
         }
-        return Thread.isMainThread ? run() : DispatchQueue.main.sync(execute: run)
+        if Thread.isMainThread { run() } else { DispatchQueue.main.sync(execute: run) }
     }
 
     /// Try to insert `text` at the cursor of the focused editable field.
@@ -138,6 +143,27 @@ enum PasteEngine {
             }
         }
         return false
+    }
+
+    /// Post `n` backspace (Delete) key presses to the frontmost app. Tagged +
+    /// modifier-cleared like `typeOut`, so our own hotkey tap ignores them and a
+    /// held stream key can't alter them.
+    private static func sendBackspaces(_ n: Int) {
+        guard n > 0, let source = CGEventSource(stateID: .combinedSessionState) else { return }
+        let deleteKey: CGKeyCode = 0x33   // Delete / Backspace
+        for _ in 0..<n {
+            if let down = CGEvent(keyboardEventSource: source, virtualKey: deleteKey, keyDown: true) {
+                down.flags = []
+                down.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
+                down.post(tap: .cghidEventTap)
+            }
+            if let up = CGEvent(keyboardEventSource: source, virtualKey: deleteKey, keyDown: false) {
+                up.flags = []
+                up.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
+                up.post(tap: .cghidEventTap)
+            }
+            usleep(800)
+        }
     }
 
     // MARK: - Insertion: type it out
