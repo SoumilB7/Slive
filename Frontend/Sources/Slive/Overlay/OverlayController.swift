@@ -70,6 +70,7 @@ final class OverlayController {
     private func reassertTopmost() {
         applyTopmostLevel()
         if panel.isVisible { panel.orderFrontRegardless() }
+        Log.overlay("reassert level=\(panel.level.rawValue) visible=\(panel.isVisible)")
     }
 
     /// Bring the overlay on screen, positioned bottom-centre of whichever

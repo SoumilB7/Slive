@@ -319,6 +319,22 @@ struct SettingsView: View {
             Divider().overlay(.white.opacity(0.08))
 
             modelPicker
+
+            Divider().overlay(.white.opacity(0.08))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $settings.verboseLogging) {
+                    Text("Verbose logging (developer)")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                }
+                .toggleStyle(.switch)
+                .tint(accent)
+                Text("Emit diagnostic logs. View in Console.app or `log stream` filtered by “Slive.”. Off for normal use.")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

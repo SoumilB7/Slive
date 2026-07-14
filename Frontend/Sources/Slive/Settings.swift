@@ -21,6 +21,7 @@ final class Settings: ObservableObject {
         static let whisperModel = "whisperModel"
         static let continuousModel = "continuousModel"
         static let continuousTypeCPS = "continuousTypeCPS"
+        static let verboseLogging = "verboseLogging"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -144,6 +145,15 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(continuousTypeCPS, forKey: Keys.continuousTypeCPS) }
     }
 
+    /// Developer-only: emit verbose diagnostic logs (filter "Slive." in Console /
+    /// `log stream`). Off for normal users. Also forced on by `SLIVE_DEBUG=1`.
+    @Published var verboseLogging: Bool {
+        didSet {
+            UserDefaults.standard.set(verboseLogging, forKey: Keys.verboseLogging)
+            Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"
+        }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -204,6 +214,10 @@ final class Settings: ObservableObject {
         } else {
             continuousTypeCPS = UserDefaults.standard.double(forKey: Keys.continuousTypeCPS)
         }
+        verboseLogging = UserDefaults.standard.bool(forKey: Keys.verboseLogging)
+        // Apply the gate immediately (didSet doesn't fire from init). Env var can
+        // force it on regardless of the stored/UI setting.
+        Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"
     }
 
     // MARK: - Assistant API keys (Keychain-backed)
