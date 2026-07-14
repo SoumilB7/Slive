@@ -224,14 +224,21 @@ final class HotkeyMonitor {
             break
         }
 
-        // 2. Modifier-only shortcuts — matched on exact flags. Skipped while a
-        //    chord is engaged (that engagement owns `activeAction`).
+        // 2. Modifier-only shortcuts. Skipped while a chord is engaged (that
+        //    engagement owns `activeAction`).
+        //
+        //    Precedence: an EXACT flag match is the single gesture the user is
+        //    making, so it wins (this keeps a superset chord like fn+ctrl from
+        //    being read as plain fn). If the held modifiers match no single
+        //    shortcut — e.g. two gestures held at once — the highest-priority
+        //    shortcut whose modifiers are ALL held wins. `targets` is ordered
+        //    dictate → assist → stream, so plain (all-at-once) dictation
+        //    dominates over the continuous and assistant keys.
         if engagedKeyCode == nil {
-            let matched = targets.first {
-                $0.hotkey.isModifierOnly
-                    && $0.hotkey.modifiers != 0
-                    && $0.hotkey.modifiers == flags
-            }?.action
+            let mods = targets.filter { $0.hotkey.isModifierOnly && $0.hotkey.modifiers != 0 }
+            let matched: HotkeyAction? =
+                mods.first { $0.hotkey.modifiers == flags }?.action
+                ?? mods.first { ($0.hotkey.modifiers & flags) == $0.hotkey.modifiers }?.action
             if matched != activeAction {
                 if let a = activeAction { activeAction = nil; onStop?(a) }
                 if let m = matched { activeAction = m; onStart?(m) }
