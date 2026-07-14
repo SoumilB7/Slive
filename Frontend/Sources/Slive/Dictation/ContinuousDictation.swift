@@ -16,10 +16,10 @@ import Foundation
 @MainActor
 final class ContinuousDictation {
     private let whisper = TranscriptionModel.shared
+    /// Paces the actual keystrokes so text appears smoothly, character by
+    /// character, rather than in per-pass bursts.
+    private let typist = LiveTypist()
 
-    /// Exactly what we've typed into the field so far — diffed against each new
-    /// transcript to compute the minimal backspace + type edit.
-    private var typed = ""
     private var active = false
 
     /// Live mic energy (0…~1) forwarded for the waveform pill.
@@ -31,14 +31,15 @@ final class ContinuousDictation {
     /// on a first-time load — the caller should surface that).
     func start() -> Bool {
         guard whisper.isReady else { return false }
-        typed = ""
         active = true
+        typist.start(allowed: PasteEngine.canStreamType())
         let ok = whisper.startLiveDictation { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
-            self.apply(target: Self.normalize(transcript))
+            // Just move the goal — the typist eases the field toward it smoothly.
+            self.typist.setTarget(Self.normalize(transcript))
         }
-        if !ok { active = false }
+        if !ok { active = false; typist.cancel() }
         return ok
     }
 
@@ -51,38 +52,21 @@ final class ContinuousDictation {
         let snapshot = whisper.liveSamplesSnapshot()   // grab BEFORE stopping
         whisper.stopLiveDictation()
         if let final = await whisper.transcribeSamples(snapshot) {
-            apply(target: Self.normalize(final))
+            typist.setTarget(Self.normalize(final))
         }
-        let result = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        typed = ""
-        return result
+        // Flush the remaining diff immediately so the field is correct on release.
+        let result = await typist.finish()
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Abort without a final pass or field edits (app quit / dismiss).
     func cancel() {
         active = false
         whisper.stopLiveDictation()
-        typed = ""
+        typist.cancel()
     }
 
-    // MARK: - Incremental typing
-
-    /// Make the field's text match `target` with the fewest keystrokes: keep the
-    /// common prefix, backspace the diverging suffix we typed, then type the new
-    /// suffix.
-    private func apply(target: String) {
-        guard target != typed else { return }
-        let old = Array(typed), new = Array(target)
-        var common = 0
-        let maxCommon = min(old.count, new.count)
-        while common < maxCommon && old[common] == new[common] { common += 1 }
-
-        let deletes = old.count - common
-        let insert = String(new[common...])
-        guard deletes > 0 || !insert.isEmpty else { return }
-        PasteEngine.streamEdit(deleteCount: deletes, insert: insert)
-        typed = target
-    }
+    // MARK: - Text hygiene
 
     /// Drop Whisper's leading segment space (so the field doesn't start with a
     /// space) and strip anything unsafe. Control tokens / placeholder are already
