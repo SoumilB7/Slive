@@ -285,6 +285,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Hard guarantee at the typing boundary: never type Whisper control tokens
+    /// (`<|…|>`) or its internal "Waiting for speech..." placeholder into the
+    /// field, no matter where the text came from.
+    private func sanitizedForTyping(_ text: String) -> String {
+        var t = text.replacingOccurrences(of: "Waiting for speech...", with: "")
+        if t.contains("<|") {
+            t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
+        }
+        return t
+    }
+
     /// A streaming update: type any newly-confirmed text into the field and show
     /// the forming tail. Runs on the main actor.
     @MainActor private func onLiveUpdate(confirmed: String, hypothesis: String, energy: Float) {
@@ -295,6 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var delta = String(confirmed.dropFirst(liveTypedConfirmed.count))
             if liveTypedConfirmed.isEmpty { delta = String(delta.drop(while: { $0 == " " })) }
             liveTypedConfirmed = confirmed
+            delta = sanitizedForTyping(delta)
             if !delta.isEmpty { PasteEngine.streamInsert(delta) }
         } else if !confirmed.hasPrefix(liveTypedConfirmed) {
             // Rare revision of already-confirmed text — resync without retyping so
@@ -318,7 +330,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             var delta = tail
             if liveTypedConfirmed.isEmpty { delta = String(delta.drop(while: { $0 == " " })) }
-            PasteEngine.streamInsert(delta)
+            delta = sanitizedForTyping(delta)
+            if !delta.isEmpty { PasteEngine.streamInsert(delta) }
         }
 
         let full = (liveTypedConfirmed + " " + tail)
