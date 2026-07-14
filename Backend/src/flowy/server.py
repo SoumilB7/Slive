@@ -22,7 +22,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from flowy.assistant import answer as assistant_answer
 from flowy.assistant import answer_stream as assistant_answer_stream
@@ -96,6 +96,21 @@ class HistoryItem(BaseModel):
     content: str
 
 
+def _clean_api_key(value: str) -> str:
+    """Strip surrounding whitespace/newlines from an API key and reject any that
+    still contains control characters.
+
+    A key pasted with a trailing newline (or otherwise malformed) would reach the
+    HTTP layer as an illegal ``Authorization`` header value and raise a cryptic
+    httpx error mid-request. Sanitising at the request boundary turns that into a
+    clean, explainable 4xx instead.
+    """
+    cleaned = value.strip()
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in cleaned):
+        raise ValueError("API key contains invalid (control) characters")
+    return cleaned
+
+
 class AssistantRequest(BaseModel):
     text: str
     provider: str
@@ -106,6 +121,8 @@ class AssistantRequest(BaseModel):
     max_tokens: int = 1024
     images: list[ImageItem] | None = None
     history: list[HistoryItem] | None = None
+
+    _clean_key = field_validator("api_key")(_clean_api_key)
 
 
 @app.post("/assistant")
@@ -170,6 +187,8 @@ class ModelsRequest(BaseModel):
     provider: str
     api_key: str
     base_url: str | None = None
+
+    _clean_key = field_validator("api_key")(_clean_api_key)
 
 
 @app.post("/models")
