@@ -293,15 +293,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Stop live dictation: run the final accurate pass (which also catches the
     /// trailing audio), record the full text, and close the overlay. The pill
-    /// shows the loading dots briefly while that final pass runs.
+    /// shows the loading dots briefly while that final pass runs. If nothing
+    /// could be typed live (no editable field was focused), the transcript is
+    /// surfaced in the copy/dismiss result box instead — same as normal
+    /// dictation — so the words are never silently lost.
     private func stopLiveDictation() {
         guard continuous.isActive else { return }
         model.beginTranscribing()
         Task { @MainActor in
-            let full = await continuous.stop()
-            if !full.isEmpty { HistoryStore.shared.add(full) }
-            model.finishListening()
-            hideOverlaySoon()
+            let outcome = await continuous.stop()
+            let text = outcome.text
+            if !text.isEmpty { HistoryStore.shared.add(text) }
+            if !outcome.typed && !text.isEmpty {
+                model.showResult(text)
+                overlay.resize(to: OverlayMetrics.panelSize(for: text))
+                overlay.setInteractive(true)          // copy button clickable
+                scheduleCollapse(after: resultDisplayDuration)
+            } else {
+                model.finishListening()
+                hideOverlaySoon()
+            }
         }
     }
 

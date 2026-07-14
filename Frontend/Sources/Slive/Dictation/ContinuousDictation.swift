@@ -20,10 +20,22 @@ final class ContinuousDictation {
     /// character, rather than in per-pass bursts.
     private let typist = LiveTypist()
 
+    /// What a finished session produced. `typed` is false when no editable field
+    /// was focused, so nothing could stream into it — the caller should surface
+    /// `text` in the result box instead (as normal dictation does).
+    struct Outcome {
+        let text: String
+        let typed: Bool
+    }
+
     private var active = false
     /// The model this session is streaming with — captured at start so the final
     /// pass can target it after the live stream (and `liveModel`) is torn down.
     private var model = ""
+    /// Whether this session is actually typing into a field (decided at start).
+    private var typing = false
+    /// Latest normalized transcript — the fallback text if the final pass fails.
+    private var lastTranscript = ""
 
     /// Live mic energy (0…~1) forwarded for the waveform pill.
     var onEnergy: ((Float) -> Void)?
@@ -41,36 +53,53 @@ final class ContinuousDictation {
         }
         self.model = model
         active = true
+        lastTranscript = ""
         let canType = PasteEngine.canStreamType()
+        typing = canType
         Log.live("start — model=\(model) cps=\(Int(Settings.shared.continuousTypeCPS)) canType=\(canType)")
         typist.start(allowed: canType, cps: Settings.shared.continuousTypeCPS)
         let ok = whisper.startLiveDictation(model: model) { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
+            let text = Self.normalize(transcript)
+            self.lastTranscript = text
             // Just move the goal — the typist eases the field toward it smoothly.
-            self.typist.setTarget(Self.normalize(transcript))
+            self.typist.setTarget(text)
         }
         if !ok { active = false; typist.cancel() }
         return ok
     }
 
-    /// Stop streaming, reconcile the field to the final accurate transcript, and
-    /// return the full text (already in the field). The final pass captures the
-    /// trailing audio the live loop missed.
-    func stop() async -> String {
-        guard active else { return "" }
+    /// Stop streaming and run the final accurate pass (which captures the
+    /// trailing audio the live loop missed). If this session was typing, the
+    /// field is reconciled to the final transcript; if not (no editable field),
+    /// the text is returned with `typed == false` so the caller can show it in
+    /// the result box instead of it silently vanishing.
+    func stop() async -> Outcome {
+        guard active else { return Outcome(text: "", typed: typing) }
         active = false
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         whisper.stopLiveDictation()
-        Log.live(String(format: "RELEASE  audio=%.1fs  running final pass…", Double(snapshot.count) / 16_000.0))
+        Log.live(String(format: "RELEASE  audio=%.1fs  typing=%@  running final pass…",
+                        Double(snapshot.count) / 16_000.0, typing ? "yes" : "no"))
         let t0 = Date()
         let final = await whisper.transcribeSamples(snapshot, model: model)
-        if let final { typist.setTarget(Self.normalize(final)) }
-        // Flush the remaining diff immediately so the field is correct on release.
-        let result = await typist.finish()
+        // Fall back to the last streamed transcript if the final pass fails.
+        let finalText = final.map(Self.normalize) ?? lastTranscript
+
+        let result: String
+        if typing {
+            typist.setTarget(finalText)
+            // Flush the remaining diff immediately so the field is correct on release.
+            result = await typist.finish()
+        } else {
+            typist.cancel()
+            result = finalText
+        }
         Log.live(String(format: "DONE  final pass %.2fs  len=%d  «%@»",
                         Date().timeIntervalSince(t0), result.count, String(result.suffix(40))))
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Outcome(text: result.trimmingCharacters(in: .whitespacesAndNewlines),
+                       typed: typing)
     }
 
     /// Abort without a final pass or field edits (app quit / dismiss).
