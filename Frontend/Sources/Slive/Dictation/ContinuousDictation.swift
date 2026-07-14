@@ -57,11 +57,14 @@ final class ContinuousDictation {
         active = false
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         whisper.stopLiveDictation()
-        if let final = await whisper.transcribeSamples(snapshot, model: model) {
-            typist.setTarget(Self.normalize(final))
-        }
+        NSLog(String(format: "Slive.live: RELEASE  audio=%.1fs  running final pass…",
+                     Double(snapshot.count) / 16_000.0))
+        let final = await whisper.transcribeSamples(snapshot, model: model)
+        if let final { typist.setTarget(Self.normalize(final)) }
         // Flush the remaining diff immediately so the field is correct on release.
         let result = await typist.finish()
+        NSLog(String(format: "Slive.live: DONE  final len=%d  (streaming had reached len=%d)",
+                     final?.count ?? -1, result.count == 0 ? 0 : result.count))
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
