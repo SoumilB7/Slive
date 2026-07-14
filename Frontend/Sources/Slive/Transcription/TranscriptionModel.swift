@@ -166,6 +166,11 @@ final class TranscriptionModel: ObservableObject {
         // still hold the previous utterance and re-transcribe it from the top.
         pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
 
+        // Dedupe: the state callback also fires on every mic-energy tick (~10×/s)
+        // with an UNCHANGED transcript. Only push through when the text actually
+        // changes, so we don't spam the main actor with no-op updates.
+        var lastTranscript = ""
+
         let transcriber = AudioStreamTranscriber(
             audioEncoder: pipe.audioEncoder,
             featureExtractor: pipe.featureExtractor,
@@ -177,6 +182,12 @@ final class TranscriptionModel: ObservableObject {
             // Confirm text after just one trailing segment (default is 2) so the
             // stable prefix grows sooner.
             requiredSegmentsForConfirmation: 1,
+            // Push-to-talk: the user is deliberately speaking the whole time, so
+            // don't let the voice-activity gate SKIP transcribe passes on quieter
+            // stretches — that's what made live text "hang" mid-phrase and only
+            // catch up on release. A low threshold still ignores dead silence but
+            // no longer drops real (soft) speech.
+            silenceThreshold: 0.1,
             useVAD: true,
             stateChangeCallback: { _, state in
                 // Full transcript so far = confirmed prefix + still-forming tail.
@@ -185,8 +196,9 @@ final class TranscriptionModel: ObservableObject {
                 let confirmed = state.confirmedSegments.map { $0.text }.joined()
                 let tail = state.unconfirmedSegments.map { $0.text }.joined()
                 let transcript = Self.cleanStreamText(confirmed + tail)
-                let energy = state.bufferEnergy.last ?? 0
-                Task { @MainActor in onUpdate(transcript, energy) }
+                guard transcript != lastTranscript else { return }   // energy-only tick
+                lastTranscript = transcript
+                Task { @MainActor in onUpdate(transcript, 0) }
             }
         )
         liveTranscriber = transcriber
