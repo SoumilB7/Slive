@@ -19,6 +19,8 @@ final class Settings: ObservableObject {
         static let holdActivationDelay = "holdActivationDelay"
         static let overlayOpacity = "overlayOpacity"
         static let whisperModel = "whisperModel"
+        static let continuousModel = "continuousModel"
+        static let continuousTypeCPS = "continuousTypeCPS"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -31,6 +33,9 @@ final class Settings: ObservableObject {
     /// Fired when the transcription model changes, so the backend can restart
     /// with the new FLOWY_WHISPER_MODEL.
     var onWhisperModelChange: ((String) -> Void)?
+    /// Fired when the continuous (live streaming) dictation model changes, so the
+    /// registry can preload the new one and evict any model no longer referenced.
+    var onContinuousModelChange: ((String) -> Void)?
 
     /// The user-recorded push-to-talk shortcut. Persisted as JSON.
     @Published var hotkey: Hotkey {
@@ -122,6 +127,23 @@ final class Settings: ObservableObject {
         }
     }
 
+    /// WhisperKit model used by continuous (live streaming) dictation — fully
+    /// independent of `whisperModel`. When set to the same name, the two share one
+    /// resident instance; when different, both load. Changing it reloads its model.
+    @Published var continuousModel: String {
+        didSet {
+            UserDefaults.standard.set(continuousModel, forKey: Keys.continuousModel)
+            onContinuousModelChange?(continuousModel)
+        }
+    }
+
+    /// Characters-per-second the live typist eases the field toward during
+    /// continuous dictation. `>= 120` means "Instant" (whole diff flushed at once).
+    /// Default 30.
+    @Published var continuousTypeCPS: Double {
+        didSet { UserDefaults.standard.set(continuousTypeCPS, forKey: Keys.continuousTypeCPS) }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -174,6 +196,14 @@ final class Settings: ObservableObject {
         // Default to the bundled tiny model so the first launch works instantly
         // and fully offline — the user can switch to a bigger one in Settings.
         whisperModel = UserDefaults.standard.string(forKey: Keys.whisperModel) ?? "tiny.en"
+        // Continuous dictation defaults to the same bundled tiny model (so both
+        // sections share one instance until the user changes either one).
+        continuousModel = UserDefaults.standard.string(forKey: Keys.continuousModel) ?? "tiny.en"
+        if UserDefaults.standard.object(forKey: Keys.continuousTypeCPS) == nil {
+            continuousTypeCPS = 30
+        } else {
+            continuousTypeCPS = UserDefaults.standard.double(forKey: Keys.continuousTypeCPS)
+        }
     }
 
     // MARK: - Assistant API keys (Keychain-backed)

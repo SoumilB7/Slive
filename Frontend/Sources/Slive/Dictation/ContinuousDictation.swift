@@ -21,19 +21,25 @@ final class ContinuousDictation {
     private let typist = LiveTypist()
 
     private var active = false
+    /// The model this session is streaming with — captured at start so the final
+    /// pass can target it after the live stream (and `liveModel`) is torn down.
+    private var model = ""
 
     /// Live mic energy (0…~1) forwarded for the waveform pill.
     var onEnergy: ((Float) -> Void)?
 
     var isActive: Bool { active }
 
-    /// Start streaming. Returns false if no model is loaded (streaming can't wait
-    /// on a first-time load — the caller should surface that).
+    /// Start streaming with the configured continuous model + typing speed. Returns
+    /// false if that model isn't loaded (streaming can't wait on a first-time load —
+    /// the caller should surface that).
     func start() -> Bool {
-        guard whisper.isReady else { return false }
+        let model = Settings.shared.continuousModel
+        guard whisper.isReady(model) else { return false }
+        self.model = model
         active = true
-        typist.start(allowed: PasteEngine.canStreamType())
-        let ok = whisper.startLiveDictation { [weak self] transcript, energy in
+        typist.start(allowed: PasteEngine.canStreamType(), cps: Settings.shared.continuousTypeCPS)
+        let ok = whisper.startLiveDictation(model: model) { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
             // Just move the goal — the typist eases the field toward it smoothly.
@@ -49,9 +55,9 @@ final class ContinuousDictation {
     func stop() async -> String {
         guard active else { return "" }
         active = false
-        let snapshot = whisper.liveSamplesSnapshot()   // grab BEFORE stopping
+        let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         whisper.stopLiveDictation()
-        if let final = await whisper.transcribeSamples(snapshot) {
+        if let final = await whisper.transcribeSamples(snapshot, model: model) {
             typist.setTarget(Self.normalize(final))
         }
         // Flush the remaining diff immediately so the field is correct on release.

@@ -19,17 +19,24 @@ private func withTimeout<T>(seconds: UInt64,
     }
 }
 
-/// Manages the on-device (WhisperKit) transcription model: checks whether it's
-/// downloaded, downloads it in-app with progress, loads it, and transcribes.
+/// Manages the on-device (WhisperKit) transcription models: checks whether they're
+/// downloaded, downloads them in-app with progress, loads them, and transcribes.
+///
+/// Dictation and continuous (live streaming) dictation are fully independent, each
+/// with its OWN model. This registry is therefore **keyed by model name**: it can
+/// hold several WhisperKit instances at once, each with its own status. When both
+/// sections point at the same model name, exactly ONE instance is resident (shared
+/// by key); when they differ, two load side by side. `retainModels` evicts anything
+/// no longer referenced so RAM never grows unbounded on a switch.
 ///
 /// Inference runs on WhisperKit's default compute (Neural Engine) for the fastest
 /// transcription. The ANE needs a slow one-time "specialize" compile per model —
 /// so the loading is built to never freeze or stick on it:
-/// - Loading runs in the **background** and the currently-loaded model keeps
-///   serving dictation until the new one is ready — the app never freezes on a
-///   switch. The first load of a model is the only slow one; it's cached after.
-/// - A live status (Downloading % / the WhisperKit load stage / Ready / Failed)
-///   plus a hard timeout mean it never sits on a silent, stuck spinner.
+/// - Loading runs in the **background** and an already-loaded model keeps serving
+///   until the new one is ready — the app never freezes on a switch. The first load
+///   of a model is the only slow one; it's cached after.
+/// - A live per-model status (Downloading % / the WhisperKit load stage / Ready /
+///   Failed) plus a hard timeout mean it never sits on a silent, stuck spinner.
 @MainActor
 final class TranscriptionModel: ObservableObject {
     static let shared = TranscriptionModel()
@@ -43,20 +50,27 @@ final class TranscriptionModel: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var status: Status = .notDownloaded
-    /// The currently-selected model these statuses refer to.
-    @Published private(set) var model: String = ""
+    /// Per-model status, keyed by model name. Drives the UI (both sections read
+    /// `status(for:)` for the model they're pointed at).
+    @Published private(set) var statuses: [String: Status] = [:]
 
-    private var pipe: WhisperKit?      // the working (loaded) model
-    private var loadedModel: String?
-    private var loadingModel: String?  // model being prepared in the background
+    /// Loaded WhisperKit instances, keyed by model name. One entry == one resident
+    /// model in RAM.
+    private var pipes: [String: WhisperKit] = [:]
+    /// Models being prepared in the background right now.
+    private var loadingModels: Set<String> = []
 
-    // Live streaming dictation (separate path from file transcription).
+    // Live streaming dictation (separate path from file transcription). The live
+    // model name selects which resident pipe the streaming helpers operate on.
+    private var liveModel: String?
     private var liveTranscriber: AudioStreamTranscriber?
 
-    /// Whether a model is loaded and ready to transcribe right now (streaming
-    /// needs one already in memory — it can't wait on a first-time load).
-    var isReady: Bool { pipe != nil }
+    /// Status for a given model (defaults to not-downloaded if we've never touched it).
+    func status(for model: String) -> Status { statuses[model] ?? .notDownloaded }
+
+    /// Whether `model` is loaded and ready to transcribe right now (streaming needs
+    /// one already in memory — it can't wait on a first-time load).
+    func isReady(_ model: String) -> Bool { pipes[model] != nil }
 
     // MARK: - Storage (one basket in the app's data dir)
 
@@ -109,29 +123,45 @@ final class TranscriptionModel: ObservableObject {
         for f in subs where f.lastPathComponent.hasSuffix(model) { try? FileManager.default.removeItem(at: f) }
     }
 
-    /// Release the loaded model from memory. Called on quit: the OS reclaims the
-    /// process's memory on exit regardless, but dropping the WhisperKit instance
-    /// deterministically frees its Core ML / Neural Engine resources first, and
-    /// abandons any in-flight background load so nothing lingers.
+    // MARK: - Memory management
+
+    /// Evict any loaded model NOT in `keep` (and never the live one), freeing its
+    /// WhisperKit + Core ML / Neural Engine resources and its status entry. Called
+    /// when a section switches model so RAM only holds what's actually referenced.
+    func retainModels(_ keep: Set<String>) {
+        for key in pipes.keys where !keep.contains(key) && key != liveModel {
+            pipes.removeValue(forKey: key)
+            statuses.removeValue(forKey: key)
+            loadingModels.remove(key)
+        }
+    }
+
+    /// Release ALL loaded models from memory. Called on quit: the OS reclaims the
+    /// process's memory on exit regardless, but dropping the WhisperKit instances
+    /// deterministically frees their Core ML / Neural Engine resources first, and
+    /// abandons any in-flight background loads so nothing lingers.
     func shutdown() {
         stopLiveDictation()
-        pipe = nil
-        loadedModel = nil
-        loadingModel = nil
+        pipes.removeAll()
+        loadingModels.removeAll()
+        liveModel = nil
     }
 
     // MARK: - Live streaming dictation
 
-    /// Start real-time transcription from the mic. `onUpdate` fires on the main
-    /// actor as speech is recognised, with the full running transcript so far
-    /// (confirmed + still-forming tail, already cleaned) and recent mic energy
-    /// (0…~1). The caller types it into the field with in-place correction.
-    /// Returns false if no model is loaded yet. Runs until `stopLiveDictation()`.
+    /// Start real-time transcription from the mic using `model` (which MUST already
+    /// be loaded). `onUpdate` fires on the main actor as speech is recognised, with
+    /// the full running transcript so far (confirmed + still-forming tail, already
+    /// cleaned) and recent mic energy (0…~1). The caller types it into the field
+    /// with in-place correction. Returns false if `model` isn't loaded. Runs until
+    /// `stopLiveDictation()`.
     func startLiveDictation(
+        model: String,
         onUpdate: @escaping @MainActor (_ transcript: String, _ energy: Float) -> Void
     ) -> Bool {
-        guard let pipe, let tokenizer = pipe.tokenizer else { return false }
+        guard let pipe = pipes[model], let tokenizer = pipe.tokenizer else { return false }
         stopLiveDictation()   // never run two at once
+        liveModel = model
         // Fresh buffer per session — otherwise the shared audioProcessor would
         // still hold the previous utterance and re-transcribe it from the top.
         pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
@@ -167,18 +197,21 @@ final class TranscriptionModel: ObservableObject {
         return true
     }
 
-    /// A copy of every sample captured so far this live session (16 kHz mono).
-    /// Grab this BEFORE `stopLiveDictation()` to keep the trailing audio.
-    func liveSamplesSnapshot() -> [Float] {
-        guard let pipe else { return [] }
+    /// A copy of every sample captured so far this live session (16 kHz mono), from
+    /// `model`'s audioProcessor. `model` is passed explicitly (not read from
+    /// `liveModel`) so it stays valid across `stopLiveDictation()`, which clears
+    /// `liveModel`. Grab this BEFORE stopping to keep the trailing audio.
+    func liveSamplesSnapshot(model: String) -> [Float] {
+        guard let pipe = pipes[model] else { return [] }
         return Array(pipe.audioProcessor.audioSamples)
     }
 
-    /// Transcribe a raw sample array in full. Used on release to produce the
-    /// complete, accurate transcript — including the final sub-second the
-    /// streaming loop never processed (it only runs on >1s of new buffer).
-    func transcribeSamples(_ samples: [Float]) async -> String? {
-        guard let pipe, samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
+    /// Transcribe a raw sample array in full on `model`'s pipe. Used on release to
+    /// produce the complete, accurate transcript — including the final sub-second
+    /// the streaming loop never processed (it only runs on >1s of new buffer).
+    /// `model` is explicit so this still works after `stopLiveDictation()`.
+    func transcribeSamples(_ samples: [Float], model: String) async -> String? {
+        guard let pipe = pipes[model], samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
         let results: [TranscriptionResult]? =
             try? await pipe.transcribe(audioArray: samples, decodeOptions: streamOptions())
         guard let results else { return nil }
@@ -208,37 +241,36 @@ final class TranscriptionModel: ObservableObject {
     func stopLiveDictation() {
         guard let t = liveTranscriber else { return }
         liveTranscriber = nil
+        liveModel = nil
         Task { await t.stopStreamTranscription() }
     }
 
     // MARK: - Selection / loading
 
     /// Point at `model`: mark ready if already loaded, else load it in the
-    /// background if it's available (never auto-downloads). The previously loaded
-    /// model keeps working until this one is ready.
+    /// background if it's available (never auto-downloads). An already-loaded model
+    /// keeps working until this one is ready.
     func select(_ model: String) {
-        self.model = model
-        if loadedModel == model, pipe != nil { status = .ready; return }
-        if loadingModel == model { return }               // already preparing
+        if pipes[model] != nil { statuses[model] = .ready; return }
+        if loadingModels.contains(model) { return }        // already preparing
         if isDownloaded(model) {
             Task { await load(model) }
         } else {
-            status = .notDownloaded
+            statuses[model] = .notDownloaded
         }
     }
 
     /// Download (if needed) then load `model`, reporting progress.
     func download(_ model: String) async {
-        self.model = model
-        if loadedModel == model, pipe != nil { status = .ready; return }
+        if pipes[model] != nil { statuses[model] = .ready; return }
         if !isDownloaded(model) {
-            status = .downloading(0)
+            statuses[model] = .downloading(0)
             do {
                 _ = try await WhisperKit.download(variant: model, downloadBase: basket) { [weak self] p in
-                    Task { @MainActor in self?.status = .downloading(p.fractionCompleted) }
+                    Task { @MainActor in self?.statuses[model] = .downloading(p.fractionCompleted) }
                 }
             } catch {
-                status = .failed("Download failed: \(error.localizedDescription)")
+                statuses[model] = .failed("Download failed: \(error.localizedDescription)")
                 return
             }
         }
@@ -247,17 +279,17 @@ final class TranscriptionModel: ObservableObject {
 
     /// Delete the on-disk copy and fetch fresh (recovers a stale/partial download).
     func redownload(_ model: String) async {
-        if loadedModel == model { pipe = nil; loadedModel = nil }
+        pipes.removeValue(forKey: model)
         removeDownloaded(model)
         await download(model)
     }
 
-    /// Load a downloaded/bundled model in the background (GPU, with live stage +
-    /// timeout). Swaps it in as the working model only when it's fully ready, so
-    /// the current one keeps serving dictation meanwhile.
+    /// Load a downloaded/bundled model in the background (Neural Engine, with a live
+    /// stage + timeout). Swaps it in as a resident model only when it's fully ready,
+    /// so anything already loaded keeps serving meanwhile.
     private func load(_ model: String) async {
-        loadingModel = model
-        status = .preparing("Loading")
+        loadingModels.insert(model)
+        statuses[model] = .preparing("Loading")
 
         let bundled = bundledModelFolder(model)
         let tokenizerRoot = bundled != nil ? bundledTokenizerRoot : basket
@@ -278,38 +310,36 @@ final class TranscriptionModel: ObservableObject {
                 let kit = try await WhisperKit(config)           // setup only — fast
                 kit.modelStateCallback = { [weak self] _, new in
                     Task { @MainActor in
-                        guard let self, self.loadingModel == model else { return }
-                        self.status = .preparing(new.description)  // live stage
+                        guard let self, self.loadingModels.contains(model) else { return }
+                        self.statuses[model] = .preparing(new.description)  // live stage
                     }
                 }
-                try await kit.loadModels()                        // GPU load — the work
+                try await kit.loadModels()                        // Neural Engine load — the work
                 return kit
             }
-            pipe = p
-            loadedModel = model
-            loadingModel = nil
-            if self.model == model { status = .ready }
+            pipes[model] = p
+            loadingModels.remove(model)
+            statuses[model] = .ready
             NSLog("Slive: WhisperKit ready (\(model)).")
         } catch is TimeoutError {
-            loadingModel = nil
-            status = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
+            loadingModels.remove(model)
+            statuses[model] = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
         } catch {
-            loadingModel = nil
-            status = .failed(error.localizedDescription)
+            loadingModels.remove(model)
+            statuses[model] = .failed(error.localizedDescription)
             NSLog("Slive: WhisperKit load failed — \(error)")
         }
     }
 
-    /// Transcribe `url`. Uses whatever model is currently loaded (so dictation
-    /// stays responsive even while a different model loads). If nothing is loaded
-    /// yet, loads the selected one when it's available; returns nil otherwise so
-    /// the caller can tell the user what to do.
+    /// Transcribe `url` strictly using `model`'s pipe. If it isn't loaded yet, load
+    /// it when it's available; returns nil otherwise (and kicks off a select) so the
+    /// caller can tell the user what to do.
     func transcribe(_ url: URL, model: String) async -> String? {
-        if pipe == nil {
+        if pipes[model] == nil {
             guard isDownloaded(model) else { select(model); return nil }
             await load(model)
         }
-        guard let pipe else { return nil }
+        guard let pipe = pipes[model] else { return nil }
         do {
             let results = try await pipe.transcribe(
                 audioPath: url.path,
