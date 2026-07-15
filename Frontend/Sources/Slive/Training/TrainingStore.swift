@@ -33,10 +33,25 @@ struct EditSample: Codable, Identifiable {
 final class TrainingStore: ObservableObject {
     static let shared = TrainingStore()
 
-    /// Number of samples captured so far (for the Settings readout).
-    @Published private(set) var count: Int = 0
+    /// All captured samples, oldest → newest (the UI shows them reversed).
+    @Published private(set) var samples: [EditSample] = []
     /// The most recent sample, so the UI can show the latest comparison.
     @Published private(set) var latest: EditSample?
+    /// Total bytes used on disk (audio + index).
+    @Published private(set) var totalBytes: Int64 = 0
+
+    /// Number of samples captured so far.
+    var count: Int { samples.count }
+
+    /// The configured cap in bytes.
+    var maxBytes: Int64 { Int64(max(0, Settings.shared.captureMaxGB) * 1_073_741_824) }
+    /// True once usage has reached the cap — capture pauses here.
+    var isOverLimit: Bool { totalBytes >= maxBytes }
+    /// 0…1 fraction of the cap in use (for the usage bar).
+    var usageFraction: Double {
+        guard maxBytes > 0 else { return 0 }
+        return min(1, Double(totalBytes) / Double(maxBytes))
+    }
 
     private let root: URL
     private let audioDir: URL
@@ -49,7 +64,28 @@ final class TrainingStore: ObservableObject {
         audioDir = root.appendingPathComponent("audio", isDirectory: true)
         indexFile = root.appendingPathComponent("samples.jsonl", isDirectory: false)
         try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
-        count = existingCount()
+        samples = loadSamples()
+        latest = samples.last
+        totalBytes = computeSize()
+    }
+
+    /// Absolute URL of a sample's audio, if present on disk.
+    func audioURL(_ sample: EditSample) -> URL? {
+        guard let rel = sample.audioFile else { return nil }
+        let url = root.appendingPathComponent(rel)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Delete every captured sample + audio and reset usage.
+    func clearAll() {
+        try? FileManager.default.removeItem(at: indexFile)
+        if let files = try? FileManager.default.contentsOfDirectory(at: audioDir, includingPropertiesForKeys: nil) {
+            for f in files { try? FileManager.default.removeItem(at: f) }
+        }
+        samples = []
+        latest = nil
+        totalBytes = 0
+        Log.training("cleared all samples")
     }
 
     /// Copy a source audio file into the store, returning the stored file's
@@ -62,6 +98,7 @@ final class TrainingStore: ObservableObject {
                 try FileManager.default.removeItem(at: dest)
             }
             try FileManager.default.copyItem(at: source, to: dest)
+            totalBytes += fileSize(dest)
             return "audio/\(id).wav"
         } catch {
             Log.training("ingestAudio failed: \(error)")
@@ -76,9 +113,10 @@ final class TrainingStore: ObservableObject {
             var line = data
             line.append(0x0A)   // newline-delimited JSON
             appendToIndex(line)
-            count += 1
+            totalBytes += Int64(line.count)
+            samples.append(sample)
             latest = sample
-            Log.training("stored sample #\(count) (\(sample.confidence), edited=\(sample.edited))")
+            Log.training("stored sample #\(samples.count) (\(sample.confidence), edited=\(sample.edited))")
         } catch {
             Log.training("encode/store failed: \(error)")
         }
@@ -99,9 +137,26 @@ final class TrainingStore: ObservableObject {
         }
     }
 
-    private func existingCount() -> Int {
-        guard let text = try? String(contentsOf: indexFile, encoding: .utf8) else { return 0 }
-        return text.split(separator: "\n").count
+    private func loadSamples() -> [EditSample] {
+        guard let text = try? String(contentsOf: indexFile, encoding: .utf8) else { return [] }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return text.split(separator: "\n").compactMap { line in
+            guard let data = line.data(using: .utf8) else { return nil }
+            return try? decoder.decode(EditSample.self, from: data)
+        }
+    }
+
+    /// Total size of the index + all audio on disk.
+    private func computeSize() -> Int64 {
+        var total: Int64 = fileSize(indexFile)
+        if let files = try? FileManager.default.contentsOfDirectory(at: audioDir, includingPropertiesForKeys: [.fileSizeKey]) {
+            for f in files { total += fileSize(f) }
+        }
+        return total
+    }
+
+    private func fileSize(_ url: URL) -> Int64 {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { Int64($0) } ?? 0
     }
 }
 
