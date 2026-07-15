@@ -22,6 +22,7 @@ final class Settings: ObservableObject {
         static let continuousModel = "continuousModel"
         static let continuousTypeCPS = "continuousTypeCPS"
         static let verboseLogging = "verboseLogging"
+        static let captureEdits = "captureEdits"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -154,6 +155,13 @@ final class Settings: ObservableObject {
         }
     }
 
+    /// Developer/research: capture (transcript → final field text) pairs plus
+    /// audio as training data, finalized when the dictated field loses focus.
+    /// Off by default; stored locally only. See EditCapture / TrainingStore.
+    @Published var captureEdits: Bool {
+        didSet { UserDefaults.standard.set(captureEdits, forKey: Keys.captureEdits) }
+    }
+
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
     /// cache-prone IOHIDCheckAccess API.
@@ -215,6 +223,7 @@ final class Settings: ObservableObject {
             continuousTypeCPS = UserDefaults.standard.double(forKey: Keys.continuousTypeCPS)
         }
         verboseLogging = UserDefaults.standard.bool(forKey: Keys.verboseLogging)
+        captureEdits = UserDefaults.standard.bool(forKey: Keys.captureEdits)
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.
         Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"

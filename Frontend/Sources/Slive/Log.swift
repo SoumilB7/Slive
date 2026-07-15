@@ -21,6 +21,7 @@ enum Log {
     static func overlay(_ message: @autoclosure () -> String) { emit("overlay", message) }
     static func backend(_ message: @autoclosure () -> String) { emit("backend", message) }
     static func app(_ message: @autoclosure () -> String)     { emit("app", message) }
+    static func training(_ message: @autoclosure () -> String) { emit("training", message) }
 
     private static func emit(_ category: String, _ message: () -> String) {
         guard enabled else { return }
