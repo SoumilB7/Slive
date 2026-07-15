@@ -9,20 +9,24 @@ struct SettingsView: View {
     @ObservedObject var permissions: PermissionsModel
     @ObservedObject private var history = HistoryStore.shared
     @ObservedObject private var transcription = TranscriptionModel.shared
+    @ObservedObject private var stats = SpeakingStats.shared
     var onRelaunch: () -> Void
 
     private let accent = Color(hue: 0.50, saturation: 0.68, brightness: 0.86)
 
-    /// Top-level sections: plain dictation vs. the LLM assistant.
+    /// Top-level sections: dictation (which now houses continuous as a sub-tab)
+    /// vs. the LLM assistant.
     private enum Section: String, CaseIterable, Identifiable {
         case dictation = "Dictation"
-        case continuous = "Continuous"
         case assistant = "Assistant"
         var id: String { rawValue }
     }
 
+    /// Sub-tabs within Dictation. `Continuous` sits right after General so the two
+    /// dictation modes read as one family.
     private enum Tab: String, CaseIterable, Identifiable {
         case general = "General"
+        case continuous = "Continuous"
         case permissions = "Permissions"
         case vocabulary = "Vocabulary"
         case history = "History"
@@ -49,8 +53,11 @@ struct SettingsView: View {
                         switch tab {
                         case .general:
                             steps
+                            speakingPaceCard
                             keyPicker
                             generalSection
+                        case .continuous:
+                            ContinuousSettingsView(settings: settings, accent: accent)
                         case .permissions:
                             permissionsSection
                         case .vocabulary:
@@ -63,8 +70,6 @@ struct SettingsView: View {
                     .padding(.vertical, 20)
                     .frame(maxWidth: .infinity)
                 }
-            case .continuous:
-                ContinuousSettingsView(settings: settings, accent: accent)
             case .assistant:
                 AssistantSettingsView(settings: settings, accent: accent)
             }
@@ -164,6 +169,98 @@ struct SettingsView: View {
         Image(systemName: "chevron.right")
             .font(.system(size: 11, weight: .bold))
             .foregroundStyle(.white.opacity(0.25))
+    }
+
+    // MARK: - Speaking pace (words per minute)
+
+    /// A live readout of how fast you've been speaking, measured after each
+    /// dictation's text is written (so it never adds latency to what you type).
+    @ViewBuilder private var speakingPaceCard: some View {
+        let hasData = stats.sampleCount > 0
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                sectionTitle("SPEAKING PACE")
+                Spacer()
+                if hasData {
+                    Button("Reset") { stats.reset() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+            }
+
+            if hasData {
+                HStack(alignment: .lastTextBaseline, spacing: 6) {
+                    Text("\(Int(stats.lastWPM.rounded()))")
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .contentTransition(.numericText())
+                    Text("WPM")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundStyle(accent)
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("avg \(Int(stats.averageWPM.rounded()))  ·  best \(Int(stats.bestWPM.rounded()))")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.72))
+                        Text("\(stats.sampleCount) dictation\(stats.sampleCount == 1 ? "" : "s")")
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                }
+                paceScale(value: stats.lastWPM)
+            } else {
+                Text("Speak to measure your pace — your words-per-minute appears here after each dictation.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+                paceScale(value: 0).opacity(0.4)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card)
+        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: stats.lastWPM)
+    }
+
+    /// A horizontal WPM gauge: a cool→warm track with a marker at `value`.
+    /// Range 60–200 covers slow to rapid conversational speech.
+    private func paceScale(value: Double) -> some View {
+        let lo = 60.0, hi = 200.0
+        let clamped = min(max(value, lo), hi)
+        let frac = (clamped - lo) / (hi - lo)
+        return VStack(spacing: 5) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(LinearGradient(
+                            colors: [Color(hue: 0.55, saturation: 0.45, brightness: 0.72),
+                                     accent,
+                                     Color(hue: 0.12, saturation: 0.78, brightness: 0.92)],
+                            startPoint: .leading, endPoint: .trailing))
+                        .frame(height: 6)
+                        .opacity(0.7)
+                    if value > 0 {
+                        Circle()
+                            .fill(.white)
+                            .frame(width: 13, height: 13)
+                            .overlay(Circle().strokeBorder(accent, lineWidth: 2.5))
+                            .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                            .offset(x: frac * max(0, w - 13))
+                    }
+                }
+                .frame(height: 13)
+            }
+            .frame(height: 13)
+            HStack {
+                Text("60").frame(maxWidth: .infinity, alignment: .leading)
+                Text("natural pace").frame(maxWidth: .infinity, alignment: .center)
+                Text("200+").frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .font(.system(size: 9, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white.opacity(0.35))
+        }
     }
 
     // MARK: - Key picker

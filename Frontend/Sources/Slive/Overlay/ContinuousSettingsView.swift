@@ -1,26 +1,25 @@
 import AppKit
 import SwiftUI
 
-/// The "Continuous" top-level section: live streaming dictation with its own
-/// shortcut, transcription model, and typing-speed control — fully separate from
-/// plain Dictation and the Assistant. Hold the shortcut and words type straight
-/// into the focused field as you speak.
+/// The "Continuous" sub-tab within Dictation: live streaming dictation with its
+/// own shortcut, transcription model, and typing-speed control. It lives under
+/// Dictation (not as its own top-level section) so the two dictation modes read
+/// as one family, while still being independently configurable. Hold the
+/// shortcut and words type straight into the focused field as you speak.
+///
+/// Renders just its stack of cards (no `ScrollView`/outer padding) — the host
+/// Dictation tab supplies the scroll container and padding.
 struct ContinuousSettingsView: View {
     @ObservedObject var settings: Settings
     var accent: Color
     @ObservedObject private var transcription = TranscriptionModel.shared
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 22) {
-                stepsStrip
-                shortcutCard
-                modelCard
-                typingSpeedCard
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .frame(maxWidth: .infinity)
+        VStack(spacing: 22) {
+            stepsStrip
+            shortcutCard
+            modelCard
+            typingSpeedCard
         }
         .onAppear { transcription.select(settings.continuousModel) }
         .onChange(of: settings.continuousModel) { _, m in transcription.select(m) }
