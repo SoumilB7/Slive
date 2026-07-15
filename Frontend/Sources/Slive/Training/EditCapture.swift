@@ -3,26 +3,32 @@ import ApplicationServices
 
 /// Captures a training data point per dictation-into-a-field:
 ///
-///  1. Just before Slive types, snapshot the field's text + cursor position
-///     (`capturePre`). We remember short **anchors** of the text on either side
-///     of the insertion point.
+///  1. Just before Slive types, snapshot the field's text + caret and remember
+///     short **anchors** of the text on either side of the insertion point
+///     (`capturePre`).
 ///  2. Slive types its transcript in.
-///  3. When that field loses focus — the single stop signal — read its final
-///     text, locate the section between the anchors, and store
-///     (transcript → final section) plus the audio.
+///  3. Finalize — read the field's final text, isolate the section between the
+///     anchors, and store (transcript → section) plus audio — when the edit
+///     focus **leaves that section**. Two triggers, whichever comes first:
+///       - **boundary crossed** (primary): the caret moves outside the section.
+///         Moving on to a different sentence/paragraph means you're done editing
+///         Slive's output — you either accepted it or finished changing it. This
+///         works even when the field never loses focus (chat inputs, editors).
+///       - **focus-off** (backstop): the field loses focus / is destroyed / the
+///         app deactivates — for the cases the boundary signal can't see.
 ///
-/// Only the section that was Slive's output (as edited by the user) is stored,
-/// never the whole field. Focus-off is detected via an `AXObserver` on the app's
-/// focused-element-changed notification (plus app-deactivation as a backstop).
+/// Only the section that was Slive's output (as edited) is stored, never the
+/// whole field. All offsets are UTF-16 (matching AX ranges) so caret comparisons
+/// and anchor slicing agree.
 @MainActor
 final class EditCapture {
     static let shared = EditCapture()
 
-    /// Pre-insertion snapshot of the target field.
+    /// Pre-insertion snapshot: the field and the context anchors around the caret.
     struct Pre {
         let element: AXUIElement
-        let beforeValue: String
-        let insertionIndex: Int
+        let leftAnchor: String
+        let rightAnchor: String
         let app: String?
     }
 
@@ -34,10 +40,14 @@ final class EditCapture {
         let leftAnchor: String
         let rightAnchor: String
         let app: String?
+        let startedAt: Date
     }
 
     /// How much surrounding text to remember as a matching anchor.
     private static let anchorLen = 24
+    /// Ignore boundary checks for a beat after begin, while Slive's own typing
+    /// lands (so our keystrokes can't be mistaken for the user moving on).
+    private static let settleDelay: TimeInterval = 0.5
 
     private var observer: AXObserver?
     private var deactivateObserver: NSObjectProtocol?
@@ -45,41 +55,40 @@ final class EditCapture {
 
     // MARK: - Public flow
 
-    /// Read the focused editable field's text + caret BEFORE Slive types. Returns
-    /// nil when there's no readable, non-secure editable field (so nothing is
-    /// captured for the copy-box path or password fields).
+    /// Snapshot the focused editable field's caret context BEFORE Slive types.
+    /// Returns nil when there's no readable, non-secure editable field (so the
+    /// copy-box path and password fields are never captured).
     func capturePre() -> Pre? {
         guard AXIsProcessTrusted(), let el = Self.focusedElement() else { return nil }
         guard !Self.isSecure(el), Self.isEditable(el) else { return nil }
-        let value = Self.stringValue(el) ?? ""
-        let idx = min(Self.caretIndex(el) ?? value.count, value.count)
+        let ns = (Self.stringValue(el) ?? "") as NSString
+        let caret = min(Self.caretOffset(el) ?? ns.length, ns.length)
+        let leftStart = max(0, caret - Self.anchorLen)
+        let left = ns.substring(with: NSRange(location: leftStart, length: caret - leftStart))
+        let rightLen = min(Self.anchorLen, ns.length - caret)
+        let right = ns.substring(with: NSRange(location: caret, length: rightLen))
         let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        return Pre(element: el, beforeValue: value, insertionIndex: idx, app: app)
+        return Pre(element: el, leftAnchor: left, rightAnchor: right, app: app)
     }
 
-    /// Begin tracking after Slive has started typing `transcript` into the field
-    /// described by `pre`. Copies the audio now (the source wav is deleted soon)
-    /// and installs the focus-off watcher.
+    /// Begin tracking after Slive has started typing `transcript`. Copies the
+    /// audio now (the source wav is deleted soon) and installs the watchers.
     func begin(pre: Pre, transcript: String, audioURL: URL?) {
         finalizeIfPending(reason: "superseded")   // close any earlier capture first
 
         let id = UUID().uuidString
-        let chars = Array(pre.beforeValue)
-        let i = max(0, min(pre.insertionIndex, chars.count))
-        let left = String(chars[max(0, i - Self.anchorLen)..<i])
-        let right = String(chars[i..<min(chars.count, i + Self.anchorLen)])
         let audioFile = audioURL.flatMap { TrainingStore.shared.ingestAudio($0, id: id) }
-
         pending = Pending(id: id, element: pre.element, transcript: transcript,
-                          audioFile: audioFile, leftAnchor: left, rightAnchor: right, app: pre.app)
-        installFocusObserver(on: pre.element)
-        Log.training("begin — «\(String(transcript.suffix(40)))»  left=«\(String(left.suffix(10)))» right=«\(String(right.prefix(10)))»")
+                          audioFile: audioFile, leftAnchor: pre.leftAnchor,
+                          rightAnchor: pre.rightAnchor, app: pre.app, startedAt: Date())
+        installObservers(on: pre.element)
+        Log.training("begin — «\(String(transcript.suffix(40)))»  left=«\(String(pre.leftAnchor.suffix(10)))» right=«\(String(pre.rightAnchor.prefix(10)))»")
     }
 
-    // MARK: - Focus-off detection
+    // MARK: - Observation
 
-    private func installFocusObserver(on element: AXUIElement) {
-        teardownObserver()
+    private func installObservers(on element: AXUIElement) {
+        teardownObservers()
 
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else { return }
@@ -87,32 +96,50 @@ final class EditCapture {
         let callback: AXObserverCallback = { _, _, _, refcon in
             guard let refcon else { return }
             let capture = Unmanaged<EditCapture>.fromOpaque(refcon).takeUnretainedValue()
-            Task { @MainActor in capture.focusMaybeChanged() }
+            Task { @MainActor in capture.handleAXEvent() }
         }
         var obs: AXObserver?
         guard AXObserverCreate(pid, callback, &obs) == .success, let obs else { return }
 
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         let appEl = AXUIElementCreateApplication(pid)
+        // Caret / content changes drive the boundary check; focus / destroy are
+        // the backstops.
+        AXObserverAddNotification(obs, element, kAXSelectedTextChangedNotification as CFString, refcon)
+        AXObserverAddNotification(obs, element, kAXValueChangedNotification as CFString, refcon)
         AXObserverAddNotification(obs, appEl, kAXFocusedUIElementChangedNotification as CFString, refcon)
         AXObserverAddNotification(obs, element, kAXUIElementDestroyedNotification as CFString, refcon)
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
         observer = obs
 
-        // Backstop: the whole app losing focus is also a focus-off for our field
-        // (and some apps don't post focused-element-changed on the way out).
+        // Backstop: whole app losing focus is also a focus-off for our field.
         deactivateObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didDeactivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.focusMaybeChanged() }
+            Task { @MainActor in self?.finalizeIfPending(reason: "app-deactivate") }
         }
     }
 
-    private func focusMaybeChanged() {
-        guard let pending else { return }
+    /// Fired on any observed AX change. Finalize if focus left the field, or if
+    /// the caret has moved outside the tracked section.
+    private func handleAXEvent() {
+        guard let p = pending else { return }
+
+        // Backstop: focus left our element entirely.
         let current = Self.focusedElement()
-        if current == nil || !CFEqual(current!, pending.element) {
-            finalizeIfPending(reason: "focus-off")
+        if current == nil || !CFEqual(current!, p.element) {
+            finalizeIfPending(reason: "focus-off"); return
+        }
+
+        // Primary: caret moved past the section boundary → done editing it.
+        // Skip during the settle window so Slive's own typing isn't read as the
+        // user moving on.
+        guard Date().timeIntervalSince(p.startedAt) >= Self.settleDelay else { return }
+        guard let caret = Self.caretOffset(p.element),
+              let value = Self.stringValue(p.element),
+              let (start, end) = Self.bounds(value, p.leftAnchor, p.rightAnchor) else { return }
+        if caret < start || caret > end {
+            finalizeIfPending(reason: "boundary")
         }
     }
 
@@ -121,7 +148,7 @@ final class EditCapture {
     private func finalizeIfPending(reason: String) {
         guard let p = pending else { return }
         pending = nil
-        teardownObserver()
+        teardownObservers()
 
         let finalValue = Self.stringValue(p.element)
         let (section, confidence) = Self.partition(final: finalValue,
@@ -141,7 +168,7 @@ final class EditCapture {
         """)
     }
 
-    private func teardownObserver() {
+    private func teardownObservers() {
         if let obs = observer {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
             observer = nil
@@ -152,32 +179,36 @@ final class EditCapture {
         }
     }
 
-    // MARK: - Partitioning
+    // MARK: - Section location / partitioning (all UTF-16 offsets)
 
-    /// Isolate the section between the two context anchors in the final text.
-    /// This is the only thing kept: "what Slive's insertion turned into."
-    static func partition(final: String?, left: String, right: String) -> (String?, String) {
-        guard let final else { return (nil, "unresolved") }
-
-        // Locate the left anchor (start of the section = just after it).
-        var startOffset = 0
+    /// UTF-16 offsets [start, end) of the section between the anchors, or nil if
+    /// an anchor can't be found (field edited beyond the section).
+    static func bounds(_ value: String, _ left: String, _ right: String) -> (Int, Int)? {
+        let ns = value as NSString
+        var start = 0
         if !left.isEmpty {
-            guard let r = final.range(of: left) else { return (nil, "unresolved") }
-            startOffset = final.distance(from: final.startIndex, to: r.upperBound)
+            let r = ns.range(of: left)
+            if r.location == NSNotFound { return nil }
+            start = r.location + r.length
         }
-        let startIdx = final.index(final.startIndex, offsetBy: startOffset)
-
-        // Locate the right anchor at/after the start (end of the section).
-        var endIdx = final.endIndex
+        var end = ns.length
         if !right.isEmpty {
-            guard let r = final.range(of: right, range: startIdx..<final.endIndex) else {
-                return (nil, "unresolved")
-            }
-            endIdx = r.lowerBound
+            let searchRange = NSRange(location: start, length: ns.length - start)
+            let r = ns.range(of: right, options: [], range: searchRange)
+            if r.location == NSNotFound { return nil }
+            end = r.location
         }
-        guard startIdx <= endIdx else { return (nil, "unresolved") }
+        guard end >= start else { return nil }
+        return (start, end)
+    }
 
-        let section = String(final[startIdx..<endIdx])
+    /// Isolate the section between the anchors in the final text. The only thing
+    /// kept: "what Slive's insertion turned into."
+    static func partition(final: String?, left: String, right: String) -> (String?, String) {
+        guard let final, let (start, end) = bounds(final, left, right) else {
+            return (nil, "unresolved")
+        }
+        let section = (final as NSString).substring(with: NSRange(location: start, length: end - start))
         let confidence = (left.isEmpty && right.isEmpty) ? "low" : "high"
         return (section, confidence)
     }
@@ -199,15 +230,14 @@ final class EditCapture {
         return (v as! CFString) as String
     }
 
-    /// Caret position as a character offset (UTF-16-based AX range; good enough
-    /// for anchor extraction on ordinary BMP text).
-    private static func caretIndex(_ el: AXUIElement) -> Int? {
+    /// Caret as a UTF-16 offset (end of the selection).
+    private static func caretOffset(_ el: AXUIElement) -> Int? {
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &v) == .success,
               let v, CFGetTypeID(v) == AXValueGetTypeID() else { return nil }
         var range = CFRange()
         guard AXValueGetValue(v as! AXValue, .cfRange, &range) else { return nil }
-        return range.location + range.length   // end of selection = caret
+        return range.location + range.length
     }
 
     private static func isSecure(_ el: AXUIElement) -> Bool {
