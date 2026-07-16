@@ -15,6 +15,7 @@ struct TrainingSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 22) {
+                savingCard
                 if openData {
                     dataHeader
                     limitCard
@@ -27,6 +28,32 @@ struct TrainingSettingsView: View {
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity)
         }
+    }
+
+    // MARK: - Saving toggle
+
+    /// Master switch for the whole saving procedure, right where the data lives.
+    /// (The same setting also appears in Dictation → General.)
+    private var savingCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("SAVING")
+            Toggle(isOn: $settings.captureEdits) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Save dictations (audio + transcript)")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                    Text("Runs strictly after the text has finished typing — saving never adds latency to the typeout.")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .tint(accent)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card)
     }
 
     // MARK: - Folder tile

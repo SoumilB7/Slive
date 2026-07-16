@@ -528,29 +528,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
+        // TYPE FIRST. The keystrokes are dispatched (or the copy box surfaced)
+        // before any bookkeeping below, so nothing — history, the training
+        // save, stats — can ever sit in front of the typeout. This ordering is
+        // the guarantee; saving happens strictly after the text is on its way.
+        let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed)
+        if typed {
+            model.finishListening()
+            hideOverlaySoon()
+        } else {
+            // Auto-insert off (or blocked by a password field) → the copy box.
+            model.showResult(trimmed)
+            overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
+            overlay.setInteractive(true)          // let the copy button be clicked
+            scheduleCollapse(after: resultDisplayDuration)
+        }
 
-        // Save the training pair — this dictation's audio + transcript — for
-        // every dictation while capture is on and under the size cap. No field
-        // tracking involved, so it records regardless of where the text lands.
+        // ---- Bookkeeping, strictly after the typeout dispatch ----
+        HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
+        // Training pair (audio + transcript) — only while saving is toggled on
+        // and under the size cap. Records regardless of where the text landed.
         if Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
             TrainingStore.shared.addRecording(transcript: trimmed, audioURL: audioURL)
         }
-
-        // If auto-insert is on, type straight to the caret and skip the copy box.
-        if Settings.shared.autoInsert, PasteEngine.insertIfPossible(trimmed) {
-            SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)  // after write
-            model.finishListening()
-            hideOverlaySoon()
-            return
-        }
-
-        // Otherwise, surface the copy box.
-        model.showResult(trimmed)
-        overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
-        overlay.setInteractive(true)              // let the copy button be clicked
-        SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)      // after write
-        scheduleCollapse(after: resultDisplayDuration)
+        SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)
     }
 
     private func scheduleCollapse(after seconds: TimeInterval) {
