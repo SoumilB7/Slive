@@ -122,7 +122,7 @@ enum PasteEngine {
         return true
     }
 
-    // MARK: - Focus (shared with EditCapture)
+    // MARK: - Focus
 
     static func focusedElement() -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()

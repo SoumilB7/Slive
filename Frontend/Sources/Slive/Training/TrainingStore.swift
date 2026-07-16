@@ -1,9 +1,11 @@
+import AppKit
 import Foundation
 
-/// One captured training data point: what Slive transcribed into a field, and
-/// what that same section became by the time the field lost focus. The pair
-/// (transcript → finalText) is the supervision signal — where they differ, the
-/// user corrected the model.
+/// One captured training data point: the dictation's audio plus what Slive
+/// transcribed it as. (`finalText`/`edited`/`confidence` remain in the schema
+/// for the later "what it should have been" comparison — today they're stored
+/// empty: reading the corrected text back out of the target field needs the AX
+/// reads we removed from the typing path.)
 struct EditSample: Codable, Identifiable {
     let id: String
     let createdAt: Date
@@ -104,6 +106,19 @@ final class TrainingStore: ObservableObject {
             Log.training("ingestAudio failed: \(error)")
             return nil
         }
+    }
+
+    /// Save one dictation as-is: its audio + Slive's transcription. No field
+    /// tracking, no final-text comparison — `finalText` stays empty ("audio"
+    /// confidence) until a non-AX way to read back edits exists.
+    func addRecording(transcript: String, audioURL: URL) {
+        let id = UUID().uuidString
+        let audioFile = ingestAudio(audioURL, id: id)
+        add(EditSample(
+            id: id, createdAt: Date(),
+            app: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            transcript: transcript, finalText: "",
+            edited: false, confidence: "audio", audioFile: audioFile))
     }
 
     /// Append a finished sample to the index.
