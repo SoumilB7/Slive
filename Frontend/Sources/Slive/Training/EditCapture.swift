@@ -59,13 +59,15 @@ final class EditCapture {
     /// Returns nil when there's no readable, non-secure editable field (so the
     /// copy-box path and password fields are never captured).
     func capturePre() -> Pre? {
-        // Classification is PasteEngine's — deliberately the SAME gate that
-        // decides whether we type at all. Keeping a second copy here meant the
-        // two could disagree (they did: capture refused Electron fields that
-        // typed fine), so typing and capture must always agree by construction.
-        guard AXIsProcessTrusted(), let focused = Self.focusedElement() else { return nil }
-        guard !PasteEngine.isSecure(focused), let el = PasteEngine.editableTarget(focused) else {
-            Log.training("capturePre skipped — not an editable text context")
+        // No editability classification here — typing no longer gates on AX (see
+        // PasteEngine), so capture doesn't either: it tracks the same element the
+        // keystrokes go to. Only a positively-identified password field is
+        // skipped. If the element's text/caret aren't readable (Electron with a
+        // sleeping AX tree), the anchors come up empty and the sample simply
+        // finalizes as low-confidence/unresolved rather than blocking anything.
+        guard AXIsProcessTrusted(), let el = Self.focusedElement() else { return nil }
+        guard !PasteEngine.isSecure(el) else {
+            Log.training("capturePre skipped — secure field")
             return nil
         }
         let ns = (Self.stringValue(el) ?? "") as NSString
