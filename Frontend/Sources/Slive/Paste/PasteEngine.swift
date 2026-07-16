@@ -23,7 +23,10 @@ enum PasteEngine {
     static func canStreamType() -> Bool {
         func check() -> Bool {
             guard AXIsProcessTrusted(), let element = focusedElement() else { return false }
-            return !isSecure(element) && isEditableTextField(element)
+            guard !isSecure(element) else { return false }
+            if editableTarget(element) != nil { return true }
+            Log.paste("stream refused — \(describe(element))")
+            return false
         }
         return Thread.isMainThread ? check() : DispatchQueue.main.sync(execute: check)
     }
@@ -98,8 +101,13 @@ enum PasteEngine {
         guard !isSecure(element) else { return false }
 
         // Must be a focused editable text field (avoid typing into non-text
-        // contexts, where characters could trigger shortcuts).
-        guard isEditableTextField(element) else { return false }
+        // contexts, where characters could trigger shortcuts). If it doesn't look
+        // like one, the app's AX tree may simply be asleep (common right after a
+        // relaunch) — wake it and re-read focus once before giving up.
+        guard editableTarget(element) != nil else {
+            Log.paste("insert refused — \(describe(element))")
+            return false
+        }
 
         // Type it out with synthetic key events. We deliberately do NOT use the
         // AX insert (kAXSelectedText): Electron/Monaco (VS Code, the Claude Code
@@ -112,6 +120,19 @@ enum PasteEngine {
     }
 
     // MARK: - Focus discovery
+
+    /// Resolve `element` to an editable text target, waking the owning app's AX
+    /// tree and re-reading focus once if it doesn't look editable at first.
+    /// Returns nil only if it genuinely isn't a text-editing context.
+    private static func editableTarget(_ element: AXUIElement) -> AXUIElement? {
+        if isEditableTextField(element) { return element }
+        // Nothing usable — the tree may be asleep (relaunched Electron/Chromium).
+        guard wakeAXTree(of: element) else { return nil }
+        guard let refreshed = focusedElement(), !isSecure(refreshed),
+              isEditableTextField(refreshed) else { return nil }
+        Log.paste("AX tree was asleep — recovered after wake")
+        return refreshed
+    }
 
     private static func focusedElement() -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
@@ -150,16 +171,28 @@ enum PasteEngine {
     }
 
     /// True if the element looks like an editable text field or text area.
-    /// Accepts either a matching role, or a settable `AXValue` (covers web /
-    /// Electron fields whose role doesn't map cleanly).
+    ///
+    /// Deliberately broader than "AX says I can set its value": we insert with
+    /// synthetic keystrokes, not the AX value (see `typeOut`), so a field that
+    /// refuses `AXValue` writes still types perfectly. Gating on settability
+    /// therefore rejected fields that work fine — Electron/Chromium and
+    /// contentEditable surfaces in particular. What we actually need to know is
+    /// "is this a text-editing context", and the reliable tell for that is a
+    /// caret: only text contexts expose `AXSelectedTextRange`. Buttons, sliders
+    /// and steppers don't, so this stays safe from typing into a non-text
+    /// context where characters would fire shortcuts.
     private static func isEditableTextField(_ element: AXUIElement) -> Bool {
         let role = stringAttribute(element, kAXRoleAttribute as String)
-        if role == (kAXTextFieldRole as String) || role == (kAXTextAreaRole as String) {
+        if role == (kAXTextFieldRole as String)
+            || role == (kAXTextAreaRole as String)
+            || role == (kAXComboBoxRole as String) {
             return true
         }
 
-        // Fall back to "is the value settable" — but only for things that at
-        // least expose a text value, to avoid targeting sliders/steppers etc.
+        // A caret/selection means it's a text-editing context.
+        if hasAttribute(element, kAXSelectedTextRangeAttribute as String) { return true }
+
+        // Last resort: a settable string value.
         var settable = DarwinBoolean(false)
         let err = AXUIElementIsAttributeSettable(
             element, kAXValueAttribute as CFString, &settable)
@@ -173,6 +206,48 @@ enum PasteEngine {
             }
         }
         return false
+    }
+
+    private static func hasAttribute(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var value: CFTypeRef?
+        return AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
+            && value != nil
+    }
+
+    /// Apps that were relaunched (⌘Q → reopen) can come back with their
+    /// accessibility tree switched OFF: Chromium/Electron build it lazily, only
+    /// once an assistive client asks. Until then the focused element reports
+    /// almost nothing — no usable role, no caret — so we'd wrongly conclude "not
+    /// a text field" and fall back to the copy box, even though the keyboard
+    /// types into it fine (the app's own input path has nothing to do with AX).
+    ///
+    /// `AXManualAccessibility` is Electron's documented opt-in to build the tree
+    /// on demand. Set once per pid, then the caller re-reads focus.
+    ///
+    /// (We deliberately do NOT set `AXEnhancedUserInterface` — it's the VoiceOver
+    /// flag, and some apps respond to it by mangling their window layout.)
+    private static var axWokenPids = Set<pid_t>()
+
+    private static func wakeAXTree(of element: AXUIElement) -> Bool {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return false }
+        guard !axWokenPids.contains(pid) else { return false }
+        axWokenPids.insert(pid)
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        Log.paste("woke AX tree for pid \(pid)")
+        return true
+    }
+
+    /// Why an insert was refused — only built when verbose logging is on.
+    private static func describe(_ element: AXUIElement) -> String {
+        let role = stringAttribute(element, kAXRoleAttribute as String) ?? "nil"
+        let sub = stringAttribute(element, kAXSubroleAttribute as String) ?? "nil"
+        let caret = hasAttribute(element, kAXSelectedTextRangeAttribute as String)
+        var settable = DarwinBoolean(false)
+        _ = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
+        return "app=\(app) role=\(role) subrole=\(sub) caret=\(caret) settable=\(settable.boolValue)"
     }
 
     // MARK: - Insertion: type it out
