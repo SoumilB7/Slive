@@ -124,7 +124,7 @@ enum PasteEngine {
     /// Resolve `element` to an editable text target, waking the owning app's AX
     /// tree and re-reading focus once if it doesn't look editable at first.
     /// Returns nil only if it genuinely isn't a text-editing context.
-    private static func editableTarget(_ element: AXUIElement) -> AXUIElement? {
+    static func editableTarget(_ element: AXUIElement) -> AXUIElement? {
         if isEditableTextField(element) { return element }
         // Nothing usable — the tree may be asleep (relaunched Electron/Chromium).
         guard wakeAXTree(of: element) else { return nil }
@@ -134,7 +134,7 @@ enum PasteEngine {
         return refreshed
     }
 
-    private static func focusedElement() -> AXUIElement? {
+    static func focusedElement() -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
@@ -157,7 +157,7 @@ enum PasteEngine {
 
     /// True if the element is a password / secure text field, which we must
     /// never write into.
-    private static func isSecure(_ element: AXUIElement) -> Bool {
+    static func isSecure(_ element: AXUIElement) -> Bool {
         // No named constant exists for the secure-field role; it's "AXSecureTextField".
         if let role = stringAttribute(element, kAXRoleAttribute as String),
            role == "AXSecureTextField" {
