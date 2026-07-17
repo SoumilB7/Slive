@@ -11,7 +11,6 @@ struct HotkeyRecorderView: View {
     enum Target { case dictation, assistant, stream }
 
     @ObservedObject private var settings = Settings.shared
-    var accent: Color
     var target: Target = .dictation
     var title: String = "Push-to-talk shortcut"
     var subtitle: String = "Hold this to talk. A modifier + key is suppressed while held."
@@ -61,13 +60,20 @@ struct HotkeyRecorderView: View {
                 .buttonStyle(.plain)
                 .help("Clear this shortcut")
             }
-            Button(buttonLabel) {
+            Button {
                 recording ? cancel() : startRecording()
+            } label: {
+                HStack(spacing: 6) {
+                    if recording {
+                        StatusDot(color: .white, pulses: true, size: 7)
+                    }
+                    Text(buttonLabel)
+                        .font(SliveTheme.rowFont)
+                }
+                .frame(minWidth: 108)
             }
             .buttonStyle(.borderedProminent)
-            .tint(recording ? .orange : accent)
-            .controlSize(.large)
-            .frame(minWidth: 96)
+            .tint(recording ? .orange : SliveTheme.accent)
         }
     }
 
