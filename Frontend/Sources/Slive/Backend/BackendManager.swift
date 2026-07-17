@@ -10,6 +10,10 @@ import Foundation
 /// Everything runs on the main actor; health probes are async (never block).
 @MainActor
 final class BackendManager: ObservableObject {
+    /// One backend per app — shared so both the assistant path and the
+    /// training ground-truth path can ensureHealthy() the same server.
+    static let shared = BackendManager()
+
     enum Status: String {
         case offline = "Offline"
         case starting = "Starting…"

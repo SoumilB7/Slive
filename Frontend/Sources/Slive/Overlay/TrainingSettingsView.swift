@@ -13,6 +13,12 @@ struct TrainingSettingsView: View {
     /// Whether the Data folder is open (showing the table) vs. the folder tile.
     @State private var openData = false
 
+    // Ground-truth transcription state.
+    @State private var fetching: Set<String> = []      // sample ids in flight
+    @State private var bulkRunning = false
+    @State private var gtError: String?
+    @State private var keyDraft: String = ""
+
     var body: some View {
         ScrollView {
             VStack(spacing: 22) {
@@ -20,6 +26,7 @@ struct TrainingSettingsView: View {
                 if openData {
                     dataHeader
                     limitCard
+                    groundTruthCard
                     tableCard
                 } else {
                     folderTile
@@ -167,6 +174,146 @@ struct TrainingSettingsView: View {
         .background(card)
     }
 
+    // MARK: - Ground truth (correct transcripts via multimodal LLM)
+
+    /// Providers whose models accept audio input (Anthropic's API doesn't).
+    private let audioProviders: [AssistantProvider] = [.gemini, .openai, .openaiCompatible]
+
+    /// Default audio-capable model per provider.
+    private func defaultAudioModel(_ p: AssistantProvider) -> String {
+        switch p {
+        case .gemini: return "gemini-2.5-flash"
+        case .openai: return "gpt-4o-audio-preview"
+        default: return ""
+        }
+    }
+
+    private var missingCount: Int {
+        store.samples.filter { $0.llmTranscript == nil && store.audioURL($0) != nil }.count
+    }
+
+    private var groundTruthCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("CORRECT TRANSCRIPTS (GROUND TRUTH)")
+            Text("Send the audio to a model that can hear it and store its verbatim transcription in the “Should be” column — the supervision signal for fine-tuning.")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Picker("", selection: $settings.groundTruthProvider) {
+                    ForEach(audioProviders) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(accent)
+                .fixedSize()
+                .onChange(of: settings.groundTruthProvider) { _, p in
+                    settings.groundTruthModel = defaultAudioModel(p)
+                    keyDraft = settings.apiKey(for: p)
+                }
+
+                TextField("model (audio-capable)", text: $settings.groundTruthModel)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            SecureField(settings.groundTruthProvider.keyHint, text: $keyDraft)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .onChange(of: keyDraft) { _, new in
+                    settings.setAPIKey(new, for: settings.groundTruthProvider)
+                }
+                .onAppear { keyDraft = settings.apiKey(for: settings.groundTruthProvider) }
+
+            if settings.groundTruthProvider.needsBaseURL {
+                TextField("base URL (https://…/v1)", text: $settings.groundTruthBaseURL)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    bulkTranscribe()
+                } label: {
+                    Label(bulkRunning ? "Transcribing…" : "Transcribe missing (\(missingCount))",
+                          systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+                .controlSize(.small)
+                .disabled(bulkRunning || missingCount == 0)
+                if bulkRunning {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+            }
+
+            if let gtError {
+                Text(gtError)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.orange.opacity(0.95))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(card)
+    }
+
+    /// Fetch ground truth for one sample.
+    private func fetchGroundTruth(_ sample: EditSample) {
+        guard let url = store.audioURL(sample), !fetching.contains(sample.id) else { return }
+        fetching.insert(sample.id)
+        gtError = nil
+        let provider = settings.groundTruthProvider
+        let model = settings.groundTruthModel
+        let key = settings.apiKey(for: provider)
+        let baseURL = settings.groundTruthBaseURL
+        Task { @MainActor in
+            defer { fetching.remove(sample.id) }
+            do {
+                let text = try await GroundTruthClient().transcribe(
+                    audioURL: url, provider: provider, model: model,
+                    apiKey: key, baseURL: baseURL)
+                store.setLLMTranscript(id: sample.id, text: text, model: model)
+            } catch {
+                gtError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Sequentially fetch every sample that has audio but no ground truth yet.
+    /// Sequential on purpose: provider rate limits, and errors stop the run
+    /// instead of failing 30 requests at once.
+    private func bulkTranscribe() {
+        guard !bulkRunning else { return }
+        bulkRunning = true
+        gtError = nil
+        let provider = settings.groundTruthProvider
+        let model = settings.groundTruthModel
+        let key = settings.apiKey(for: provider)
+        let baseURL = settings.groundTruthBaseURL
+        let todo = store.samples.filter { $0.llmTranscript == nil && store.audioURL($0) != nil }
+        Task { @MainActor in
+            defer { bulkRunning = false }
+            for sample in todo {
+                guard let url = store.audioURL(sample) else { continue }
+                do {
+                    let text = try await GroundTruthClient().transcribe(
+                        audioURL: url, provider: provider, model: model,
+                        apiKey: key, baseURL: baseURL)
+                    store.setLLMTranscript(id: sample.id, text: text, model: model)
+                } catch {
+                    gtError = "\(error.localizedDescription) — stopped (\(missingCount) left)"
+                    return
+                }
+            }
+        }
+    }
+
     // MARK: - Table
 
     private var tableCard: some View {
@@ -234,13 +381,35 @@ struct TrainingSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                // What it should have been (after editing).
-                Text(sample.finalText.isEmpty ? "—" : sample.finalText)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(sample.edited ? .orange.opacity(0.95) : .white.opacity(0.75))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // What it should have been: the ground-truth LLM transcription
+                // (falls back to the legacy edited-field text, then a dash).
+                Group {
+                    if let llm = sample.llmTranscript {
+                        Text(llm)
+                            .foregroundStyle(llm == sample.transcript
+                                             ? .white.opacity(0.75) : .orange.opacity(0.95))
+                            .textSelection(.enabled)
+                    } else if !sample.finalText.isEmpty {
+                        Text(sample.finalText)
+                            .foregroundStyle(sample.edited ? .orange.opacity(0.95) : .white.opacity(0.75))
+                            .textSelection(.enabled)
+                    } else if fetching.contains(sample.id) {
+                        ProgressView().controlSize(.small)
+                    } else if store.audioURL(sample) != nil {
+                        Button { fetchGroundTruth(sample) } label: {
+                            Label("Get", systemImage: "wand.and.stars")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .help("Transcribe with \(settings.groundTruthModel)")
+                    } else {
+                        Text("—").foregroundStyle(.white.opacity(0.4))
+                    }
+                }
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             // Scrubber, only under the row that's loaded in the player.

@@ -554,3 +554,98 @@ async def _answer_gemini(
         raise ValueError(
             f"Unexpected gemini response: {_truncate(response.text)}"
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Ground-truth transcription via audio-capable multimodal models
+# ---------------------------------------------------------------------------
+
+TRANSCRIBE_PROMPT = (
+    "Transcribe this audio recording verbatim. Output ONLY the words that are "
+    "spoken, with correct spelling, natural punctuation and capitalization, as "
+    "one plain-text passage. Do not add anything that was not said, do not "
+    "describe the audio or the speaker, no quotation marks around the output, "
+    "no markdown. If nothing intelligible is spoken, output an empty string."
+)
+
+
+async def transcribe_audio(
+    provider: str,
+    model: str,
+    api_key: str,
+    audio_b64: str,
+    media_type: str = "audio/wav",
+    base_url: str | None = None,
+) -> str:
+    """Ask an audio-capable multimodal model for a verbatim transcription.
+
+    Same proxy pattern as ``answer``: the caller supplies provider/model/key per
+    request; nothing is stored server-side. Only providers whose models accept
+    audio input are supported — Anthropic's API does not take audio, so it is
+    rejected explicitly rather than failing confusingly upstream.
+    """
+    if not api_key:
+        raise ValueError("Missing api_key")
+    if not audio_b64:
+        raise ValueError("Missing audio")
+
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        if provider == "gemini":
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={api_key}"
+            )
+            body = {
+                "contents": [{
+                    "parts": [
+                        {"text": TRANSCRIBE_PROMPT},
+                        {"inline_data": {"mime_type": media_type, "data": audio_b64}},
+                    ],
+                }],
+            }
+            resp = await client.post(url, json=body)
+            _raise_for_status("gemini", resp)
+            data = resp.json()
+            try:
+                parts = data["candidates"][0]["content"]["parts"]
+                return "".join(p.get("text", "") for p in parts).strip()
+            except (KeyError, IndexError) as exc:
+                raise ValueError(f"Unexpected Gemini response shape: {data}") from exc
+
+        if provider in ("openai", "openai_compatible"):
+            if provider == "openai_compatible" and not base_url:
+                raise ValueError("base_url is required for openai_compatible")
+            url = (
+                f"{base_url.rstrip('/')}/chat/completions"
+                if provider == "openai_compatible"
+                else "https://api.openai.com/v1/chat/completions"
+            )
+            audio_format = "mp3" if "mp3" in media_type or "mpeg" in media_type else "wav"
+            body = {
+                "model": model,
+                "modalities": ["text"],
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": TRANSCRIBE_PROMPT},
+                        {"type": "input_audio",
+                         "input_audio": {"data": audio_b64, "format": audio_format}},
+                    ],
+                }],
+            }
+            resp = await client.post(
+                url, headers={"Authorization": f"Bearer {api_key}"}, json=body
+            )
+            _raise_for_status(provider, resp)
+            data = resp.json()
+            try:
+                return (data["choices"][0]["message"]["content"] or "").strip()
+            except (KeyError, IndexError) as exc:
+                raise ValueError(f"Unexpected OpenAI response shape: {data}") from exc
+
+        if provider == "anthropic":
+            raise ValueError(
+                "Anthropic models do not accept audio input — pick Gemini or an "
+                "OpenAI audio model for ground-truth transcription."
+            )
+        raise ValueError(f"Unknown provider: {provider}")

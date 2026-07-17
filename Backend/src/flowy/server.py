@@ -27,6 +27,7 @@ from pydantic import BaseModel, field_validator
 from flowy.assistant import answer as assistant_answer
 from flowy.assistant import answer_stream as assistant_answer_stream
 from flowy.assistant import list_models as assistant_list_models
+from flowy.assistant import transcribe_audio as assistant_transcribe_audio
 from flowy.transcribe import transcribe
 
 HOST = "127.0.0.1"
@@ -177,6 +178,40 @@ async def assistant_stream_endpoint(req: AssistantRequest) -> StreamingResponse:
             yield json.dumps({"done": True}) + "\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+class TranscribeLLMRequest(BaseModel):
+    """Ground-truth transcription of a captured dictation via an audio-capable
+    multimodal model (Gemini / OpenAI audio). Same per-request key model as
+    /assistant — nothing stored server-side."""
+
+    provider: str
+    model: str
+    api_key: str
+    audio_b64: str
+    media_type: str = "audio/wav"
+    base_url: str | None = None
+
+    _clean_key = field_validator("api_key")(_clean_api_key)
+
+
+@app.post("/transcribe_llm")
+async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
+    try:
+        text = await assistant_transcribe_audio(
+            provider=req.provider,
+            model=req.model,
+            api_key=req.api_key,
+            audio_b64=req.audio_b64,
+            media_type=req.media_type,
+            base_url=req.base_url,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
+        logger.exception("LLM transcription failed")
+        return JSONResponse(status_code=502, content={"error": str(exc)})
+    return JSONResponse(status_code=200, content={"text": text})
 
 
 class ModelsRequest(BaseModel):
