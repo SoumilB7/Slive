@@ -111,20 +111,12 @@ struct TrainingSettingsView: View {
         }
     }
 
-    /// Models fetched live for the current ground-truth provider — shares the
-    /// assistant's per-provider cache, filtered to audio-capable ids where the
-    /// provider distinguishes them (OpenAI names them "…audio…"; Gemini's 2.x+
-    /// models all accept audio). Falls back to the full list rather than hiding
-    /// everything if the filter matches nothing.
-    private var fetchedAudioModels: [String] {
-        let all = settings.assistantConfig.fetchedModels[settings.groundTruthProvider.rawValue] ?? []
-        let filtered: [String]
-        switch settings.groundTruthProvider {
-        case .openai: filtered = all.filter { $0.contains("audio") }
-        case .gemini: filtered = all.filter { $0.contains("gemini") }
-        default: filtered = all
-        }
-        return filtered.isEmpty ? all : filtered
+    /// Models fetched live for the current ground-truth provider — the FULL
+    /// list, unfiltered, from the assistant's shared per-provider cache. The
+    /// user decides what's audio-capable (a non-audio pick fails loudly with
+    /// the provider's own error, which beats us guessing wrong by name).
+    private var fetchedGTModels: [String] {
+        settings.assistantConfig.fetchedModels[settings.groundTruthProvider.rawValue] ?? []
     }
 
     /// Fetch the provider's live model list (same backend route the assistant
@@ -186,9 +178,9 @@ struct TrainingSettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .overlay(alignment: .trailing) {
-                        if !fetchedAudioModels.isEmpty {
+                        if !fetchedGTModels.isEmpty {
                             Menu {
-                                ForEach(fetchedAudioModels, id: \.self) { m in
+                                ForEach(fetchedGTModels, id: \.self) { m in
                                     Button(m) { settings.groundTruthModel = m }
                                 }
                             } label: {
@@ -464,24 +456,26 @@ struct TrainingSettingsView: View {
     /// SHOULD BE cell states: word-diffed LLM transcript → legacy final text →
     /// spinner → "Get" wand → dash.
     @ViewBuilder private func shouldBeCell(_ sample: EditSample) -> some View {
-        if let llm = sample.llmTranscript {
-            if let diffed = TranscriptDiffCache.styled(
-                id: sample.id, output: sample.transcript, truth: llm,
-                base: .white.opacity(0.75), changed: .orange.opacity(0.95)) {
-                Text(diffed).textSelection(.enabled)
-            } else {
-                // Over-length or deletion-only correction — whole-string fallback.
-                Text(llm)
-                    .foregroundStyle(llm == sample.transcript
-                                     ? .white.opacity(0.75) : .orange.opacity(0.95))
-                    .textSelection(.enabled)
+        if fetching.contains(sample.id) {
+            ProgressView().controlSize(.small)
+        } else if let llm = sample.llmTranscript {
+            HStack(alignment: .top, spacing: 6) {
+                llmTextView(llm, sample: sample)
+                // Redo: a bad pull (wrong model, provider refusal like "I can't
+                // hear an audio recording") is stored like any other result —
+                // this re-runs the row with the currently selected model.
+                Button { fetchGroundTruth(sample) } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .help("Re-transcribe with \(settings.groundTruthModel)")
             }
         } else if !sample.finalText.isEmpty {
             Text(sample.finalText)
                 .foregroundStyle(sample.edited ? .orange.opacity(0.95) : .white.opacity(0.75))
                 .textSelection(.enabled)
-        } else if fetching.contains(sample.id) {
-            ProgressView().controlSize(.small)
         } else if store.audioURL(sample) != nil {
             Button { fetchGroundTruth(sample) } label: {
                 Label("Get", systemImage: "wand.and.stars")
@@ -492,6 +486,21 @@ struct TrainingSettingsView: View {
             .help("Transcribe with \(settings.groundTruthModel)")
         } else {
             Text("—").foregroundStyle(.white.opacity(0.4))
+        }
+    }
+
+    /// The word-diffed ground-truth text (whole-string fallback for over-length
+    /// or deletion-only corrections).
+    @ViewBuilder private func llmTextView(_ llm: String, sample: EditSample) -> some View {
+        if let diffed = TranscriptDiffCache.styled(
+            id: sample.id, output: sample.transcript, truth: llm,
+            base: .white.opacity(0.75), changed: .orange.opacity(0.95)) {
+            Text(diffed).textSelection(.enabled)
+        } else {
+            Text(llm)
+                .foregroundStyle(llm == sample.transcript
+                                 ? .white.opacity(0.75) : .orange.opacity(0.95))
+                .textSelection(.enabled)
         }
     }
 
