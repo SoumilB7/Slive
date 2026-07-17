@@ -19,6 +19,7 @@ struct TrainingSettingsView: View {
     @State private var gtError: String?
     @State private var keyDraft: String = ""
     @State private var confirmClear = false
+    @State private var loadingModels = false
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -99,12 +100,54 @@ struct TrainingSettingsView: View {
     /// Providers whose models accept audio input (Anthropic's API doesn't).
     private let audioProviders: [AssistantProvider] = [.gemini, .openai, .openaiCompatible]
 
-    /// Default audio-capable model per provider.
+    /// Default audio-capable model per provider. (OpenAI's `gpt-4o-audio-preview`
+    /// was superseded — `gpt-audio` is the GA audio chat model; accounts without
+    /// the legacy preview 404 on it.)
     private func defaultAudioModel(_ p: AssistantProvider) -> String {
         switch p {
         case .gemini: return "gemini-2.5-flash"
-        case .openai: return "gpt-4o-audio-preview"
+        case .openai: return "gpt-audio"
         default: return ""
+        }
+    }
+
+    /// Models fetched live for the current ground-truth provider — shares the
+    /// assistant's per-provider cache, filtered to audio-capable ids where the
+    /// provider distinguishes them (OpenAI names them "…audio…"; Gemini's 2.x+
+    /// models all accept audio). Falls back to the full list rather than hiding
+    /// everything if the filter matches nothing.
+    private var fetchedAudioModels: [String] {
+        let all = settings.assistantConfig.fetchedModels[settings.groundTruthProvider.rawValue] ?? []
+        let filtered: [String]
+        switch settings.groundTruthProvider {
+        case .openai: filtered = all.filter { $0.contains("audio") }
+        case .gemini: filtered = all.filter { $0.contains("gemini") }
+        default: filtered = all
+        }
+        return filtered.isEmpty ? all : filtered
+    }
+
+    /// Fetch the provider's live model list (same backend route the assistant
+    /// uses), stored in the shared per-provider cache so both UIs benefit.
+    private func fetchModels() {
+        loadingModels = true
+        gtError = nil
+        var config = settings.assistantConfig
+        config.provider = settings.groundTruthProvider
+        config.baseURL = settings.groundTruthBaseURL
+        let key = settings.apiKey(for: settings.groundTruthProvider)
+        Task { @MainActor in
+            defer { loadingModels = false }
+            guard await BackendManager.shared.ensureHealthy() else {
+                gtError = "Couldn't start the local backend."
+                return
+            }
+            do {
+                let models = try await AssistantClient().listModels(config: config, apiKey: key)
+                settings.assistantConfig.fetchedModels[settings.groundTruthProvider.rawValue] = models
+            } catch {
+                gtError = error.localizedDescription
+            }
         }
     }
 
@@ -136,9 +179,41 @@ struct TrainingSettingsView: View {
                     keyDraft = settings.apiKey(for: p)
                 }
 
+                // The model id that will be sent, with a trailing chip listing
+                // the provider's live (audio-capable) models once fetched — so a
+                // wrong guess turns into a pick instead of a 404.
                 TextField("model (audio-capable)", text: $settings.groundTruthModel)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
+                    .overlay(alignment: .trailing) {
+                        if !fetchedAudioModels.isEmpty {
+                            Menu {
+                                ForEach(fetchedAudioModels, id: \.self) { m in
+                                    Button(m) { settings.groundTruthModel = m }
+                                }
+                            } label: {
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(SliveTheme.accent)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                            .padding(.trailing, 6)
+                        }
+                    }
+
+                if loadingModels {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button { fetchModels() } label: {
+                        Label("Fetch", systemImage: "arrow.clockwise")
+                            .font(SliveTheme.font(11, .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(SliveTheme.accent)
+                    .help("Fetch this provider's live model list")
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
