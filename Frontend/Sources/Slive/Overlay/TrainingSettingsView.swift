@@ -289,7 +289,10 @@ struct TrainingSettingsView: View {
         }
         .confirmationDialog("Delete \(store.count) sample\(store.count == 1 ? "" : "s")?",
                             isPresented: $confirmClear) {
-            Button("Delete All", role: .destructive) { store.clearAll() }
+            Button("Delete All", role: .destructive) {
+                store.clearAll()
+                TranscriptDiffCache.clear()
+            }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -387,12 +390,12 @@ struct TrainingSettingsView: View {
     /// spinner → "Get" wand → dash.
     @ViewBuilder private func shouldBeCell(_ sample: EditSample) -> some View {
         if let llm = sample.llmTranscript {
-            if let diffed = TranscriptDiff.attributed(
-                output: sample.transcript, truth: llm,
+            if let diffed = TranscriptDiffCache.styled(
+                id: sample.id, output: sample.transcript, truth: llm,
                 base: .white.opacity(0.75), changed: .orange.opacity(0.95)) {
                 Text(diffed).textSelection(.enabled)
             } else {
-                // Very long sample — whole-string fallback.
+                // Over-length or deletion-only correction — whole-string fallback.
                 Text(llm)
                     .foregroundStyle(llm == sample.transcript
                                      ? .white.opacity(0.75) : .orange.opacity(0.95))

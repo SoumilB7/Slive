@@ -168,13 +168,23 @@ struct StatusDot: View {
             .fill(color)
             .frame(width: size, height: size)
             .shadow(color: color.opacity(0.7), radius: 4)
-            .opacity(pulses && dim ? 0.55 : 1)
-            .onAppear {
-                guard pulses else { return }
-                withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                    dim = true
+            .opacity(dim ? 0.55 : 1)
+            .onAppear { if pulses { startPulse() } }
+            .onChange(of: pulses) { _, on in
+                // Replacing the animation on `dim` cancels the repeatForever —
+                // otherwise it keeps ticking invisibly after the dot goes solid.
+                if on {
+                    startPulse()
+                } else {
+                    withAnimation(.linear(duration: 0.01)) { dim = false }
                 }
             }
+    }
+
+    private func startPulse() {
+        withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+            dim = true
+        }
     }
 }
 
