@@ -60,6 +60,16 @@ final class BackendManager: ObservableObject {
         }
     }
 
+    /// Launch-time hygiene without the cost of running a server: kill any orphan
+    /// `flowy.server` left over from a crashed session (it would sit on the port
+    /// burning RAM), but do NOT spawn one. The server starts on demand — the
+    /// assistant path's `ensureHealthy()` brings it up on first use — so a user
+    /// who only dictates never pays for a resident Python process at all.
+    func reapOrphans() {
+        pkillServer(signal: "TERM")
+        status = .offline
+    }
+
     /// Terminate the backend on quit — the one we started, plus any reused/orphan
     /// `flowy.server`, so ⌘Q always leaves nothing on the port. SIGTERM first for
     /// a clean uvicorn shutdown, then SIGKILL to guarantee nothing survives.
@@ -98,6 +108,7 @@ final class BackendManager: ObservableObject {
         let t = Timer(timeInterval: 6, repeats: true) { [weak self] _ in
             Task { await self?.watchdogTick() }
         }
+        t.tolerance = 2.0   // let macOS coalesce the wakeup (battery)
         RunLoop.main.add(t, forMode: .common)
         watchdog = t
     }

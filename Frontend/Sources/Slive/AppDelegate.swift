@@ -65,14 +65,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Keep the global hotkey + overlay alive when Slive has no open window
         // and sits in the background — otherwise App Nap throttles the event tap.
+        // Crucially `.userInitiatedAllowingIdleSystemSleep`, NOT `.userInitiated`:
+        // the latter includes idleSystemSleepDisabled, which held the whole Mac
+        // out of idle sleep for as long as Slive ran — a serious battery drain.
+        // This variant prevents only App Nap; the machine sleeps normally.
         activityToken = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .automaticTerminationDisabled],
+            options: [.userInitiatedAllowingIdleSystemSleep, .automaticTerminationDisabled],
             reason: "Global push-to-talk listener"
         )
 
-        // Auto-start the local transcription backend so it's ready by the time
-        // you record — no terminal needed. Stopped again in applicationWillTerminate.
-        backend.start()
+        // The Python backend serves only the assistant (STT is on-device), so
+        // don't run it until the assistant is first used — `ensureHealthy()`
+        // spawns it on demand. At launch just reap any orphan from a crashed
+        // session. Saves a resident Python process for dictation-only use.
+        backend.reapOrphans()
         statusCancellable = backend.$status.sink { [weak self] status in
             self?.updateBackendStatusUI(status)
         }
@@ -85,29 +91,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         Settings.shared.onHotkeyChange = { [weak self] hk in self?.hotkey.hotkey = hk }
         Settings.shared.onAssistantHotkeyChange = { [weak self] hk in self?.hotkey.assistantHotkey = hk }
-        Settings.shared.onStreamHotkeyChange = { [weak self] hk in self?.hotkey.streamHotkey = hk }
+        Settings.shared.onStreamHotkeyChange = { [weak self] hk in
+            self?.hotkey.streamHotkey = hk
+            // Recording/removing the continuous shortcut also decides whether its
+            // model belongs in memory.
+            self?.refreshModelResidency()
+        }
         hotkey.hotkey = Settings.shared.hotkey
         hotkey.assistantHotkey = Settings.shared.assistantHotkey
         hotkey.streamHotkey = Settings.shared.streamHotkey
 
         // Preload the on-device transcription model IF it's already downloaded
-        // (never auto-downloads — the user does that from Settings). Refresh the
-        // status when the selected model changes.
-        // Dictation and continuous dictation each keep their OWN model. On either
-        // change, evict anything no longer referenced by the two sections, then
-        // preload the new one (shared as one instance when the names match).
-        Settings.shared.onWhisperModelChange = { [weak self] m in
-            self?.whisper.retainModels([m, Settings.shared.continuousModel])
-            self?.whisper.select(m)
-        }
-        Settings.shared.onContinuousModelChange = { [weak self] m in
-            self?.whisper.retainModels([Settings.shared.whisperModel, m])
-            self?.whisper.select(m)
-        }
+        // (never auto-downloads — the user does that from Settings), and refresh
+        // residency whenever a selection changes. The continuous model is only
+        // kept in memory while a continuous shortcut is actually set — no point
+        // holding a second model (RAM + ANE) for a feature that's switched off.
+        Settings.shared.onWhisperModelChange = { [weak self] _ in self?.refreshModelResidency() }
+        Settings.shared.onContinuousModelChange = { [weak self] _ in self?.refreshModelResidency() }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
-        whisper.select(Settings.shared.whisperModel)
-        whisper.select(Settings.shared.continuousModel)
-        whisper.retainModels([Settings.shared.whisperModel, Settings.shared.continuousModel])
+        refreshModelResidency()
 
         hotkey.start()   // self-arms once Input Monitoring is granted
 
@@ -135,6 +137,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ProcessInfo.processInfo.endActivity(token)
             activityToken = nil
         }
+    }
+
+    /// Keep exactly the models that are in use resident: dictation's always,
+    /// continuous's only while its shortcut is set (same name = one shared
+    /// instance). Everything else is evicted from RAM/ANE.
+    private func refreshModelResidency() {
+        var keep: Set<String> = [Settings.shared.whisperModel]
+        if Settings.shared.streamHotkey != nil {
+            keep.insert(Settings.shared.continuousModel)
+        }
+        whisper.retainModels(keep)
+        for m in keep { whisper.select(m) }
     }
 
     /// Clicking the Dock icon (no windows open) reopens the home window.

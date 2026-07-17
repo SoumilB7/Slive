@@ -174,6 +174,7 @@ final class HotkeyMonitor {
                 timer.invalidate(); self.pollTimer = nil
             }
         }
+        t.tolerance = 0.5   // let macOS coalesce the wakeup (battery)
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
     }
@@ -186,6 +187,7 @@ final class HotkeyMonitor {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
         }
+        t.tolerance = 1.0   // let macOS coalesce the wakeup (battery)
         RunLoop.main.add(t, forMode: .common)
         healthTimer = t
     }
