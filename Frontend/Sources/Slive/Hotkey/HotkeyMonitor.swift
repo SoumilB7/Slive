@@ -53,16 +53,29 @@ final class HotkeyMonitor {
 
     private struct Target { let hotkey: Hotkey; let action: HotkeyAction }
 
-    private var targets: [Target] {
+    /// Match targets, CACHED — `handle()` runs for every keyDown/keyUp/
+    /// flagsChanged the user makes anywhere in the OS, and in chord mode the
+    /// tap is synchronous in front of their keystrokes. Recomputing these as
+    /// computed properties allocated 1–2 arrays per event; now they're rebuilt
+    /// only when a shortcut actually changes (`rebuildTargets`).
+    private var targets: [Target] = []
+    /// The modifier-only subset `handle()` matches against (priority order).
+    private var modifierOnlyTargets: [Target] = []
+    /// True when any shortcut is a chord (has a key), so the tap must consume.
+    private var needsConsume = false
+
+    /// Rebuild the cached match tables from the three shortcut properties.
+    private func rebuildTargets() {
         var t = [Target(hotkey: hotkey, action: .dictate)]
         if let a = assistantHotkey { t.append(Target(hotkey: a, action: .assist)) }
         if let s = streamHotkey { t.append(Target(hotkey: s, action: .stream)) }
-        return t
+        targets = t
+        modifierOnlyTargets = t.filter { $0.hotkey.isModifierOnly && $0.hotkey.modifiers != 0 }
+        needsConsume = t.contains { !$0.hotkey.isModifierOnly }
     }
 
-    /// True when any shortcut is a chord (has a key), so the tap must consume.
-    private var needsConsume: Bool {
-        targets.contains { !$0.hotkey.isModifierOnly }
+    init() {
+        rebuildTargets()
     }
 
     // MARK: - Lifecycle
@@ -113,9 +126,10 @@ final class HotkeyMonitor {
         needsConsume ? AXIsProcessTrusted() : Self.inputMonitoringGranted
     }
 
-    /// A recorded shortcut changed: release any held action and re-arm the tap
-    /// if the listen/consume mode changed.
+    /// A recorded shortcut changed: refresh the cached match tables, release
+    /// any held action, and re-arm the tap if the listen/consume mode changed.
     private func hotkeysChanged() {
+        rebuildTargets()
         if let a = activeAction { activeAction = nil; engagedKeyCode = nil; onStop?(a) }
         if needsConsume != installedConsuming { reinstallTap() }
     }
@@ -181,7 +195,12 @@ final class HotkeyMonitor {
 
     private func startHealthCheck() {
         healthTimer?.invalidate()
-        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+        // 5s, not longer: a tap disabled while idle receives no events, so a
+        // user's keypress can't self-heal it — this poll period IS the
+        // worst-case "hotkey silently dead" window. 5s halves the wakeups vs
+        // 2s while keeping that window tolerable. (The disable-event and
+        // wake-rebuild paths carry the common cases instantly.)
+        let t = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self, let tap = self.eventTap else { return }
             if !CGEvent.tapIsEnabled(tap: tap) {
                 CGEvent.tapEnable(tap: tap, enable: true)
@@ -257,7 +276,7 @@ final class HotkeyMonitor {
         //    dictate → assist → stream, so plain (all-at-once) dictation
         //    dominates over the continuous and assistant keys.
         if engagedKeyCode == nil {
-            let mods = targets.filter { $0.hotkey.isModifierOnly && $0.hotkey.modifiers != 0 }
+            let mods = modifierOnlyTargets   // cached; no per-event filter
             let matched: HotkeyAction? =
                 mods.first { $0.hotkey.modifiers == flags }?.action
                 ?? mods.first { ($0.hotkey.modifiers & flags) == $0.hotkey.modifiers }?.action

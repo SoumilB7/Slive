@@ -284,9 +284,20 @@ final class TranscriptionModel: ObservableObject {
     /// Stop the live stream (ends its mic capture + realtime loop).
     func stopLiveDictation() {
         guard let t = liveTranscriber else { return }
+        let model = liveModel
         liveTranscriber = nil
         liveModel = nil
-        Task { await t.stopStreamTranscription() }
+        Task {
+            // Await the stop FIRST: the stream actor's last in-flight decode
+            // reads audioSamples, and purging concurrently would be a
+            // cross-domain data race. Once it's confirmed stopped, free the
+            // session's audio (64KB/s of Float32 — a long hold leaves tens of
+            // MB) instead of holding it until the next session starts.
+            await t.stopStreamTranscription()
+            if let model, let pipe = pipes[model] {
+                pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
+            }
+        }
     }
 
     // MARK: - Selection / loading

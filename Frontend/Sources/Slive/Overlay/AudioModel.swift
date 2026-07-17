@@ -32,8 +32,10 @@ final class AudioModel: ObservableObject {
 
     @Published var phase: Phase = .idle
     @Published private(set) var levels: [Float]
-    @Published private(set) var glow: Float = 0        // eased RMS, drives the halo
-    @Published private(set) var elapsed: TimeInterval = 0
+    /// Eased RMS driving the bar amplitude. Internal easing state — no view
+    /// reads it directly (views read `levels`), so publishing it only fired
+    /// dead objectWillChange invalidations 60x/sec.
+    private var glow: Float = 0
     /// True while an assistant answer is streaming in, so the box uses a fixed
     /// size and auto-scrolls instead of resizing on every token.
     @Published private(set) var streaming = false
@@ -51,8 +53,6 @@ final class AudioModel: ObservableObject {
     /// True while live-streaming dictation is running (a distinct listening pill
     /// with a caption of the words about to land).
     @Published private(set) var liveDictating = false
-    /// The still-forming tail shown as a caption during live dictation.
-    @Published private(set) var liveTail = ""
 
     /// Whether to render the box as a multi-turn transcript.
     var isChat: Bool { !priorTurns.isEmpty }
@@ -64,7 +64,6 @@ final class AudioModel: ObservableObject {
     private var targetGlow: Float = 0
 
     private var timer: Timer?
-    private var startDate: Date?
     private var noisePhase: Double = 0
 
     // Visualiser dial — the tallest the centre bar can reach.
@@ -86,29 +85,17 @@ final class AudioModel: ObservableObject {
         streaming = false
         assistantListening = assistant
         liveDictating = false
-        liveTail = ""
         phase = .listening
-        elapsed = 0
-        startDate = Date()
         startTimerIfNeeded()
     }
 
-    /// Start live-streaming dictation: a listening pill with a caption showing
-    /// the words that are about to land in your text field.
+    /// Start live-streaming dictation: a listening pill showing live energy.
     func beginLiveDictation() {
         streaming = false
         assistantListening = false
         liveDictating = true
-        liveTail = ""
         phase = .listening
-        elapsed = 0
-        startDate = Date()
         startTimerIfNeeded()
-    }
-
-    /// Update the caption of not-yet-committed words during live dictation.
-    func updateLiveTail(_ text: String) {
-        liveTail = text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Drive the waveform from the live stream's mic energy (0…~1).
@@ -120,7 +107,6 @@ final class AudioModel: ObservableObject {
     func finishListening() {
         phase = .idle
         liveDictating = false
-        liveTail = ""
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
     }
@@ -135,8 +121,19 @@ final class AudioModel: ObservableObject {
     /// pill on screen (a loading indicator is shown instead of the waveform).
     func beginTranscribing() {
         phase = .transcribing
+        settleMeterNow()
+    }
+
+    /// From these phases on, the waveform is invisible (the listening pill is
+    /// opacity-0; LoadingDots/result boxes don't read `levels`) — stop the 60Hz
+    /// easer NOW instead of publishing a decaying, unseen waveform for ~0.4s.
+    /// Mirrors the timer's own idle-stop reset so the next session starts clean.
+    private func settleMeterNow() {
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
+        stopTimer()
+        levels = [Float](repeating: 0, count: bandCount)
+        glow = 0
     }
 
     /// Backend returned text (dictation, or an error) — grow the pill into a box.
@@ -146,8 +143,7 @@ final class AudioModel: ObservableObject {
         priorTurns = []
         currentQuestion = ""
         phase = .result(text: text)
-        targetLevels = [Float](repeating: 0, count: bandCount)
-        targetGlow = 0
+        settleMeterNow()
     }
 
     /// Final assistant answer — like `showResult` but flags it so the Continue
@@ -156,8 +152,7 @@ final class AudioModel: ObservableObject {
         streaming = false
         assistantResult = true
         phase = .result(text: text)
-        targetLevels = [Float](repeating: 0, count: bandCount)
-        targetGlow = 0
+        settleMeterNow()
     }
 
     /// Start streaming an assistant answer into a fixed-size box. `priorTurns`
@@ -168,8 +163,7 @@ final class AudioModel: ObservableObject {
         self.priorTurns = priorTurns
         self.currentQuestion = question
         phase = .result(text: "")
-        targetLevels = [Float](repeating: 0, count: bandCount)
-        targetGlow = 0
+        settleMeterNow()
     }
 
     /// Update the streaming answer text (box stays fixed size, scrolls).
@@ -196,16 +190,13 @@ final class AudioModel: ObservableObject {
         assistantListening = false
         assistantResult = false
         liveDictating = false
-        liveTail = ""
         priorTurns = []
         currentQuestion = ""
-        startDate = nil
         targetLevels = [Float](repeating: 0, count: bandCount)
         targetGlow = 0
         stopTimer()
         levels = [Float](repeating: 0, count: bandCount)
         glow = 0
-        elapsed = 0
     }
 
     // MARK: - Feed from audio thread (already dispatched to main)
@@ -265,10 +256,6 @@ final class AudioModel: ObservableObject {
             newLevels[i] = amp * (0.38 + 0.62 * arch) * wobble
         }
         levels = newLevels
-
-        if listening, let start = startDate {
-            elapsed = Date().timeIntervalSince(start)
-        }
 
         // Once idle and faded out, stop spinning the timer.
         if !listening && phase != .saving && glow < 0.01 {

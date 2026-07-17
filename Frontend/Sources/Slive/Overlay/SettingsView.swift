@@ -12,7 +12,6 @@ struct SettingsView: View {
     @ObservedObject private var history = HistoryStore.shared
     @ObservedObject private var transcription = TranscriptionModel.shared
     @ObservedObject private var stats = SpeakingStats.shared
-    @ObservedObject private var training = TrainingStore.shared
     var onRelaunch: () -> Void
 
     @State private var page: SettingsPage = .general
@@ -350,60 +349,12 @@ struct SettingsView: View {
                 caption: "Saves each dictation's audio plus what Slive transcribed it as. Stored locally only, for later fine-tuning.",
                 isOn: $settings.captureEdits
             )
-            if settings.captureEdits {
-                HStack(spacing: 6) {
-                    Image(systemName: "tray.full")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(SliveTheme.accent)
-                    Text("\(training.count) sample\(training.count == 1 ? "" : "s") captured")
-                        .font(SliveTheme.font(12, .semibold))
-                        .foregroundStyle(.white.opacity(0.7))
-                }
-                if let s = training.latest {
-                    latestComparison(s)
-                }
-            }
             CardDivider()
             ToggleRow(
                 title: "Verbose logging (developer)",
                 caption: "Emit diagnostic logs. View in Console.app or `log stream` filtered by “Slive.”. Off for normal use.",
                 isOn: $settings.verboseLogging
             )
-        }
-    }
-
-    /// The most recent (Slive → final) pair, so you can watch the diff live.
-    private func latestComparison(_ s: EditSample) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text(s.edited ? "EDITED" : "UNCHANGED")
-                    .font(SliveTheme.font(9, .bold))
-                    .tracking(0.8)
-                    .foregroundStyle(s.edited ? Color.orange : Color.green)
-                Text("· \(s.confidence)")
-                    .font(SliveTheme.font(9, .semibold))
-                    .foregroundStyle(SliveTheme.textTertiary)
-            }
-            comparisonRow(label: "Slive", text: s.transcript, color: .white.opacity(0.55))
-            comparisonRow(label: "Final", text: s.finalText.isEmpty ? "—" : s.finalText,
-                          color: s.edited ? .orange.opacity(0.9) : .white.opacity(0.8))
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .innerWell()
-    }
-
-    private func comparisonRow(label: String, text: String, color: Color) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(label)
-                .font(SliveTheme.font(10, .bold))
-                .foregroundStyle(.white.opacity(0.4))
-                .frame(width: 34, alignment: .leading)
-            Text(text)
-                .font(SliveTheme.font(12))
-                .foregroundStyle(color)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
