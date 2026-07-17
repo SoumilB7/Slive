@@ -28,7 +28,47 @@ final class AudioRecorder {
     /// Live converter from the node's current format to `targetFormat` (nil →
     /// fall back to writing the native format, the pre-conversion behavior).
     private var converter: AVAudioConverter?
+    /// The format the current WAV was opened with (the converter's output side).
+    private var fileFormat: AVAudioFormat?
     private var loggedWriteError = false
+    private var configObserver: NSObjectProtocol?
+
+    init() {
+        // A device change — AirPods connecting, headphones un/plugged, a
+        // sample-rate switch — makes AVAudioEngine reconfigure: the engine
+        // STOPS and the input node's format may be different afterwards.
+        // Without handling this, a recording that spans the change dies
+        // silently (dead tap or format-mismatched writes). Rewire the capture
+        // path with the freshly-read format; the WAV survives the switch
+        // because it's written in the canonical format, not the device's.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in self?.handleConfigurationChange() }
+    }
+
+    deinit {
+        if let o = configObserver { NotificationCenter.default.removeObserver(o) }
+    }
+
+    private func handleConfigurationChange() {
+        guard isRecording else { return }   // next start() reads fresh state anyway
+        NSLog("Slive: audio device configuration changed mid-recording — rewiring capture")
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            NSLog("Slive: input invalid after device change — recording will end at release")
+            return
+        }
+        converter = AVAudioConverter(from: format, to: fileFormat ?? targetFormat)
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            self?.handle(buffer: buffer)
+        }
+        if !engine.isRunning {
+            engine.prepare()
+            try? engine.start()
+        }
+    }
 
     /// Whether the input node currently has the system voice-processing chain
     /// (echo cancellation) attached — tracked so we only toggle on change.
@@ -80,6 +120,7 @@ final class AudioRecorder {
             NSLog("Slive: no converter for \(format) — recording in native format")
         }
         let fileFormat = converter != nil ? targetFormat : format
+        self.fileFormat = fileFormat
         fft = FFTProcessor(fftSize: 1024, bandCount: bandCount, sampleRate: fileFormat.sampleRate)
         loggedWriteError = false
 
@@ -122,6 +163,7 @@ final class AudioRecorder {
         let url = tempURL
         file = nil          // closes the file, flushing the WAV header
         tempURL = nil
+        fileFormat = nil
         startTime = nil
         // Nudge the meters back to rest.
         DispatchQueue.main.async { [weak self] in
@@ -131,6 +173,12 @@ final class AudioRecorder {
     }
 
     private func handle(buffer: AVAudioPCMBuffer) {
+        // The notification can lag the actual device switch by a few buffers —
+        // the buffer's own format is the only ground truth. Rebuild the
+        // converter the moment it stops matching.
+        if let conv = converter, !conv.inputFormat.isEqual(buffer.format) {
+            converter = AVAudioConverter(from: buffer.format, to: conv.outputFormat)
+        }
         // Canonicalize (downmix + resample) before anything touches the data.
         let out: AVAudioPCMBuffer
         if let conv = converter {
