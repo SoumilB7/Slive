@@ -36,6 +36,7 @@ struct TrainingSettingsView: View {
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity)
         }
+        .onAppear { store.loadSamplesIfNeeded() }   // lazy index parse
         .onDisappear { player.stop() }
     }
 

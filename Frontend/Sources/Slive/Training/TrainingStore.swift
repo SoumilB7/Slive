@@ -70,10 +70,23 @@ final class TrainingStore: ObservableObject {
         audioDir = root.appendingPathComponent("audio", isDirectory: true)
         indexFile = root.appendingPathComponent("samples.jsonl", isDirectory: false)
         try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
-        samples = loadSamples()
-        latest = samples.last
+        // totalBytes stays EAGER: the capture write path checks isOverLimit
+        // before the Training UI ever opens, and a lazily-zero totalBytes would
+        // let capture write past the user's cap. The full samples[] parse (the
+        // browser's data) is deferred until the Training tab appears.
         totalBytes = computeSize()
     }
+
+    /// Parse the sample index on demand — the browser/backfill UI is the only
+    /// consumer of the full array. Safe against pre-load appends: `add` writes
+    /// the file first, so re-reading it here can't drop or duplicate a sample.
+    func loadSamplesIfNeeded() {
+        guard !samplesLoaded else { return }
+        samplesLoaded = true
+        samples = loadSamples()
+        if latest == nil { latest = samples.last }
+    }
+    private var samplesLoaded = false
 
     /// Absolute URL of a sample's audio, if present on disk.
     func audioURL(_ sample: EditSample) -> URL? {
@@ -91,6 +104,7 @@ final class TrainingStore: ObservableObject {
         samples = []
         latest = nil
         totalBytes = 0
+        samplesLoaded = true   // the (now-empty) file is fully reflected
         Log.training("cleared all samples")
     }
 

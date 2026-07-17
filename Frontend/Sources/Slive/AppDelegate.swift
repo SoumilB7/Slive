@@ -524,8 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingTurn = nil
         chatActive = true
         collapseWorkItem?.cancel(); collapseWorkItem = nil
-        overlay.hide()
-        model.reset()
+        overlay.hide()   // hide() resets the model (chat state lives here, untouched)
     }
 
     /// Result path: grow the overlay to show `text`, then auto-collapse. On a nil
@@ -577,16 +576,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func collapseOverlay() {
         collapseWorkItem = nil
-        overlay.hide()
-        model.reset()
+        overlay.hide()   // hide() resets the model
     }
 
     private func hideOverlaySoon() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self else { return }
             if self.model.phase == .listening { return }   // a new hold began
-            self.overlay.hide()
-            self.model.reset()
+            self.overlay.hide()   // hide() resets the model
         }
     }
 

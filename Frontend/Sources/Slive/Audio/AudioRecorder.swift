@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import Foundation
 
@@ -32,6 +33,21 @@ final class AudioRecorder {
     private var fileFormat: AVAudioFormat?
     private var loggedWriteError = false
     private var configObserver: NSObjectProtocol?
+
+    /// Reused conversion output buffer — GROW-ONLY. A fixed capacity would
+    /// silently truncate audio if a device change raised the resample ratio
+    /// (the converter clamps at frameCapacity without reporting an error);
+    /// growing when a callback needs more can never lose samples. Reusing it
+    /// removes a heap allocation per tap callback from the audio thread.
+    private var convertBuffer: AVAudioPCMBuffer?
+
+    /// Level-update coalescing: the meters ease at 60fps anyway, so dispatching
+    /// every tap callback (~47/s) to the main thread bought nothing. Every 3rd
+    /// callback we FFT + dispatch, forwarding the running-MAX RMS across the
+    /// window so the adaptive release tail's voice detection keeps per-callback
+    /// fidelity (a max can't miss a voiced blip between dispatches).
+    private var levelCallbackCount = 0
+    private var windowMaxRMS: Float = 0
 
     init() {
         // A device change — AirPods connecting, headphones un/plugged, a
@@ -123,6 +139,8 @@ final class AudioRecorder {
         self.fileFormat = fileFormat
         fft = FFTProcessor(fftSize: 1024, bandCount: bandCount, sampleRate: fileFormat.sampleRate)
         loggedWriteError = false
+        levelCallbackCount = 0
+        windowMaxRMS = 0
 
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("flowy-\(UUID().uuidString).wav")
@@ -183,8 +201,14 @@ final class AudioRecorder {
         let out: AVAudioPCMBuffer
         if let conv = converter {
             let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
-            guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
+            let needed = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+            if convertBuffer == nil || convertBuffer!.frameCapacity < needed {
+                // Grow-only: first callback, or a device change raised the ratio.
+                convertBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat,
+                                                 frameCapacity: max(needed, 2048))
+            }
+            guard let converted = convertBuffer else { return }
+            converted.frameLength = 0
             var fed = false
             var convError: NSError?
             conv.convert(to: converted, error: &convError) { _, status in
@@ -217,11 +241,24 @@ final class AudioRecorder {
         let frames = Int(out.frameLength)
         guard frames > 0 else { return }
 
-        // Mono channel 0 of the canonical buffer feeds the meters.
-        let mono = Array(UnsafeBufferPointer(start: channelData[0], count: frames))
+        // RMS every callback (cheap vDSP, no copy) — it feeds voice-activity
+        // detection, whose fidelity we keep at full rate via the running max.
+        var meanSquare: Float = 0
+        vDSP_measqv(channelData[0], 1, &meanSquare, vDSP_Length(frames))
+        windowMaxRMS = max(windowMaxRMS, sqrtf(meanSquare))
 
+        // FFT + main-thread dispatch only every 3rd callback (~15/s instead of
+        // ~47/s): the 60fps easer interpolates the visual identically, and the
+        // main thread takes a third of the wakeups.
+        levelCallbackCount += 1
+        guard levelCallbackCount >= 3 else { return }
+        levelCallbackCount = 0
+        let rms = windowMaxRMS
+        windowMaxRMS = 0
+
+        // Mono channel 0 of the canonical buffer feeds the analyser.
+        let mono = Array(UnsafeBufferPointer(start: channelData[0], count: frames))
         let bands = fft?.process(mono) ?? []
-        let rms = FFTProcessor.rms(mono)
 
         DispatchQueue.main.async { [weak self] in
             self?.onLevels?(bands, rms)
