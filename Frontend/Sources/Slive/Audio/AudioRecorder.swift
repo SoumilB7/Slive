@@ -187,6 +187,10 @@ final class AudioRecorder {
         DispatchQueue.main.async { [weak self] in
             self?.onLevels?([Float](repeating: 0, count: self?.bandCount ?? 28), 0)
         }
+        // Pre-arm for the NEXT hold: prepare() re-allocates the render
+        // resources now, off the hot path, so the next engine.start() (key-down
+        // → mic live) skips that work.
+        engine.prepare()
         return url
     }
 
