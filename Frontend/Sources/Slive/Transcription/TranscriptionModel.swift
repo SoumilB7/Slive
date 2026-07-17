@@ -294,9 +294,14 @@ final class TranscriptionModel: ObservableObject {
             // session's audio (64KB/s of Float32 — a long hold leaves tens of
             // MB) instead of holding it until the next session starts.
             await t.stopStreamTranscription()
-            if let model, let pipe = pipes[model] {
-                pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
-            }
+            // Rapid re-hold guard: if a NEW live session has already started
+            // (release → immediate re-press, the common gesture), it owns this
+            // same audioProcessor and is filling the buffer right now — purging
+            // here would wipe its session mid-stream. Only purge while nobody
+            // owns the stream. (This Task runs on the main actor, so the check
+            // can't race the setter in startLiveDictation.)
+            guard liveTranscriber == nil, let model, let pipe = pipes[model] else { return }
+            pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
         }
     }
 
