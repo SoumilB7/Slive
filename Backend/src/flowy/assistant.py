@@ -561,11 +561,16 @@ async def _answer_gemini(
 # ---------------------------------------------------------------------------
 
 TRANSCRIBE_PROMPT = (
-    "Transcribe this audio recording verbatim. Output ONLY the words that are "
-    "spoken, with correct spelling, natural punctuation and capitalization, as "
-    "one plain-text passage. Do not add anything that was not said, do not "
-    "describe the audio or the speaker, no quotation marks around the output, "
-    "no markdown. If nothing intelligible is spoken, output an empty string."
+    "Transcribe this audio recording verbatim into English. Output ONLY the "
+    "words that are spoken, with correct spelling, natural punctuation and "
+    "capitalization, as one plain-text passage. The output must be entirely "
+    "English in Latin script: if any part of the speech is in another "
+    "language, do not transcribe it in that language or its script — replace "
+    "that part inline with its natural English translation, so the whole "
+    "output reads as one fluent English passage. Do not add anything that was "
+    "not said, do not describe the audio or the speaker, no quotation marks "
+    "around the output, no markdown. If nothing intelligible is spoken, "
+    "output an empty string."
 )
 
 
