@@ -24,6 +24,7 @@ enum SelfTest {
         wpmChecks()
         overlayMetricsChecks()
         sampleFormatChecks()
+        transcriptDiffChecks()
         print("===============\n\(passed) passed, \(failed) failed")
         exit(failed == 0 ? 0 : 1)
     }
@@ -310,5 +311,43 @@ enum SelfTest {
         } else {
             check(false, "ground-truth fields round-trip", "encode/decode threw")
         }
+    }
+
+    // MARK: - Transcript word-diff (Training table highlighting)
+
+    private static func transcriptDiffChecks() {
+        print("[TranscriptDiff — word-level LCS]")
+
+        let equal = TranscriptDiff.matchMask(
+            output: ["the", "same", "words"], truth: ["the", "same", "words"])
+        check(equal == [true, true, true], "equal strings match fully")
+
+        let insert = TranscriptDiff.matchMask(
+            output: ["the", "model", "loads"],
+            truth: ["the", "whisper", "model", "loads"])
+        check(insert == [true, false, true, true], "insertion marks only the new word")
+
+        let replace = TranscriptDiff.matchMask(
+            output: ["whisper", "kit", "engine"],
+            truth: ["WhisperKit", "engine"])
+        check(replace == [false, true], "replacement (incl. case change) marks the corrected word")
+
+        let emptyOut = TranscriptDiff.matchMask(output: [], truth: ["a", "b"])
+        check(emptyOut == [false, false], "empty output marks all truth words changed")
+
+        let short = TranscriptDiff.attributed(
+            output: "hello there world", truth: "hello brave world",
+            base: .white, changed: .orange)
+        check(short != nil, "short strings produce an attributed diff")
+        if let short {
+            check(String(short.characters) == "hello brave world",
+                  "attributed diff preserves the truth text verbatim")
+        }
+
+        let longWords = Array(repeating: "w", count: TranscriptDiff.maxWords + 1)
+            .joined(separator: " ")
+        let over = TranscriptDiff.attributed(
+            output: "short", truth: longWords, base: .white, changed: .orange)
+        check(over == nil, "over-length input falls back to whole-string styling (nil)")
     }
 }

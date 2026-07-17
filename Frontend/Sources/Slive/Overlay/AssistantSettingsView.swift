@@ -1,48 +1,26 @@
 import AppKit
 import SwiftUI
 
-/// The "Assistant" top-level section: configure the LLM hotkey, provider/keys,
-/// and the prompt that steers its answers. Its own sub-tabs, separate from the
-/// dictation settings.
+/// The Assistant page: one top-down setup flow — shortcut, provider/keys,
+/// prompt. Renders just its stack of cards — the host supplies the scroll
+/// container, padding, and width.
 struct AssistantSettingsView: View {
     @ObservedObject var settings: Settings
-    var accent: Color
+    @ObservedObject private var backend = BackendManager.shared
 
-    private enum ATab: String, CaseIterable, Identifiable {
-        case shortcut = "Shortcut"
-        case provider = "Provider"
-        case prompt = "Prompt"
-        var id: String { rawValue }
-    }
-
-    @State private var atab: ATab = .shortcut
     @State private var apiKeyDraft: String = ""
     @State private var promptNames: [String] = []
     @State private var loadingModels = false
     @State private var modelsError: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $atab) {
-                ForEach(ATab.allCases) { t in Text(t.rawValue).tag(t) }
+        VStack(spacing: SliveTheme.cardGap) {
+            if backend.status == .starting {
+                startingBanner
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 24)
-            .padding(.bottom, 4)
-
-            ScrollView {
-                VStack(spacing: 22) {
-                    switch atab {
-                    case .shortcut: shortcutSection
-                    case .provider: providerSection
-                    case .prompt:   promptSection
-                    }
-                }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 20)
-                .frame(maxWidth: .infinity)
-            }
+            shortcutCard
+            providerCard
+            promptCard
         }
         .onAppear {
             apiKeyDraft = settings.apiKey(for: settings.assistantConfig.provider)
@@ -50,96 +28,165 @@ struct AssistantSettingsView: View {
         }
     }
 
+    /// Shown only while the local backend is spinning up (it starts lazily on
+    /// the first ask or model fetch — offline beforehand is normal and silent).
+    private var startingBanner: some View {
+        HStack(spacing: 9) {
+            ProgressView().controlSize(.small)
+            Text("Backend starting…")
+                .font(SliveTheme.captionFont)
+                .foregroundStyle(SliveTheme.textSecondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.white.opacity(0.05))
+        )
+    }
+
     // MARK: - Shortcut
 
-    private var shortcutSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                step(icon: "hand.point.up.left.fill", title: "Hold", detail: assistantLabel)
-                arrow
-                step(icon: "waveform", title: "Ask", detail: "Speak")
-                arrow
-                step(icon: "sparkles", title: "Answer", detail: "In the box")
+    private var shortcutCard: some View {
+        SettingsCard("SHORTCUT") {
+            HotkeyRecorderView(
+                target: .assistant,
+                title: "Assistant shortcut",
+                subtitle: "Hold to ask the LLM — e.g. fn + control. Its answer appears in the floating box."
+            )
+            CardDivider()
+            if settings.assistantHotkey == nil {
+                Label("Assistant mode is off until you record a shortcut.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(.orange.opacity(0.9))
+            } else {
+                StepsRibbon(steps: [
+                    .init(icon: "hand.point.up.left.fill", text: "Hold",
+                          key: settings.assistantHotkey?.label),
+                    .init(icon: "waveform", text: "Speak"),
+                    .init(icon: "sparkles", text: "Answer appears"),
+                ])
             }
-
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("ASSISTANT SHORTCUT")
-                HotkeyRecorderView(
-                    accent: accent,
-                    target: .assistant,
-                    title: "Assistant shortcut",
-                    subtitle: "Hold to ask the LLM — e.g. fn + control. Its answer appears in the floating box."
-                )
-                if settings.assistantHotkey == nil {
-                    Text("Assistant mode is off until you record a shortcut.")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.orange.opacity(0.9))
-                }
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(card)
         }
     }
 
-    private var assistantLabel: String { settings.assistantHotkey?.label ?? "Not set" }
-
     // MARK: - Provider
 
-    private var providerSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionTitle("PROVIDER")
+    private var providerCard: some View {
+        SettingsCard("PROVIDER") {
+            // Zone A — provider + key presence at a glance.
+            HStack(spacing: 10) {
+                Text("Provider")
+                    .font(SliveTheme.rowFont)
+                    .foregroundStyle(SliveTheme.textPrimary)
+                Spacer()
+                KeyStatusPill(hasKey: !apiKeyDraft.isEmpty)
+                Picker("", selection: providerBinding) {
+                    ForEach(AssistantProvider.allCases) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(SliveTheme.accent)
+                .fixedSize()
+            }
 
-            Picker("Provider", selection: providerBinding) {
-                ForEach(AssistantProvider.allCases) { p in
-                    Text(p.displayName).tag(p)
+            // Zone B — one model field: type any id, or pick a fetched one.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Model")
+                        .font(SliveTheme.rowFont)
+                        .foregroundStyle(SliveTheme.textPrimary)
+                    Spacer()
+                    if loadingModels {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button { fetchModels() } label: {
+                            Label("Fetch live models", systemImage: "arrow.clockwise")
+                                .font(SliveTheme.font(11, .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(SliveTheme.accent)
+                    }
+                }
+                modelField
+                if let err = modelsError {
+                    Text(err)
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(.orange.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(currentFetched.isEmpty
+                         ? "Fetch live models to pick from your provider, or type any id."
+                         : "\(currentFetched.count) live models saved — refetch to update.")
+                        .sliveCaption()
                 }
             }
-            .pickerStyle(.menu)
-            .tint(accent)
 
-            modelPicker
-
+            // Zone C — secrets.
             if settings.assistantConfig.provider.needsBaseURL {
-                field(label: "Base URL", hint: "e.g. https://openrouter.ai/api/v1 or http://localhost:11434/v1",
-                      text: $settings.assistantConfig.baseURL,
-                      placeholder: "https://…/v1")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Base URL")
+                        .font(SliveTheme.rowFont)
+                        .foregroundStyle(SliveTheme.textPrimary)
+                    TextField("https://…/v1", text: $settings.assistantConfig.baseURL)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                    Text("OpenRouter, Groq, Ollama, LM Studio — anything that speaks the OpenAI API.")
+                        .sliveCaption()
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("API key")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.92))
+                    .font(SliveTheme.rowFont)
+                    .foregroundStyle(SliveTheme.textPrimary)
                 SecureField(settings.assistantConfig.provider.keyHint, text: $apiKeyDraft)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .onChange(of: apiKeyDraft) { _, new in
                         settings.setAPIKey(new, for: settings.assistantConfig.provider)
                     }
-                Text("Stored securely in your macOS Keychain — never written to disk in plain text.")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
+                Text("Kept in your macOS Keychain — never on disk.")
+                    .sliveCaption()
             }
 
-            Divider().overlay(.white.opacity(0.08))
+            CardDivider()
 
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle(isOn: $settings.assistantConfig.attachScreenshot) {
-                    Text("Attach a full-screen screenshot")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.92))
-                }
-                .toggleStyle(.switch)
-                .tint(accent)
-                Text("When on, a screenshot of your screen is sent with every assistant question. Needs Screen Recording permission (macOS asks the first time).")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            ToggleRow(
+                title: "Attach a full-screen screenshot",
+                caption: "Sends a screenshot with every question — macOS asks for Screen Recording once.",
+                isOn: $settings.assistantConfig.attachScreenshot
+            )
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(card)
+    }
+
+    /// The single model control: a mono text field showing exactly the id that
+    /// will be sent, with a trailing menu chip listing fetched models.
+    private var modelField: some View {
+        TextField(settings.assistantConfig.provider.defaultModel, text: selectedModel)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12, design: .monospaced))
+            .overlay(alignment: .trailing) {
+                if !currentFetched.isEmpty {
+                    Menu {
+                        ForEach(currentFetched, id: \.self) { m in
+                            Button(m) { selectedModel.wrappedValue = m }
+                        }
+                    } label: {
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(SliveTheme.accent)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .padding(.trailing, 6)
+                }
+            }
     }
 
     /// Reloads the key draft when the provider changes. The stored model list is
@@ -155,8 +202,8 @@ struct AssistantSettingsView: View {
         )
     }
 
-    /// Models remembered for the current provider (persisted; only refreshed when
-    /// you tap "Fetch live models").
+    /// Models remembered for the current provider (persisted; only refreshed
+    /// when you tap "Fetch live models").
     private var currentFetched: [String] {
         settings.assistantConfig.fetchedModels[settings.assistantConfig.provider.rawValue] ?? []
     }
@@ -170,69 +217,22 @@ struct AssistantSettingsView: View {
         )
     }
 
-    /// Fetched models, guaranteeing the currently-selected one is present so the
-    /// Picker always has a valid tag.
-    private var modelOptions: [String] {
-        var opts = currentFetched
-        let current = settings.assistantConfig.model(for: settings.assistantConfig.provider)
-        if !current.isEmpty && !opts.contains(current) { opts.insert(current, at: 0) }
-        return opts
-    }
-
-    @ViewBuilder private var modelPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Model")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.92))
-                Spacer()
-                if loadingModels {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button { fetchModels() } label: {
-                        Label("Fetch live models", systemImage: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(accent)
-                }
-            }
-
-            if !modelOptions.isEmpty {
-                Picker("", selection: selectedModel) {
-                    ForEach(modelOptions, id: \.self) { Text($0).tag($0) }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .tint(accent)
-            }
-
-            // Always allow a manual id (custom deployments, unreleased models).
-            TextField(settings.assistantConfig.provider.defaultModel, text: selectedModel)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-
-            if let err = modelsError {
-                Text(err)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.orange.opacity(0.9))
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text(currentFetched.isEmpty
-                     ? "Tap “Fetch live models” to load the list from your provider, or type an id."
-                     : "\(currentFetched.count) live models saved — pick one above, refetch to update, or type any id.")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-        }
-    }
-
     private func fetchModels() {
         loadingModels = true
         modelsError = nil
         let config = settings.assistantConfig
         let key = settings.apiKey(for: config.provider)
         Task {
+            // The backend serves /models and starts lazily — make sure it's up
+            // so a fetch never fails just because nothing asked it to spawn yet.
+            let healthy = await BackendManager.shared.ensureHealthy()
+            guard healthy else {
+                await MainActor.run {
+                    modelsError = "Couldn't start the local backend."
+                    loadingModels = false
+                }
+                return
+            }
             do {
                 let models = try await AssistantClient().listModels(config: config, apiKey: key)
                 await MainActor.run {
@@ -252,137 +252,63 @@ struct AssistantSettingsView: View {
 
     // MARK: - Prompt
 
-    private var promptSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private var promptCard: some View {
+        SettingsCard("PROMPT", trailing: {
+            Button("Open folder") { openPromptsFolder() }
+                .buttonStyle(.plain)
+                .font(SliveTheme.font(11, .semibold))
+                .foregroundStyle(SliveTheme.accent)
+        }) {
             HStack {
-                sectionTitle("PROMPT")
+                Text("System prompt")
+                    .font(SliveTheme.rowFont)
+                    .foregroundStyle(SliveTheme.textPrimary)
                 Spacer()
-                Button("Open folder") { openPromptsFolder() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(accent)
-            }
-
-            Picker("Prompt", selection: $settings.assistantConfig.promptName) {
-                Text("Custom…").tag("")
-                ForEach(promptNames, id: \.self) { name in
-                    Text(name).tag(name)
+                Picker("", selection: $settings.assistantConfig.promptName) {
+                    Text("Custom…").tag("")
+                    ForEach(promptNames, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(SliveTheme.accent)
+                .fixedSize()
             }
-            .pickerStyle(.menu)
-            .tint(accent)
 
             if settings.assistantConfig.promptName.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Custom system prompt")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.92))
-                    promptEditor($settings.assistantConfig.systemPrompt)
-                }
+                TextEditor(text: $settings.assistantConfig.systemPrompt)
+                    .font(SliveTheme.font(12))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .frame(height: 150)
+                    .innerWell()
             } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("From prompts/\(settings.assistantConfig.promptName)")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.75))
+                Label("prompts/\(settings.assistantConfig.promptName)",
+                      systemImage: "doc.text")
+                    .font(SliveTheme.font(12, .semibold))
+                    .foregroundStyle(SliveTheme.textMid)
+                // Long prompt files scroll inside a capped preview instead of
+                // blowing the card open.
+                ScrollView {
                     Text(PromptLibrary.contents(named: settings.assistantConfig.promptName)
                          ?? "(couldn't read this file)")
-                        .font(.system(size: 12, weight: .regular, design: .rounded))
+                        .font(SliveTheme.font(12, .regular))
                         .foregroundStyle(.white.opacity(0.7))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(.white.opacity(0.05))
-                        )
-                    Text("Edit this file in the prompts folder — changes apply on the next request.")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
                 }
+                .frame(maxHeight: 180)
+                .innerWell()
+                Text("Edit the file — changes apply on the next ask.")
+                    .sliveCaption()
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(card)
-    }
-
-    private func promptEditor(_ text: Binding<String>) -> some View {
-        TextEditor(text: text)
-            .font(.system(size: 12, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.9))
-            .scrollContentBackground(.hidden)
-            .padding(8)
-            .frame(minHeight: 120, maxHeight: 160)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(.white.opacity(0.06))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(.white.opacity(0.10), lineWidth: 0.8)
-                    )
-            )
     }
 
     private func openPromptsFolder() {
         guard let dir = PromptLibrary.directory else { return }
         NSWorkspace.shared.open(dir)
-    }
-
-    // MARK: - Shared bits
-
-    private func field(label: String, hint: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.92))
-            TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-            Text(hint)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.5))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func step(icon: String, title: String, detail: String) -> some View {
-        VStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(accent)
-                .frame(height: 24)
-            Text(title)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.9))
-            Text(detail)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .background(card)
-    }
-
-    private var arrow: some View {
-        Image(systemName: "chevron.right")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(.white.opacity(0.25))
-    }
-
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11, weight: .bold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.4))
-            .tracking(1.2)
-    }
-
-    private var card: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(.white.opacity(0.05))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(.white.opacity(0.08), lineWidth: 0.8)
-            )
     }
 }
