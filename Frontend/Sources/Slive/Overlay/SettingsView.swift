@@ -339,6 +339,20 @@ struct SettingsView: View {
             .toggleStyle(.switch)
             .tint(accent)
 
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $settings.echoCancellation) {
+                    Text("Echo cancellation (open mic)")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                }
+                .toggleStyle(.switch)
+                .tint(accent)
+                Text("Keeps what your speakers are playing (music, videos) out of the mic while you dictate — the same canceller FaceTime uses. Turn off if your mic sounds odd.")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider().overlay(.white.opacity(0.08))
 
             VStack(alignment: .leading, spacing: 6) {
