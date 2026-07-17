@@ -142,6 +142,13 @@ final class LiveTypist: @unchecked Sendable {
     /// but shrinks toward a fast floor when far behind so the frontier never lags
     /// unbounded; a gentle ceiling keeps the tail from crawling.
     private func forwardDelay(remaining: Int) -> TimeInterval {
+        Self.forwardDelay(remaining: remaining, cps: cps)
+    }
+
+    /// Pure pacing math, split out so tests can pin its bounds. Same formula as
+    /// always: cruise at `cps`, shrink toward the floor when far behind, ceiling
+    /// so the tail never crawls.
+    static func forwardDelay(remaining: Int, cps: Double) -> TimeInterval {
         let spread = min(1.5, max(0.35, 30.0 / max(cps, 1)))
         let fastest = cps > 0 ? 1.0 / cps : 0.033
         let slowest = 0.10

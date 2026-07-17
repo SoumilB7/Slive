@@ -114,7 +114,7 @@ final class ContinuousDictation {
     /// Drop Whisper's leading segment space (so the field doesn't start with a
     /// space) and strip anything unsafe. Control tokens / placeholder are already
     /// removed upstream; this is a final guard at the typing boundary.
-    private static func normalize(_ text: String) -> String {
+    static func normalize(_ text: String) -> String {   // internal for tests
         var t = text.replacingOccurrences(of: "Waiting for speech...", with: "")
         if t.contains("<|") {
             t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
