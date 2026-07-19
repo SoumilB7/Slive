@@ -59,14 +59,27 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
         pinsModels ? modelResidentGB : 0.05
     }
 
-    /// Relative energy index 0…1 for the chart's second series (assertion
-    /// clocks + per-hold priming are the real spenders).
+    /// Relative energy index 0…1 for the chart (per-dictation effort:
+    /// assertion clocks + per-hold priming are the real spenders).
     var energyIndex: Double {
         switch self {
         case .instant: return 1.0
         case .snappy: return 0.7
         case .relaxed: return 0.35
         case .feather: return 0.15
+        }
+    }
+
+    /// Relative ongoing battery drain 0…1 — the price of keeping tensors hot:
+    /// resident weights add memory pressure (swap on small Macs), warmups and
+    /// cold-primes burn ANE cycles between dictations, and the clock
+    /// assertion spends watts on every hold. Feather idles at nearly nothing.
+    var batteryIndex: Double {
+        switch self {
+        case .instant: return 1.0
+        case .snappy: return 0.6
+        case .relaxed: return 0.35
+        case .feather: return 0.1
         }
     }
 
@@ -85,7 +98,18 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
         let idle = pinsModels
             ? "instant, always"
             : "reloads on first hold after a break (seconds)"
-        return [("Model RAM", ram), ("CPU clocks", clocks),
+        let battery: String
+        switch self {
+        case .instant:
+            battery = "highest drain — hot tensors, max clocks, ANE primes"
+        case .snappy:
+            battery = "high while dictating (max clocks), calm between"
+        case .relaxed:
+            battery = "moderate — residency only, default clocks"
+        case .feather:
+            battery = "minimal — nothing stays hot"
+        }
+        return [("Model RAM", ram), ("Battery", battery), ("CPU clocks", clocks),
                 ("Neural Engine", prime), ("After idle", idle)]
     }
 

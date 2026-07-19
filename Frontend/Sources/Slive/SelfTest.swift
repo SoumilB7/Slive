@@ -231,6 +231,12 @@ enum SelfTest {
         let energies = SpeedTier.allCases.map(\.energyIndex)
         check(energies == energies.sorted(by: >) && Set(energies).count == energies.count,
               "tier energy strictly decreases Instant → Feather")
+        let batteries = SpeedTier.allCases.map(\.batteryIndex)
+        check(batteries == batteries.sorted(by: >) && Set(batteries).count == batteries.count,
+              "tier battery drain strictly decreases Instant → Feather")
+        check(SpeedTier.allCases.allSatisfy { tier in
+            tier.costLines(modelResidentGB: 1.2).contains { $0.0 == "Battery" }
+        }, "every tier's receipt itemizes battery")
         check(SpeedTier.feather.estimatedRamGB(modelResidentGB: 1.2) < 0.1,
               "Feather's idle RAM is near zero")
 

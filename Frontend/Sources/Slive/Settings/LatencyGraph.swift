@@ -33,6 +33,7 @@ struct LatencyGraphView: View {
             HStack(spacing: 14) {
                 legendDot(color: SliveTheme.accent, label: "Model RAM")
                 legendDot(color: .orange.opacity(0.9), label: "Energy")
+                legendDot(color: .yellow.opacity(0.85), label: "Battery")
                 Spacer()
                 // The machine checker behind the "maximum reach" tag: what
                 // this Mac is, and whether the numbers are measured or guessed.
@@ -131,9 +132,14 @@ struct LatencyGraphView: View {
         drawSeries(&ctx, xs: xs, ys: ramFractions.map(y),
                    color: SliveTheme.accent, selectedIndex: sel)
 
-        // Energy line (orange).
+        // Energy line (orange) — per-dictation effort.
         drawSeries(&ctx, xs: xs, ys: energyFractions.map(y),
                    color: .orange.opacity(0.9), selectedIndex: sel)
+
+        // Battery line (yellow) — the ongoing drain of keeping tensors hot.
+        let batteryFractions = tiers.map(\.batteryIndex)
+        drawSeries(&ctx, xs: xs, ys: batteryFractions.map(y),
+                   color: .yellow.opacity(0.85), selectedIndex: sel)
 
         // The fastest point carries this hardware's ceiling claim — backed by
         // MachineProfile and the measured decode rate, both shown in the
