@@ -335,8 +335,8 @@ enum SelfTest {
 
     private static func silenceTrimChecks() {
         print("[Silence trim]")
-        check(AppDelegate.postReleaseCaptureSeconds >= 0.5,
-              "post-release capture keeps at least 0.5s")
+        check(AppDelegate.postReleaseCaptureSeconds >= 0.3,
+              "post-release capture keeps at least 0.3s")
         let rate = 16_000
         let quiet = [Float](repeating: 0.001, count: rate)          // 1s near-silence
         let voice = [Float](repeating: 0.1, count: rate / 2)        // 0.5s clear voice

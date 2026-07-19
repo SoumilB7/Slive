@@ -39,9 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chatActive = false
     private var pendingTurn: (question: String, answer: String)?
 
-    /// The mic stays open for a full half-second AFTER release so quiet or slow
+    /// The mic stays open for 0.3 seconds AFTER release so quiet or slow
     /// final syllables are not clipped before transcription begins.
-    static let postReleaseCaptureSeconds: TimeInterval = 0.50
+    static let postReleaseCaptureSeconds: TimeInterval = 0.30
     /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
     private var pendingStop: DispatchWorkItem?
     /// When the hotkey lifted — anchor for the always-on release→typed log.
@@ -219,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             armWorkItem = nil
             return
         }
-        // Keep capturing for a full 0.5s so the final word cannot be clipped.
+        // Keep capturing for 0.3s so the final word cannot be clipped.
         // The pill stays visible and naturally changes to its processing state
         // when the delayed stop begins transcription.
         pendingStop?.cancel()
