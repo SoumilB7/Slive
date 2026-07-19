@@ -123,8 +123,10 @@ struct LatencyGraphView: View {
         let sel = selected.rawValue
         let tubeWidth: CGFloat = 22
         let tubeX = min(max(xs[sel] - tubeWidth / 2, 2), size.width - tubeWidth - 2)
-        let tubeRect = CGRect(x: tubeX, y: plotTop - 10,
-                              width: tubeWidth, height: (plotBottom + 4) - (plotTop - 10))
+        // Lifted so the bottom curve finishes ON the axis line, never past it
+        // — the capsule lives inside the plot, tangent to the baseline.
+        let tubeRect = CGRect(x: tubeX, y: plotTop - 14,
+                              width: tubeWidth, height: plotBottom - (plotTop - 14))
         let tube = Path(roundedRect: tubeRect,
                         cornerRadii: RectangleCornerRadii(
                             topLeading: tubeWidth / 2, bottomLeading: tubeWidth / 2,
