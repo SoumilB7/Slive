@@ -163,21 +163,10 @@ final class OverlayController {
     /// screen currently has the mouse. Always resets to the resting pill size —
     /// a previous result box may have left the panel grown.
     func show() {
-        present(size: OverlayMetrics.pillSize, interactive: false)
-    }
-
-    /// Present a result at its final size in one window-server update. Used when
-    /// the listening pill was hidden immediately on key release and a later
-    /// copy/assistant result needs to bring the panel back.
-    func showResult(size: NSSize) {
-        present(size: size, interactive: true)
-    }
-
-    private func present(size: NSSize, interactive: Bool) {
-        self.interactive = interactive
-        panel.ignoresMouseEvents = !interactive
+        interactive = false
+        panel.ignoresMouseEvents = true              // pill/transcribing stay click-through
         applyTopmostLevel()                          // refresh level (may be stale)
-        setPanelSize(size)
+        setPanelSize(OverlayMetrics.pillSize)
         reposition()
         panel.orderFrontRegardless()
         startTopmostHeartbeat()
@@ -185,9 +174,7 @@ final class OverlayController {
         Log.overlay("show frame=\(panel.frame) level=\(panel.level.rawValue)")
     }
 
-    /// Hide only the window. Session state deliberately survives: recording may
-    /// continue after key release, and a later result can still be presented.
-    func hideVisual() {
+    func hide() {
         stopTopmostHeartbeat()
         verifyWorkItem?.cancel(); verifyWorkItem = nil
         panel.orderOut(nil)
@@ -195,10 +182,6 @@ final class OverlayController {
         panel.ignoresMouseEvents = true              // reset to click-through
         // Reset for the next appearance so it never flashes at the grown size.
         setPanelSize(OverlayMetrics.pillSize)
-    }
-
-    func hide() {
-        hideVisual()
         // The model resets HERE, structurally — the "no animation loop while
         // hidden" guarantee used to depend on every call site remembering to
         // pair hide() with model.reset(). Ordering matters: reset AFTER

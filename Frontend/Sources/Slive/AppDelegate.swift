@@ -39,9 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chatActive = false
     private var pendingTurn: (question: String, answer: String)?
 
-    /// The mic stays open for a full half-second AFTER release. The listening
-    /// pill disappears immediately, so this correctness margin has no perceived
-    /// UI cost and protects quiet/slow final syllables from being clipped.
+    /// The mic stays open for a full half-second AFTER release so quiet or slow
+    /// final syllables are not clipped before transcription begins.
     static let postReleaseCaptureSeconds: TimeInterval = 0.50
     /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
     private var pendingStop: DispatchWorkItem?
@@ -220,15 +219,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             armWorkItem = nil
             return
         }
-        // Visual release is immediate, but audio release is deliberately not:
-        // keep capturing for a full 0.5s so the final word cannot be clipped.
-        // `hideVisual` preserves the session; stopRecording/stopLiveDictation
-        // later move it to transcribing, and any copy/assistant result can
-        // explicitly present the panel again.
+        // Keep capturing for a full 0.5s so the final word cannot be clipped.
+        // The pill stays visible and naturally changes to its processing state
+        // when the delayed stop begins transcription.
         pendingStop?.cancel()
         releasedAt = Date()   // anchors the release→typed timing log
-        overlay.hideVisual()
-        model.reset()
         let action = currentAction
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -412,7 +407,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             whisper.select(Settings.shared.continuousModel)
             let msg = "Preparing the transcription model — hold again in a moment."
             model.showResult(msg)
-            overlay.showResult(size: OverlayMetrics.panelSize(for: msg))
+            overlay.show()
+            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
+            overlay.setInteractive(true)
             scheduleCollapse(after: 3.5)
             return
         }
@@ -456,7 +453,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if !outcome.typed && !text.isEmpty {
                 model.showResult(text)
-                overlay.showResult(size: OverlayMetrics.panelSize(for: text))
+                overlay.resize(to: OverlayMetrics.panelSize(for: text))
+                overlay.setInteractive(true)          // copy button clickable
                 scheduleCollapse(after: resultDisplayDuration)
             } else {
                 model.finishListening()
@@ -510,7 +508,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AudioModel.ChatTurn(role: $0.role, text: $0.content)
         }
         model.beginStreaming(priorTurns: priorTurns, question: question)
-        overlay.showResult(size: OverlayMetrics.streamingPanelSize)
+        overlay.resize(to: OverlayMetrics.streamingPanelSize)
+        overlay.setInteractive(true)
 
         var accumulated = ""
         var lastRender = Date.distantPast
@@ -554,8 +553,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.showAssistantResult(trimmed)
         // Chat transcripts use the fixed scrolling box; a fresh single answer
         // sizes to its text.
-        overlay.showResult(size: wasChat ? OverlayMetrics.assistantStreamingPanelSize
-                                         : OverlayMetrics.assistantPanelSize(for: trimmed))
+        overlay.resize(to: wasChat ? OverlayMetrics.assistantStreamingPanelSize
+                                   : OverlayMetrics.assistantPanelSize(for: trimmed))
+        overlay.setInteractive(true)
         scheduleCollapse(after: assistantDisplayDuration)
     }
 
@@ -580,7 +580,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.finishListening(); hideOverlaySoon(); return
         }
         model.showResult(message)
-        overlay.showResult(size: OverlayMetrics.panelSize(for: message))
+        overlay.resize(to: OverlayMetrics.panelSize(for: message))
+        overlay.setInteractive(true)
         scheduleCollapse(after: 5.0)
     }
 
@@ -588,7 +589,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func showAssistantError(_ text: String) {
         pendingTurn = nil
         model.showResult(text)
-        overlay.showResult(size: OverlayMetrics.panelSize(for: text))
+        overlay.resize(to: OverlayMetrics.panelSize(for: text))
+        overlay.setInteractive(true)
         scheduleCollapse(after: 6.0)
     }
 
@@ -636,7 +638,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Auto-insert off (or blocked by a password field) → the copy box.
             model.showResult(trimmed)
-            overlay.showResult(size: OverlayMetrics.panelSize(for: trimmed))
+            overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
+            overlay.setInteractive(true)          // let the copy button be clicked
             scheduleCollapse(after: resultDisplayDuration)
         }
 
@@ -786,7 +789,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         endDictationActivity()
         let msg = "Backend is still starting — hold and try again in a moment."
         model.showResult(msg)
-        overlay.showResult(size: OverlayMetrics.panelSize(for: msg))
+        overlay.resize(to: OverlayMetrics.panelSize(for: msg))
+        overlay.setInteractive(true)
         scheduleCollapse(after: 3.5)
     }
 
