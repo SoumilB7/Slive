@@ -46,6 +46,21 @@ enum TranscriptDiff {
         return mask
     }
 
+    /// How far apart the pair is, word-level: 1 − LCS / max(word count) —
+    /// 0 = identical, 1 = nothing in common. Above ~0.5 the "correction" is
+    /// usually not a correction at all (the model answered, drifted, or got
+    /// different audio) and deserves a human look.
+    static func divergence(output: String, truth: String) -> Double {
+        let out = words(output)
+        let tru = words(truth)
+        if out.isEmpty && tru.isEmpty { return 0 }
+        guard !out.isEmpty, !tru.isEmpty else { return 1 }
+        // Too big to judge cheaply — don't flag rather than guess.
+        guard out.count <= maxWords, tru.count <= maxWords else { return 0 }
+        let common = matchMask(output: out, truth: tru).lazy.filter { $0 }.count
+        return 1 - Double(common) / Double(max(out.count, tru.count))
+    }
+
     /// The ground-truth string with corrected words emphasized, or nil when the
     /// caller should fall back to whole-string coloring: either side exceeds
     /// `maxWords`, or the correction is a pure DELETION (output has extra words,
@@ -84,6 +99,7 @@ enum TranscriptDiffCache {
     /// `styled` may legitimately be nil (the whole-string fallback) — a
     /// dictionary hit distinguishes "cached nil" from "not computed yet".
     private static var cache: [String: (truth: String, styled: AttributedString?)] = [:]
+    private static var offCache: [String: (truth: String, value: Double)] = [:]
 
     static func styled(id: String, output: String, truth: String,
                        base: Color, changed: Color) -> AttributedString? {
@@ -94,7 +110,22 @@ enum TranscriptDiffCache {
         return styled
     }
 
-    static func clear() { cache.removeAll() }
+    /// Memoized `TranscriptDiff.divergence` — the table asks per row per
+    /// render, and each ask is an LCS.
+    static func divergence(id: String, output: String, truth: String) -> Double {
+        if let hit = offCache[id], hit.truth == truth { return hit.value }
+        let value = TranscriptDiff.divergence(output: output, truth: truth)
+        offCache[id] = (truth, value)
+        return value
+    }
 
-    static func remove(id: String) { cache.removeValue(forKey: id) }
+    static func clear() {
+        cache.removeAll()
+        offCache.removeAll()
+    }
+
+    static func remove(id: String) {
+        cache.removeValue(forKey: id)
+        offCache.removeValue(forKey: id)
+    }
 }

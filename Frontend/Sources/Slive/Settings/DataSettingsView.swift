@@ -12,6 +12,7 @@ struct DataSettingsView: View {
     @ObservedObject private var player = AudioPreviewPlayer.shared
     @ObservedObject private var providers = ProviderStore.shared
     @Environment(\.sliveLayout) private var layout
+    @Environment(\.sliveScrollTo) private var scrollTo
     /// Navigates to the Models page (key entry lives there).
     var openModels: () -> Void = {}
 
@@ -138,6 +139,21 @@ struct DataSettingsView: View {
         store.samples.filter { store.audioURL($0) != nil }.count
     }
 
+    /// Whether this sample's ground truth disagrees with the output by more
+    /// than half — usually not a correction but a model gone wrong (answered
+    /// the audio, never received it, wrong row). Worth a human look.
+    private func isWayOff(_ sample: EditSample) -> Bool {
+        guard let llm = sample.llmTranscript else { return false }
+        return TranscriptDiffCache.divergence(
+            id: sample.id, output: sample.transcript, truth: llm) > 0.5
+    }
+
+    /// Way-off rows in table (newest-first) order — the triangle jumps to the
+    /// first of these.
+    private var wayOffIDs: [String] {
+        store.samples.reversed().filter(isWayOff).map(\.id)
+    }
+
     private var groundTruthCard: some View {
         SettingsCard("GROUND TRUTH", trailing: {
             // Key presence at a glance; tap to manage keys (or, for Local,
@@ -256,6 +272,21 @@ struct DataSettingsView: View {
                     .controlSize(.small)
                     .tint(.orange)
                     .help("Resume where the last run stopped — only the \(leftoverIDs.count) it didn't reach")
+                }
+
+                // Ground truths that disagree with the output by more than
+                // half are usually failures, not corrections — surface the
+                // count and jump to the first so they get eyes.
+                if !bulkRunning, !wayOffIDs.isEmpty {
+                    Button {
+                        scrollTo(wayOffIDs[0])
+                    } label: {
+                        Label("\(wayOffIDs.count) way off", systemImage: "exclamationmark.triangle.fill")
+                            .font(SliveTheme.font(11, .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.orange)
+                    .help("\(wayOffIDs.count) ground truths differ from the output by more than half — jump to the first and check it")
                 }
 
                 if bulkRunning {
@@ -387,9 +418,10 @@ struct DataSettingsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     tableHeaderRow
                     Divider().overlay(.white.opacity(0.1))
-                    // Newest first.
+                    // Newest first. `.id` anchors the way-off jump.
                     ForEach(Array(store.samples.reversed())) { sample in
                         dataRow(sample)
+                            .id(sample.id)
                         Divider().overlay(.white.opacity(0.06))
                     }
                 }
@@ -515,6 +547,14 @@ struct DataSettingsView: View {
         } else if let llm = sample.llmTranscript {
             HStack(alignment: .top, spacing: 6) {
                 llmTextView(llm, sample: sample)
+                // >50% divergence is rarely a correction — flag it for a
+                // human ear (listen, then redo or leave it).
+                if isWayOff(sample) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .help("Differs from the output by more than half — listen and redo if the model went wrong")
+                }
                 // Redo: a bad pull (wrong model, provider refusal like "I can't
                 // hear an audio recording") is stored like any other result —
                 // this re-runs the row with the currently selected model.

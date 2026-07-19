@@ -5,6 +5,22 @@ import SwiftUI
 // anatomy, status presentation — defined once here, consumed everywhere, so no
 // page hand-rolls fonts or opacities again.
 
+// MARK: - Scroll-to environment
+
+/// Jump the settings window's single scroll container to a `.id(...)` anchor.
+/// Set by SettingsView (which owns THE ScrollView); pages call it to deep-link
+/// into their own content (e.g. "jump to the first way-off row").
+private struct SliveScrollToKey: EnvironmentKey {
+    static let defaultValue: (String) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var sliveScrollTo: (String) -> Void {
+        get { self[SliveScrollToKey.self] }
+        set { self[SliveScrollToKey.self] = newValue }
+    }
+}
+
 // MARK: - Card chrome
 
 private struct SliveCardModifier: ViewModifier {

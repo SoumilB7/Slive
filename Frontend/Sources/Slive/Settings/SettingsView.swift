@@ -122,16 +122,25 @@ struct SettingsView: View {
     }
 
     /// THE scroll container — every page scrolls here, never internally.
+    /// Pages that need to jump to an anchor (`.id(...)` on a row) get a
+    /// scroll-to closure through `\.sliveScrollTo` instead of a proxy.
     private var scrollContainer: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                pageContent
-                    .padding(.top, layout == .compact ? 20 : 44)
-                    .frame(maxWidth: .infinity)
-                signoff
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    pageContent
+                        .padding(.top, layout == .compact ? 20 : 44)
+                        .frame(maxWidth: .infinity)
+                    signoff
+                }
+                .padding(.horizontal, SliveTheme.gutter)
+                .padding(.bottom, 14)
             }
-            .padding(.horizontal, SliveTheme.gutter)
-            .padding(.bottom, 14)
+            .environment(\.sliveScrollTo) { id in
+                withAnimation(.easeInOut(duration: 0.35)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
         }
     }
 

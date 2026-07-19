@@ -383,6 +383,19 @@ enum SelfTest {
             output: "short", truth: longWords, base: .white, changed: .orange)
         check(over == nil, "over-length input falls back to whole-string styling (nil)")
 
+        // Divergence — the "way off" flag's measure (flag fires above 0.5).
+        // (Plain `check` here: a local mask named `equal` shadows the helper.)
+        check(TranscriptDiff.divergence(output: "a b c d", truth: "a b c d") == 0,
+              "identical strings diverge 0")
+        check(TranscriptDiff.divergence(output: "a b c d", truth: "w x y z") == 1,
+              "disjoint strings diverge 1")
+        check(TranscriptDiff.divergence(output: "a b c d", truth: "a b y z") == 0.5,
+              "half-changed diverges exactly 0.5 — at the flag boundary, not past it")
+        check(TranscriptDiff.divergence(output: "a b c d", truth: "a x y z") > 0.5,
+              "three-quarters-changed crosses the way-off boundary")
+        check(TranscriptDiff.divergence(output: "", truth: "anything at all") == 1,
+              "empty output vs text diverges 1")
+
         // A realistic long dictation (300 words, one corrected) must produce a
         // real word-diff — the old 200-word cap painted such rows all-orange.
         var longOut = (0..<300).map { "word\($0)" }

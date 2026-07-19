@@ -2,9 +2,7 @@
 
 # Slive
 
-**Hold a key, speak, release — it's typed at your cursor, and it never left your Mac.**
-
-*Your whisper, truly yours.*
+**Your whisper, truly yours.**
 
 ![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-SwiftUI-F05138?logo=swift&logoColor=white)
