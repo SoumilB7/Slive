@@ -382,6 +382,16 @@ enum SelfTest {
         let over = TranscriptDiff.attributed(
             output: "short", truth: longWords, base: .white, changed: .orange)
         check(over == nil, "over-length input falls back to whole-string styling (nil)")
+
+        // A realistic long dictation (300 words, one corrected) must produce a
+        // real word-diff — the old 200-word cap painted such rows all-orange.
+        var longOut = (0..<300).map { "word\($0)" }
+        var longTru = longOut
+        longTru[150] = "corrected"
+        let longMask = TranscriptDiff.matchMask(output: longOut, truth: longTru)
+        check(longMask.filter { !$0 }.count == 1 && longMask[150] == false,
+              "300-word diff marks exactly the one corrected word")
+        longOut = []; longTru = []
     }
 
     // MARK: - Stitched release (seam merger)

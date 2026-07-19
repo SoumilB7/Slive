@@ -80,3 +80,23 @@ def test_download_endpoint_rejects_bad_id():
     r = client.post("/local/download", json={"repo_id": "not-valid"})
     assert r.status_code == 400
     assert "error" in r.json()
+
+
+def test_transcription_guard_rejects_meta_replies() -> None:
+    import pytest
+
+    from flowy.assistant import _guard_transcription
+
+    for reply in (
+        "Understood. Please share the audio or let me know how to proceed.",
+        "I can transcribe it as requested once you've provided the audio file.",
+        "Here is the transcription: hello world",
+    ):
+        with pytest.raises(ValueError, match="instead of transcribing"):
+            _guard_transcription(reply)
+
+    # Real transcripts pass through untouched — including ones that merely
+    # mention audio late in the text (the guard only reads the head).
+    ok = "Please check the recording pipeline. " + "x " * 120 + "the audio file was fine."
+    assert _guard_transcription(ok) == ok
+    assert _guard_transcription("Add the ability to delete one sample.") != ""

@@ -4,9 +4,11 @@ import SwiftUI
 /// Training table can highlight exactly the corrected words instead of painting
 /// the whole string orange. Pure logic — covered by `--self-test`.
 enum TranscriptDiff {
-    /// Above this many words on either side, fall back to whole-string styling
-    /// (quadratic LCS not worth it and the row is unreadable anyway).
-    static let maxWords = 200
+    /// Above this many words on either side, fall back to whole-string styling.
+    /// Long-form dictations run to several hundred words — a cap they actually
+    /// hit painted whole rows orange and read as a broken diff. 600² Int32
+    /// cells is ~1.4 MB, computed once per sample (memoized below).
+    static let maxWords = 600
 
     static func words(_ s: String) -> [String] {
         s.split(whereSeparator: { $0.isWhitespace }).map(String.init)
@@ -17,13 +19,15 @@ enum TranscriptDiff {
     static func matchMask(output: [String], truth: [String]) -> [Bool] {
         let n = output.count, m = truth.count
         guard n > 0, m > 0 else { return [Bool](repeating: false, count: m) }
-        // LCS length table (n+1)×(m+1).
-        var dp = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
+        // LCS length table (n+1)×(m+1), flat Int32 — at the 600-word cap a
+        // nested [[Int]] would transiently cost ~23 MB; this stays ~1.4 MB.
+        let stride = m + 1
+        var dp = [Int32](repeating: 0, count: (n + 1) * stride)
         for i in 1...n {
             for j in 1...m {
-                dp[i][j] = output[i - 1] == truth[j - 1]
-                    ? dp[i - 1][j - 1] + 1
-                    : max(dp[i - 1][j], dp[i][j - 1])
+                dp[i * stride + j] = output[i - 1] == truth[j - 1]
+                    ? dp[(i - 1) * stride + (j - 1)] + 1
+                    : max(dp[(i - 1) * stride + j], dp[i * stride + (j - 1)])
             }
         }
         // Walk back, marking truth words that are on the common subsequence.
@@ -33,7 +37,7 @@ enum TranscriptDiff {
             if output[i - 1] == truth[j - 1] {
                 mask[j - 1] = true
                 i -= 1; j -= 1
-            } else if dp[i - 1][j] >= dp[i][j - 1] {
+            } else if dp[(i - 1) * stride + j] >= dp[i * stride + (j - 1)] {
                 i -= 1
             } else {
                 j -= 1
