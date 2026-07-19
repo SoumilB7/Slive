@@ -25,6 +25,8 @@ struct DataSettingsView: View {
     @State private var gtError: String?
     @State private var confirmClear = false
     @State private var samplePage = 0
+    @State private var editingSampleID: String?
+    @State private var shouldBeDraft = ""
     /// Sample ids a bulk run didn't reach (it stops on the first error) — lets
     /// "Run left" resume exactly where it stopped instead of redoing the rest.
     @State private var remaining: [String] = []
@@ -172,9 +174,14 @@ struct DataSettingsView: View {
     /// than half — usually not a correction but a model gone wrong (answered
     /// the audio, never received it, wrong row). Worth a human look.
     private func isWayOff(_ sample: EditSample) -> Bool {
-        guard let llm = sample.llmTranscript else { return false }
+        guard let truth = effectiveTruth(sample) else { return false }
         return TranscriptDiffCache.divergence(
-            id: sample.id, output: sample.transcript, truth: llm) > 0.5
+            id: sample.id, output: sample.transcript, truth: truth) > 0.5
+    }
+
+    private func effectiveTruth(_ sample: EditSample) -> String? {
+        if !sample.finalText.isEmpty { return sample.finalText }
+        return sample.llmTranscript
     }
 
     /// Way-off rows in table (newest-first) order — the triangle jumps to the
@@ -600,6 +607,7 @@ struct DataSettingsView: View {
                 // Drop this one sample (audio + row).
                 Button {
                     if player.currentID == sample.id { player.stop() }
+                    if editingSampleID == sample.id { editingSampleID = nil }
                     TranscriptDiffCache.remove(id: sample.id)
                     store.remove(id: sample.id)
                 } label: {
@@ -616,14 +624,22 @@ struct DataSettingsView: View {
         .padding(.vertical, 9)
     }
 
-    /// SHOULD BE cell states: word-diffed LLM transcript → legacy final text →
-    /// spinner → "Get" wand → dash.
+    /// SHOULD BE cell states: inline human editor → manual correction →
+    /// word-diffed model transcript → spinner → Get/Edit actions → dash.
     @ViewBuilder private func shouldBeCell(_ sample: EditSample) -> some View {
-        if fetching.contains(sample.id) {
+        if editingSampleID == sample.id {
+            shouldBeEditor(sample)
+        } else if fetching.contains(sample.id) {
             ProgressView().controlSize(.small)
-        } else if let llm = sample.llmTranscript {
+        } else if let truth = effectiveTruth(sample) {
             HStack(alignment: .top, spacing: 6) {
-                llmTextView(llm, sample: sample)
+                truthTextView(truth, sample: sample)
+                if !sample.finalText.isEmpty {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.green)
+                        .help("Human edited — this label takes priority for training")
+                }
                 // >50% divergence is rarely a correction — flag it for a
                 // human ear (listen, then redo or leave it).
                 if isWayOff(sample) {
@@ -632,44 +648,102 @@ struct DataSettingsView: View {
                         .foregroundStyle(.orange)
                         .help("Differs from the output by more than half — listen and redo if the model went wrong")
                 }
-                // Redo: a bad pull (wrong model, provider refusal like "I can't
-                // hear an audio recording") is stored like any other result —
-                // this re-runs the row with the currently selected model.
-                Button { fetchGroundTruth(sample) } label: {
-                    Image(systemName: "arrow.clockwise")
+                if sample.finalText.isEmpty, sample.llmTranscript != nil {
+                    // Redo the model label. A human edit, once present, remains
+                    // authoritative and is never silently replaced.
+                    Button { fetchGroundTruth(sample) } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Re-transcribe with \(settings.groundTruthModel)")
+                }
+                Button { beginShouldBeEdit(sample) } label: {
+                    Image(systemName: "pencil")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(SliveTheme.accent)
                 }
                 .buttonStyle(.plain)
-                .help("Re-transcribe with \(settings.groundTruthModel)")
+                .help("Edit Should be")
             }
-        } else if !sample.finalText.isEmpty {
-            Text(sample.finalText)
-                .foregroundStyle(sample.edited ? .orange.opacity(0.95) : .white.opacity(0.75))
-                .textSelection(.enabled)
         } else if store.audioURL(sample) != nil {
-            Button { fetchGroundTruth(sample) } label: {
-                Label("Get", systemImage: "wand.and.stars")
-                    .font(SliveTheme.font(11, .semibold))
+            HStack(spacing: 8) {
+                Button { fetchGroundTruth(sample) } label: {
+                    Label("Get", systemImage: "wand.and.stars")
+                        .font(SliveTheme.font(11, .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("Transcribe with \(settings.groundTruthModel)")
+                Button { beginShouldBeEdit(sample) } label: {
+                    Label("Edit", systemImage: "pencil")
+                        .font(SliveTheme.font(11, .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(SliveTheme.accent)
+                .help("Write the correct transcript yourself")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .help("Transcribe with \(settings.groundTruthModel)")
         } else {
             Text("—").foregroundStyle(.white.opacity(0.4))
         }
     }
 
-    /// The word-diffed ground-truth text (whole-string fallback for over-length
+    private func beginShouldBeEdit(_ sample: EditSample) {
+        shouldBeDraft = effectiveTruth(sample) ?? sample.transcript
+        editingSampleID = sample.id
+    }
+
+    private func saveShouldBeEdit(_ sample: EditSample) {
+        let cleaned = shouldBeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        TranscriptDiffCache.remove(id: sample.id)
+        store.setManualTranscript(id: sample.id, text: cleaned)
+        editingSampleID = nil
+        shouldBeDraft = ""
+    }
+
+    private func shouldBeEditor(_ sample: EditSample) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            TextEditor(text: $shouldBeDraft)
+                .font(SliveTheme.font(12))
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .frame(minHeight: 72, maxHeight: 120)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(SliveTheme.wellFill)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(SliveTheme.accent.opacity(0.45), lineWidth: 1)
+                        )
+                )
+            HStack(spacing: 8) {
+                Button("Save") { saveShouldBeEdit(sample) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(SliveTheme.accent)
+                    .disabled(shouldBeDraft.trimmingCharacters(
+                        in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel") {
+                    editingSampleID = nil
+                    shouldBeDraft = ""
+                }
+                .buttonStyle(.bordered)
+            }
+            .controlSize(.mini)
+        }
+    }
+
+    /// The word-diffed effective truth (whole-string fallback for over-length
     /// corrections; deletions render as an underline on the neighboring word).
-    @ViewBuilder private func llmTextView(_ llm: String, sample: EditSample) -> some View {
+    @ViewBuilder private func truthTextView(_ truth: String, sample: EditSample) -> some View {
         if let diffed = TranscriptDiffCache.styled(
-            id: sample.id, output: sample.transcript, truth: llm,
+            id: sample.id, output: sample.transcript, truth: truth,
             base: .white.opacity(0.75), changed: .orange.opacity(0.95)) {
             Text(diffed).textSelection(.enabled)
         } else {
-            Text(llm)
-                .foregroundStyle(llm == sample.transcript
+            Text(truth)
+                .foregroundStyle(truth == sample.transcript
                                  ? .white.opacity(0.75) : .orange.opacity(0.95))
                 .textSelection(.enabled)
         }

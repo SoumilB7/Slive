@@ -13,17 +13,18 @@ struct EditSample: Codable, Identifiable {
     let app: String?
     /// What Slive typed in (the model's output for this section).
     let transcript: String
-    /// What that section read as when the field lost focus.
-    let finalText: String
+    /// Human-approved "Should be" text. Empty until edited in the Data page
+    /// (legacy rows may contain the old field-readback value).
+    var finalText: String
     /// Whether the user changed it (`finalText != transcript`).
-    let edited: Bool
+    var edited: Bool
     /// How sure we are the partition is correct:
     ///  - `high`   — both context anchors matched; the section is precise.
     ///  - `low`    — field was empty around the insertion (no anchors), so the
     ///               whole final value is treated as the section.
     ///  - `unresolved` — anchors couldn't be found (field edited beyond the
     ///               section, or value unreadable); `finalText` may be empty.
-    let confidence: String
+    var confidence: String
     /// Relative path (within the store) of the captured audio, if any.
     let audioFile: String?
     /// Ground-truth transcription from an audio-capable LLM (the "should be"
@@ -161,6 +162,21 @@ final class TrainingStore: ObservableObject {
         guard let idx = samples.firstIndex(where: { $0.id == id }) else { return }
         samples[idx].llmTranscript = text
         samples[idx].llmModel = model
+        if samples[idx].id == latest?.id { latest = samples[idx] }
+        rewriteIndex()
+    }
+
+    /// Save an explicit human correction from the Data page. `finalText` is
+    /// intentionally separate from `llmTranscript`: the backend's
+    /// BEST_AVAILABLE policy already prefers it, while the original model label
+    /// remains available for audit and re-running.
+    func setManualTranscript(id: String, text: String) {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty,
+              let idx = samples.firstIndex(where: { $0.id == id }) else { return }
+        samples[idx].finalText = cleaned
+        samples[idx].edited = true
+        samples[idx].confidence = "manual"
         if samples[idx].id == latest?.id { latest = samples[idx] }
         rewriteIndex()
     }

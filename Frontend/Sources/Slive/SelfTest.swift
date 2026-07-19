@@ -513,6 +513,20 @@ enum SelfTest {
         } else {
             check(false, "ground-truth fields round-trip", "encode/decode threw")
         }
+
+        var manual = withLLM
+        manual.finalText = "the human-approved transcript"
+        manual.edited = true
+        manual.confidence = "manual"
+        if let data = try? encoder.encode(manual),
+           let back = try? decoder.decode(EditSample.self, from: data) {
+            check(back.finalText == manual.finalText && back.edited
+                    && back.confidence == "manual"
+                    && back.llmTranscript == "hello world.",
+                  "manual label round-trips without replacing model ground truth")
+        } else {
+            check(false, "manual label round-trips", "encode/decode threw")
+        }
     }
 
     // MARK: - Transcript word-diff (Training table highlighting)
