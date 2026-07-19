@@ -115,20 +115,26 @@ struct LatencyGraphView: View {
         base.addLine(to: CGPoint(x: size.width, y: plotBottom))
         ctx.stroke(base, with: .color(.white.opacity(0.12)), lineWidth: 1)
 
-        // The selector: a big test-tube shape (straight sides, fully rounded
-        // bottom) parked over the chosen column — it wraps the points AND the
-        // labels below, reading as "this is where my dial sits".
+        // The selector: a slim test-tube vial over the chosen column —
+        // hairline walls, fully rounded bottom, and a faint "liquid" gradient
+        // pooled at the base. Thin enough that the series lines pass through
+        // it instead of colliding with it; the labels sit beneath, already
+        // emphasized by their selected styling.
         let sel = selected.rawValue
-        let tubeWidth = min(60, max(44, size.width / CGFloat(tiers.count) * 0.55))
+        let tubeWidth: CGFloat = 22
         let tubeX = min(max(xs[sel] - tubeWidth / 2, 2), size.width - tubeWidth - 2)
-        let tubeRect = CGRect(x: tubeX, y: plotTop - 8,
-                              width: tubeWidth, height: (size.height - 2) - (plotTop - 8))
+        let tubeRect = CGRect(x: tubeX, y: plotTop - 10,
+                              width: tubeWidth, height: (plotBottom + 4) - (plotTop - 10))
         let tube = Path(roundedRect: tubeRect,
                         cornerRadii: RectangleCornerRadii(
-                            topLeading: 9, bottomLeading: tubeWidth / 2,
-                            bottomTrailing: tubeWidth / 2, topTrailing: 9))
-        ctx.fill(tube, with: .color(SliveTheme.accent.opacity(0.10)))
-        ctx.stroke(tube, with: .color(SliveTheme.accent.opacity(0.45)), lineWidth: 1.2)
+                            topLeading: 4, bottomLeading: tubeWidth / 2,
+                            bottomTrailing: tubeWidth / 2, topTrailing: 4))
+        ctx.fill(tube, with: .linearGradient(
+            Gradient(colors: [SliveTheme.accent.opacity(0.02),
+                              SliveTheme.accent.opacity(0.18)]),
+            startPoint: CGPoint(x: tubeRect.midX, y: tubeRect.minY),
+            endPoint: CGPoint(x: tubeRect.midX, y: tubeRect.maxY)))
+        ctx.stroke(tube, with: .color(SliveTheme.accent.opacity(0.38)), lineWidth: 0.8)
 
         // RAM area + line (accent).
         var area = Path()
