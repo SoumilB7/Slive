@@ -773,13 +773,24 @@ async def transcribe_audio(
                 else "https://api.openai.com/v1"
             )
             audio_format = "mp3" if "mp3" in media_type or "mpeg" in media_type else "wav"
+
+            # PRIMARY: the dedicated transcriptions endpoint — it structurally
+            # CANNOT chat, so "the model answered my audio" is impossible by
+            # construction. Chat-audio models were caught both ignoring the
+            # audio AND answering it conversationally; no prompt or marker
+            # list fixes a chat API, so transcription simply doesn't use one.
+            direct = await _transcriptions_endpoint(
+                client, root, api_key, model, audio_b64, audio_format)
+            if direct is not None:
+                return direct
+
+            # Fallback only for OpenAI-compatible gateways that don't serve
+            # /audio/transcriptions: a guarded chat attempt (instructions in
+            # the system turn, the user turn is audio only).
             body = {
                 "model": model,
                 "modalities": ["text"],
                 "messages": [
-                    # Instructions ride in the system turn; the user turn is
-                    # ONLY the audio. A model can't answer "please provide the
-                    # audio" to a turn whose entire content is the audio.
                     {"role": "system", "content": TRANSCRIBE_PROMPT},
                     {"role": "user", "content": [
                         {"type": "input_audio",
@@ -797,18 +808,7 @@ async def transcribe_audio(
                 text = (data["choices"][0]["message"]["content"] or "").strip()
             except (KeyError, IndexError) as exc:
                 raise ValueError(f"Unexpected OpenAI response shape: {data}") from exc
-            try:
-                return _guard_transcription(text)
-            except ValueError:
-                # Deterministic layer: the dedicated transcriptions endpoint
-                # CANNOT chat — a transcript is its only possible output. If
-                # the chat-audio model went meta anyway, reroute instead of
-                # bothering the user.
-                fallback = await _transcriptions_endpoint(
-                    client, root, api_key, model, audio_b64, audio_format)
-                if fallback is not None:
-                    return fallback
-                raise
+            return _guard_transcription(text)
 
         if provider == "anthropic":
             raise ValueError(
