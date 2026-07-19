@@ -11,7 +11,13 @@ struct LatencyGraphView: View {
     @ObservedObject var settings: Settings
 
     private var tiers: [SpeedTier] { SpeedTier.allCases }
-    private var modelFactor: Double { SpeedTier.decodeFactor(for: settings.whisperModel) }
+    /// Measured on this machine when calibration exists, else the estimate.
+    private var effective: (factor: Double, measured: Bool) {
+        SpeedTier.effectiveFactor(
+            measuredRate: TranscriptionModel.measuredRate(for: settings.whisperModel),
+            model: settings.whisperModel)
+    }
+    private var modelFactor: Double { effective.factor }
     private var residentGB: Double { SpeedTier.residentGB(for: settings.whisperModel) }
     private var latencies: [Double] { tiers.map { $0.estimatedLatency(modelFactor: modelFactor) } }
     private var selected: SpeedTier { settings.resolvedSpeedTier }
@@ -19,7 +25,7 @@ struct LatencyGraphView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             chart
-                .frame(height: 148)
+                .frame(height: 162)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 8)
                 .innerWell()
@@ -28,7 +34,9 @@ struct LatencyGraphView: View {
                 legendDot(color: SliveTheme.accent, label: "Model RAM")
                 legendDot(color: .orange.opacity(0.9), label: "Energy")
                 Spacer()
-                Text("estimates for \(settings.whisperModel) — applies instantly")
+                // The machine checker behind the "maximum reach" tag: what
+                // this Mac is, and whether the numbers are measured or guessed.
+                Text("\(MachineProfile.summary) · \(effective.measured ? "measured on this Mac" : "estimate — calibrates as you dictate")")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textTertiary)
             }
@@ -86,7 +94,7 @@ struct LatencyGraphView: View {
     }
 
     private func draw(in ctx: inout GraphicsContext, size: CGSize, xs: [CGFloat]) {
-        let plotTop: CGFloat = 8
+        let plotTop: CGFloat = 28           // tag zone lives above the plot
         let plotBottom = size.height - 30   // room for the tier labels
         let plotHeight = plotBottom - plotTop
 
@@ -126,6 +134,27 @@ struct LatencyGraphView: View {
         // Energy line (orange).
         drawSeries(&ctx, xs: xs, ys: energyFractions.map(y),
                    color: .orange.opacity(0.9), selectedIndex: sel)
+
+        // The fastest point carries this hardware's ceiling claim — backed by
+        // MachineProfile and the measured decode rate, both shown in the
+        // caption row beneath the chart.
+        let tag = Text("this machine's maximum reach")
+            .font(SliveTheme.font(8.5, .semibold))
+            .foregroundColor(SliveTheme.accent)
+        let resolvedTag = ctx.resolve(tag)
+        let tagSize = resolvedTag.measure(in: CGSize(width: 220, height: 16))
+        let tagRect = CGRect(
+            x: min(max(xs[0] - 8, 2), size.width - tagSize.width - 14),
+            y: 4, width: tagSize.width + 12, height: tagSize.height + 5)
+        ctx.fill(Path(roundedRect: tagRect, cornerRadius: tagRect.height / 2),
+                 with: .color(SliveTheme.accent.opacity(0.12)))
+        ctx.stroke(Path(roundedRect: tagRect, cornerRadius: tagRect.height / 2),
+                   with: .color(SliveTheme.accent.opacity(0.3)), lineWidth: 0.8)
+        ctx.draw(resolvedTag, at: CGPoint(x: tagRect.midX, y: tagRect.midY))
+        var lead = Path()
+        lead.move(to: CGPoint(x: xs[0], y: tagRect.maxY + 1))
+        lead.addLine(to: CGPoint(x: xs[0], y: plotTop - 2))
+        ctx.stroke(lead, with: .color(SliveTheme.accent.opacity(0.3)), lineWidth: 1)
 
         // Tier labels along the X axis: latency first (it IS the axis), name under.
         for (i, tier) in tiers.enumerated() {

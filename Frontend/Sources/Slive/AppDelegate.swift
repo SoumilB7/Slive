@@ -400,10 +400,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // Unconditional: one line per dictation, and THE number to check
             // whenever "dictation feels slow" comes up again.
+            let decodeSeconds = Date().timeIntervalSince(tTranscribe)
             NSLog("Slive: decoded %.1fs audio in %.2fs (%@)%@",
-                  duration, Date().timeIntervalSince(tTranscribe), whisperModel,
+                  duration, decodeSeconds, whisperModel,
                   ProcessInfo.processInfo.isLowPowerModeEnabled
                       ? " [LOW POWER MODE — decode throttled]" : "")
+            // Calibrate the speed graph with what this machine actually did
+            // (voiced audio only — trimmed silence never reached the decoder).
+            if transcript?.isEmpty == false {
+                TranscriptionModel.recordDecode(
+                    model: whisperModel,
+                    audioSeconds: Double(voiced.count) / 16_000,
+                    decodeSeconds: decodeSeconds)
+            }
             if Task.isCancelled { return }
             guard let text = transcript, !text.isEmpty else {
                 await MainActor.run { self.handleNoTranscript() }

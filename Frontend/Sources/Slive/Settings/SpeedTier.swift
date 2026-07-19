@@ -91,6 +91,21 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
 
     // MARK: - Model-derived inputs
 
+    /// Seconds of audio in the "typical short dictation" all latency
+    /// estimates are quoted for.
+    static let typicalDictationSeconds = 8.0
+
+    /// The decode factor the graph should use: THIS machine's measured
+    /// decode rate (× a typical dictation) once calibration exists, else the
+    /// static family estimate. `measured` tells the UI which one it got.
+    static func effectiveFactor(measuredRate: Double?, model: String)
+        -> (factor: Double, measured: Bool) {
+        if let rate = measuredRate, rate > 0 {
+            return (rate * typicalDictationSeconds, true)
+        }
+        return (decodeFactor(for: model), false)
+    }
+
     /// Decode-speed factor: rough seconds to decode a short (~8s) dictation
     /// on the Neural Engine, by checkpoint family.
     static func decodeFactor(for model: String) -> Double {

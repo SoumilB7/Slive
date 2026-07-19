@@ -377,6 +377,33 @@ final class TranscriptionModel: ObservableObject {
         }
     }
 
+    // MARK: - Measured decode rate (calibration for the speed graph)
+
+    /// Rolling decode-seconds per audio-second, per model, persisted — the
+    /// speed graph shows THIS machine's measured numbers instead of the
+    /// static family guesses once a few dictations exist.
+    private static let decodeRatesKey = "decodeRates"
+
+    /// EMA blend: measurements settle fast but one outlier can't lie.
+    nonisolated static func blendedRate(old: Double?, new: Double) -> Double {
+        old.map { $0 * 0.7 + new * 0.3 } ?? new
+    }
+
+    nonisolated static func measuredRate(for model: String) -> Double? {
+        (UserDefaults.standard.dictionary(forKey: decodeRatesKey) as? [String: Double])?[model]
+    }
+
+    /// Record one real decode (ignores sub-second clips and warmups — their
+    /// rates are all overhead, no signal).
+    nonisolated static func recordDecode(model: String, audioSeconds: Double,
+                                         decodeSeconds: Double) {
+        guard audioSeconds > 1, decodeSeconds > 0 else { return }
+        var rates = (UserDefaults.standard.dictionary(forKey: decodeRatesKey)
+                     as? [String: Double]) ?? [:]
+        rates[model] = blendedRate(old: rates[model], new: decodeSeconds / audioSeconds)
+        UserDefaults.standard.set(rates, forKey: decodeRatesKey)
+    }
+
     // MARK: - Warmup + residency (speed vs battery)
 
     /// Stamped at the start of every decode; drives the battery-mode idle
