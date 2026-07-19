@@ -182,6 +182,38 @@ enum SelfTest {
         let plain = CGEvent(keyboardEventSource: nil, virtualKey: 4, keyDown: true)!
         plain.flags = []
         check(!m.handle(type: .keyDown, event: plain), "plain key passes through")
+
+        // macOS synthesizes arrow/Home/End/Page keys as fn+key: their keyDown
+        // and keyUp events CARRY maskSecondaryFn without fn ever being
+        // touched. They must never read as the fn hotkey (this was the
+        // "dictation starts out of nowhere" bug).
+        started = []; stopped = []
+        m = makeMonitor(started: { started.append($0) }, stopped: { stopped.append($0) })
+        let arrowDown = CGEvent(keyboardEventSource: nil, virtualKey: 123, keyDown: true)!
+        arrowDown.flags = CGEventFlags(rawValue: fn)
+        check(!m.handle(type: .keyDown, event: arrowDown) && started.isEmpty,
+              "fn-flagged arrow key-down cannot phantom-start dictation")
+        let arrowUp = CGEvent(keyboardEventSource: nil, virtualKey: 123, keyDown: false)!
+        arrowUp.flags = CGEventFlags(rawValue: fn)
+        _ = m.handle(type: .keyUp, event: arrowUp)
+        check(started.isEmpty && stopped.isEmpty,
+              "fn-flagged arrow key-up is equally inert")
+        // The real gesture still works after the arrow noise.
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(fn))
+        equal(started, [.dictate], "real fn flagsChanged still starts dictate")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(0))
+        equal(stopped, [.dictate], "and still releases")
+
+        // The stuck-hold watchdog's decision logic: release exactly when the
+        // physical state no longer holds every required modifier.
+        check(HotkeyMonitor.physicallyReleased(requiredModifiers: fn, physicalFlags: 0),
+              "watchdog releases when fn is physically up")
+        check(!HotkeyMonitor.physicallyReleased(requiredModifiers: fn, physicalFlags: fn),
+              "watchdog holds while fn is physically down")
+        check(HotkeyMonitor.physicallyReleased(requiredModifiers: fn | ctrl, physicalFlags: fn),
+              "watchdog releases when only part of a combo remains")
+        check(!HotkeyMonitor.physicallyReleased(requiredModifiers: fn, physicalFlags: fn | cmd),
+              "extra held modifiers don't count as release")
     }
 
     // MARK: - Provider model (Local runs keyless, on-device)

@@ -108,6 +108,7 @@ final class HotkeyMonitor {
     func stop() {
         pollTimer?.invalidate(); pollTimer = nil
         healthTimer?.invalidate(); healthTimer = nil
+        releaseWatchdog?.invalidate(); releaseWatchdog = nil
         if let obs = wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
             wakeObserver = nil
@@ -260,13 +261,20 @@ final class HotkeyMonitor {
                let t = targets.first(where: { $0.action == a }),
                flags != t.hotkey.modifiers {
                 if let held = activeAction { activeAction = nil; onStop?(held) }
+                syncReleaseWatchdog()
             }
         default:
             break
         }
 
-        // 2. Modifier-only shortcuts. Skipped while a chord is engaged (that
-        //    engagement owns `activeAction`).
+        // 2. Modifier-only shortcuts — driven by flagsChanged ONLY. Modifiers
+        //    going down or up always emit flagsChanged, so nothing is lost;
+        //    what's GAINED is immunity to macOS's fn spoofing: arrow, Home/
+        //    End, and Page keys carry maskSecondaryFn in their keyDown/keyUp
+        //    flags on Apple keyboards (the OS synthesizes them as fn+key), so
+        //    matching on those event types made a bare arrow press read as
+        //    "fn held" — phantom dictation out of nowhere. Skipped while a
+        //    chord is engaged (that engagement owns `activeAction`).
         //
         //    Precedence: an EXACT flag match is the single gesture the user is
         //    making, so it wins (this keeps a superset chord like fn+ctrl from
@@ -275,7 +283,7 @@ final class HotkeyMonitor {
         //    shortcut whose modifiers are ALL held wins. `targets` is ordered
         //    dictate → assist → stream, so plain (all-at-once) dictation
         //    dominates over the continuous and assistant keys.
-        if engagedKeyCode == nil {
+        if engagedKeyCode == nil, type == .flagsChanged {
             let mods = modifierOnlyTargets   // cached; no per-event filter
             let matched: HotkeyAction? =
                 mods.first { $0.hotkey.modifiers == flags }?.action
@@ -283,9 +291,61 @@ final class HotkeyMonitor {
             if matched != activeAction {
                 if let a = activeAction { activeAction = nil; onStop?(a) }
                 if let m = matched { activeAction = m; onStart?(m) }
+                syncReleaseWatchdog()
             }
         }
         return false
+    }
+
+    // MARK: - Physical-state release watchdog (the un-stick guarantee)
+
+    /// A hold can get stuck when the release event is missed — the tap was
+    /// disabled by a timeout mid-hold, the lid closed, secure input stole the
+    /// event stream. While anything is held, poll the PHYSICAL keyboard state
+    /// (0.2s) and release the moment the keys aren't actually down. Runs only
+    /// during a hold: zero idle cost.
+    private var releaseWatchdog: Timer?
+
+    private func syncReleaseWatchdog() {
+        if activeAction == nil {
+            releaseWatchdog?.invalidate()
+            releaseWatchdog = nil
+        } else if releaseWatchdog == nil {
+            let t = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+                self?.verifyPhysicalHold()
+            }
+            t.tolerance = 0.05
+            RunLoop.main.add(t, forMode: .common)
+            releaseWatchdog = t
+        }
+    }
+
+    /// Pure decision, self-tested: with these modifiers required, does this
+    /// physical flag state mean the hold is over?
+    static func physicallyReleased(requiredModifiers: UInt64, physicalFlags: UInt64) -> Bool {
+        (physicalFlags & requiredModifiers) != requiredModifiers
+    }
+
+    private func verifyPhysicalHold() {
+        guard let action = activeAction else { syncReleaseWatchdog(); return }
+        let physical = CGEventSource.flagsState(.hidSystemState).rawValue & Hotkey.modifierMask
+        if let engaged = engagedKeyCode {
+            // Chord: the key itself and its modifiers must both still be down.
+            guard let t = targets.first(where: { $0.action == action }) else { return }
+            if !CGEventSource.keyState(.hidSystemState, key: CGKeyCode(engaged))
+                || Self.physicallyReleased(requiredModifiers: t.hotkey.modifiers,
+                                           physicalFlags: physical) {
+                Log.hotkey("watchdog: chord physically released — unsticking")
+                engagedKeyCode = nil
+                release()
+            }
+            return
+        }
+        guard let t = modifierOnlyTargets.first(where: { $0.action == action }) else { return }
+        if Self.physicallyReleased(requiredModifiers: t.hotkey.modifiers, physicalFlags: physical) {
+            Log.hotkey("watchdog: \(action) physically released — unsticking")
+            release()
+        }
     }
 
     /// Engage a chord action, releasing any previously-held action first.
@@ -293,11 +353,13 @@ final class HotkeyMonitor {
         if let a = activeAction, a != action { activeAction = nil; onStop?(a) }
         engagedKeyCode = engagedKey
         if activeAction != action { activeAction = action; onStart?(action) }
+        syncReleaseWatchdog()
     }
 
     /// Release whatever action is currently held.
     private func release() {
         if let a = activeAction { activeAction = nil; onStop?(a) }
+        syncReleaseWatchdog()
     }
 
     // MARK: - Permissions
