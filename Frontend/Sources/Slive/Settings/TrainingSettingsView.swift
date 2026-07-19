@@ -100,10 +100,17 @@ struct TrainingSettingsView: View {
             Text("Teach a WhisperKit model your voice from the dictations you corrected on the Data page.")
                 .sliveCaption()
 
+            // 1. Can I train yet? — the first question, answered first.
+            readinessSection
+
+            CardDivider()
+
+            // 2. What to train.
             choicesRow
             summaryLine
             advancedDisclosure
 
+            // 3. The journey your data takes (comes alive during a run).
             stageRail
                 .padding(.vertical, 6)
 
@@ -127,7 +134,8 @@ struct TrainingSettingsView: View {
 
             CardDivider()
 
-            readinessRow
+            // 4. Go.
+            trainButtonRow
 
             if let jobError {
                 Text(jobError)
@@ -487,75 +495,118 @@ struct TrainingSettingsView: View {
         .padding(.horizontal, 2)
     }
 
-    private var readinessRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                if let readiness {
-                    // Both gates, each with its own verdict color — training
-                    // unlocks only when the two are green together.
-                    gatePill(
-                        met: readiness.eligibleCount >= readiness.requiredSamples,
-                        text: "\(readiness.eligibleCount) / \(readiness.requiredSamples) recordings")
-                    gatePill(
+    /// "Can I train yet?" — shown as progress toward the two gates when you're
+    /// not there, and a green all-clear once you are. Leads the card so the
+    /// answer is the first thing you see, not the last.
+    @ViewBuilder private var readinessSection: some View {
+        if let readiness {
+            if readiness.ready {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.green)
+                    Text("Ready to train")
+                        .font(SliveTheme.rowFont)
+                        .foregroundStyle(.green)
+                    Text("· \(readiness.eligibleCount) recordings · \(String(format: "%.1f", readiness.eligibleAudioMinutes)) min")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textTertiary)
+                    Spacer(minLength: 0)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    readinessBar(
+                        label: "Recordings",
+                        valueText: "\(readiness.eligibleCount) of \(readiness.requiredSamples)",
+                        fraction: readiness.requiredSamples <= 0 ? 1
+                            : Double(readiness.eligibleCount) / Double(readiness.requiredSamples),
+                        met: readiness.eligibleCount >= readiness.requiredSamples)
+                    readinessBar(
+                        label: "Speech",
+                        valueText: String(format: "%.1f of %.0f min",
+                                          readiness.eligibleAudioMinutes,
+                                          max(readiness.requiredAudioMinutes, 0)),
+                        fraction: readiness.requiredAudioMinutes <= 0 ? 1
+                            : min(1, readiness.eligibleAudioMinutes / readiness.requiredAudioMinutes),
                         met: readiness.requiredAudioMinutes <= 0
-                            || readiness.eligibleAudioMinutes >= readiness.requiredAudioMinutes,
-                        text: String(format: "%.1f / %.0f min audio",
-                                     readiness.eligibleAudioMinutes,
-                                     max(readiness.requiredAudioMinutes, 0)))
-                    Spacer(minLength: 0)
-                    if !readiness.ready {
-                        Button("Open Data") { openData() }
-                            .buttonStyle(.plain)
-                            .font(SliveTheme.font(11, .semibold))
-                            .foregroundStyle(SliveTheme.accent)
+                            || readiness.eligibleAudioMinutes >= readiness.requiredAudioMinutes)
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("Slive trains once you've banked \(readiness.requiredSamples) solid recordings — real audio with a 3-plus-word fix — and \(Int(max(readiness.requiredAudioMinutes, 1))) minutes of speech.")
+                            .sliveCaption()
+                        Spacer(minLength: 0)
+                        Button {
+                            openData()
+                        } label: {
+                            Label("Add data", systemImage: "arrow.right")
+                                .font(SliveTheme.font(11, .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(SliveTheme.accent)
+                        .fixedSize()
                     }
-                } else {
-                    Spacer(minLength: 0)
                 }
-
-                Button {
-                    start()
-                } label: {
-                    Label(job?.isActive == true ? "Training…" : "Train",
-                          systemImage: "waveform.path.ecg")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(SliveTheme.accent)
-                .controlSize(.small)
-                .disabled(readiness?.ready != true || job?.isActive == true)
-
-                Button {
-                    refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(SliveTheme.accent)
-                .help("Refresh readiness and job state")
             }
-
-            if let readiness, !readiness.ready {
-                Text("Training wakes up once you've banked \(readiness.requiredSamples) solid recordings — real audio with a 3-plus-word fix — and \(Int(max(readiness.requiredAudioMinutes, 1))) minutes of speech.")
-                    .sliveCaption()
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking your data…").sliveCaption()
             }
         }
     }
 
-    private func gatePill(met: Bool, text: String) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: met ? "checkmark.circle.fill" : "circle.dashed")
-                .font(.system(size: 10, weight: .semibold))
-            Text(text).font(SliveTheme.mono(11))
+    /// One gate as a labelled progress bar — clearer than a bare "3 / 50".
+    private func readinessBar(label: String, valueText: String,
+                              fraction: Double, met: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(label)
+                    .font(SliveTheme.font(12, .semibold))
+                    .foregroundStyle(SliveTheme.textPrimary)
+                Spacer()
+                Text(valueText)
+                    .font(SliveTheme.mono(11))
+                    .foregroundStyle(met ? Color.green : .orange)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.08)).frame(height: 5)
+                    Capsule()
+                        .fill(met ? Color.green : SliveTheme.accent)
+                        .frame(width: max(4, geo.size.width * CGFloat(min(1, max(0, fraction)))),
+                               height: 5)
+                }
+                .frame(height: 5)
+            }
+            .frame(height: 5)
         }
-        .foregroundStyle(met ? Color.green : .orange)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(
-            Capsule().fill(.white.opacity(0.05))
-                .overlay(Capsule().strokeBorder((met ? Color.green : .orange).opacity(0.25),
-                                                lineWidth: 0.8))
-        )
+    }
+
+    /// The action, anchored at the bottom of the card where actions belong.
+    private var trainButtonRow: some View {
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+            Button {
+                start()
+            } label: {
+                Label(job?.isActive == true ? "Training…" : "Train",
+                      systemImage: "waveform.path.ecg")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(SliveTheme.accent)
+            .controlSize(.small)
+            .disabled(readiness?.ready != true || job?.isActive == true)
+
+            Button {
+                refresh()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(SliveTheme.accent)
+            .help("Refresh readiness and job state")
+        }
     }
 
     // MARK: - Training signal (loss + KL, live)
