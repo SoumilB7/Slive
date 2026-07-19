@@ -124,12 +124,25 @@ struct SettingsView: View {
     /// THE scroll container — every page scrolls here, never internally.
     private var scrollContainer: some View {
         ScrollView {
-            pageContent
-                .padding(.horizontal, SliveTheme.gutter)
-                .padding(.top, layout == .compact ? 20 : 44)
-                .padding(.bottom, 32)
-                .frame(maxWidth: .infinity)
+            VStack(spacing: 0) {
+                pageContent
+                    .padding(.top, layout == .compact ? 20 : 44)
+                    .frame(maxWidth: .infinity)
+                signoff
+            }
+            .padding(.horizontal, SliveTheme.gutter)
+            .padding(.bottom, 14)
         }
+    }
+
+    /// The brand sign-off, bottom-right of every page.
+    private var signoff: some View {
+        Text("Your whisper, truly yours.")
+            .font(SliveTheme.font(11, .medium))
+            .italic()
+            .foregroundStyle(SliveTheme.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.top, 26)
     }
 
     /// Width cap for plain form pages at the current tier.
