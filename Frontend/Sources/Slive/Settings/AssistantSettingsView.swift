@@ -94,7 +94,7 @@ struct AssistantSettingsView: View {
                     .foregroundStyle(SliveTheme.textPrimary)
                 Spacer()
                 Picker("", selection: providerBinding) {
-                    ForEach(AssistantProvider.allCases) { p in
+                    ForEach(AssistantProvider.assistantChoices) { p in
                         Text(p.displayName).tag(p)
                     }
                 }

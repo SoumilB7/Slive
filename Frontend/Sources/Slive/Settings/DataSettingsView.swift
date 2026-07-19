@@ -104,17 +104,18 @@ struct DataSettingsView: View {
     // MARK: - Ground truth
 
     /// Providers whose models accept audio input (Anthropic's API doesn't).
-    /// Local qualifies via audio-capable downloads (e.g. Gemma 3n) — a
-    /// non-audio pick fails loudly with a clear error, like any wrong model.
-    private let audioProviders: [AssistantProvider] = [.gemini, .openai, .openaiCompatible, .local]
+    /// Local qualifies via audio-capable downloads (e.g. Gemma 3n); Whisper is
+    /// the fully on-device judge — dictate on Tiny, ground-truth with Accurate.
+    private let audioProviders: [AssistantProvider] = [.gemini, .openai, .openaiCompatible, .local, .whisper]
 
     /// Default audio-capable model per provider. (OpenAI's `gpt-4o-audio-preview`
     /// was superseded — `gpt-audio` is the GA audio chat model; accounts without
-    /// the legacy preview 404 on it.)
+    /// the legacy preview 404 on it. Whisper defaults to the Accurate judge.)
     private func defaultAudioModel(_ p: AssistantProvider) -> String {
         switch p {
         case .gemini: return "gemini-2.5-flash"
         case .openai: return "gpt-audio"
+        case .whisper: return "large-v3"
         default: return ""
         }
     }
@@ -159,17 +160,21 @@ struct DataSettingsView: View {
             // Key presence at a glance; tap to manage keys (or, for Local,
             // downloaded models) in Models.
             Button(action: openModels) {
-                if settings.groundTruthProvider.isLocal {
+                if settings.groundTruthProvider.isLocal || settings.groundTruthProvider == .whisper {
                     OnDevicePill()
                 } else {
                     KeyStatusPill(hasKey: providers.hasKey(settings.groundTruthProvider))
                 }
             }
             .buttonStyle(.plain)
-            .help(settings.groundTruthProvider.isLocal
+            .help(settings.groundTruthProvider == .whisper
+                  ? "Runs fully on this Mac — no key"
+                  : settings.groundTruthProvider.isLocal
                   ? "Models are downloaded in Models" : "Keys are managed in Models")
         }) {
-            Text("A model with ears re-transcribes your audio into the Should-be column — the answer key Slive learns from.")
+            Text(settings.groundTruthProvider == .whisper
+                 ? "A bigger Whisper re-judges your audio on-device — dictate on Tiny, ground-truth with Accurate. No cloud, no key."
+                 : "A model with ears re-transcribes your audio into the Should-be column — the answer key Slive learns from.")
                 .sliveCaption()
 
             HStack(spacing: 10) {
@@ -190,7 +195,17 @@ struct DataSettingsView: View {
                         Task { await providers.fetchModels(for: .local) }
                     }
                 }
+                if settings.groundTruthProvider == .whisper { Spacer(minLength: 0) }
+            }
 
+            if settings.groundTruthProvider == .whisper {
+                // The SAME picker + download linkage as the dictation model
+                // card — status dot, download button, progress, all of it.
+                ModelPickerRows(model: $settings.groundTruthModel)
+            }
+
+            if settings.groundTruthProvider != .whisper {
+            HStack(spacing: 10) {
                 // The model id that will be sent, with a trailing chip listing
                 // the provider's live (audio-capable) models once fetched — so a
                 // wrong guess turns into a pick instead of a 404.
@@ -230,6 +245,7 @@ struct DataSettingsView: View {
                           ? "List your downloaded models"
                           : "Fetch this provider's live model list")
                 }
+            }
             }
 
             HStack(spacing: 10) {
@@ -312,6 +328,25 @@ struct DataSettingsView: View {
         }
     }
 
+    /// One transcription, routed by provider: Whisper runs entirely in-app on
+    /// the WhisperKit registry (no backend, no key); everything else goes
+    /// through the backend proxy.
+    private func groundTruthText(url: URL, provider: AssistantProvider,
+                                 model: String) async throws -> String {
+        if provider == .whisper {
+            guard let text = await TranscriptionModel.shared.transcribe(url, model: model),
+                  !text.isEmpty else {
+                throw GroundTruthClient.GroundTruthError.server(
+                    "Whisper \(model) isn't ready — download it above, or the clip was silent.")
+            }
+            return text
+        }
+        return try await GroundTruthClient().transcribe(
+            audioURL: url, provider: provider, model: model,
+            apiKey: providers.apiKey(for: provider),
+            baseURL: providers.baseURL(for: provider))
+    }
+
     /// Fetch ground truth for one sample.
     private func fetchGroundTruth(_ sample: EditSample) {
         guard let url = store.audioURL(sample), !fetching.contains(sample.id) else { return }
@@ -319,14 +354,10 @@ struct DataSettingsView: View {
         gtError = nil
         let provider = settings.groundTruthProvider
         let model = settings.groundTruthModel
-        let key = providers.apiKey(for: provider)
-        let baseURL = providers.baseURL(for: provider)
         Task { @MainActor in
             defer { fetching.remove(sample.id) }
             do {
-                let text = try await GroundTruthClient().transcribe(
-                    audioURL: url, provider: provider, model: model,
-                    apiKey: key, baseURL: baseURL)
+                let text = try await groundTruthText(url: url, provider: provider, model: model)
                 store.setLLMTranscript(id: sample.id, text: text, model: model)
             } catch {
                 gtError = error.localizedDescription
@@ -368,8 +399,6 @@ struct DataSettingsView: View {
         remaining = []
         let provider = settings.groundTruthProvider
         let model = settings.groundTruthModel
-        let key = providers.apiKey(for: provider)
-        let baseURL = providers.baseURL(for: provider)
         bulkTotal = todo.count
         bulkDone = 0
         Task { @MainActor in
@@ -377,9 +406,7 @@ struct DataSettingsView: View {
             for (index, sample) in todo.enumerated() {
                 guard let url = store.audioURL(sample) else { continue }
                 do {
-                    let text = try await GroundTruthClient().transcribe(
-                        audioURL: url, provider: provider, model: model,
-                        apiKey: key, baseURL: baseURL)
+                    let text = try await groundTruthText(url: url, provider: provider, model: model)
                     store.setLLMTranscript(id: sample.id, text: text, model: model)
                     bulkDone += 1
                 } catch {

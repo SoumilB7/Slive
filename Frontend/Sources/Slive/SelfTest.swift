@@ -191,8 +191,14 @@ enum SelfTest {
         equal(AssistantProvider.local.wire, "local", "local wire value")
         check(!AssistantProvider.local.needsAPIKey && AssistantProvider.local.isLocal,
               "local is keyless and flagged local")
-        check(AssistantProvider.allCases.filter { $0 != .local }.allSatisfy(\.needsAPIKey),
+        check(AssistantProvider.allCases.filter { $0 != .local && $0 != .whisper }
+                .allSatisfy(\.needsAPIKey),
               "every cloud provider needs a key")
+        check(!AssistantProvider.whisper.needsAPIKey
+                && !AssistantProvider.assistantChoices.contains(.whisper),
+              "whisper is keyless and never an assistant choice")
+        check(AssistantProvider.whisper.defaultModel == "large-v3",
+              "whisper ground truth defaults to the Accurate judge")
         check(!AssistantProvider.local.needsBaseURL, "local needs no base URL")
         // The floor that separates runnable downloads from config-only repos —
         // shared by the Models page and both model pickers.

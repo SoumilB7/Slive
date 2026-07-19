@@ -149,6 +149,7 @@ final class ProviderStore: ObservableObject {
     /// lazy backend if needed.
     func fetchModels(for provider: AssistantProvider) async {
         let raw = provider.rawValue
+        guard provider != .whisper else { return }   // picked from WhisperModelChoice, nothing to fetch
         guard !fetching.contains(raw) else { return }
         fetching.insert(raw)
         fetchErrors[raw] = nil

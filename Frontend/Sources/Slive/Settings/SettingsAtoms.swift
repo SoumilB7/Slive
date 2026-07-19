@@ -418,13 +418,28 @@ struct ModelStatusRow: View {
 /// A full model card: picker + detail, live status row, footnote. Used by both
 /// Dictation (whisperModel) and Continuous (continuousModel).
 struct ModelPickerCard: View {
-    @ObservedObject private var transcription = TranscriptionModel.shared
     let title: String
     @Binding var model: String
     let footnote: String
 
     var body: some View {
         SettingsCard(title) {
+            ModelPickerRows(model: $model)
+            Text(footnote).sliveCaption()
+        }
+    }
+}
+
+/// The embeddable heart of the Whisper model picker: choice menu + detail line
+/// + live download/prepare status row. Used by the dictation model card AND
+/// anywhere else that selects an on-device Whisper model (ground truth) — one
+/// component, identical download linkage everywhere.
+struct ModelPickerRows: View {
+    @ObservedObject private var transcription = TranscriptionModel.shared
+    @Binding var model: String
+
+    var body: some View {
+        Group {
             HStack(spacing: 10) {
                 Picker("", selection: $model) {
                     ForEach(WhisperModelChoice.all) { c in
@@ -455,7 +470,6 @@ struct ModelPickerCard: View {
                 Spacer(minLength: 0)
             }
             ModelStatusRow(model: model)
-            Text(footnote).sliveCaption()
         }
         .onAppear { transcription.refreshCustomModels() }
     }

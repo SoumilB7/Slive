@@ -8,6 +8,10 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
     case gemini
     case openaiCompatible
     case local
+    /// On-device WhisperKit transcription — a ground-truth-only "provider"
+    /// (it can't chat, so it never appears in the Assistant picker and is
+    /// never sent to the backend).
+    case whisper
 
     var id: String { rawValue }
 
@@ -19,6 +23,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "gemini"
         case .openaiCompatible: return "openai_compatible"
         case .local: return "local"
+        case .whisper: return "whisper"   // never sent — handled fully in-app
         }
     }
 
@@ -29,6 +34,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "Google Gemini"
         case .openaiCompatible: return "OpenAI-compatible"
         case .local: return "Local (on-device)"
+        case .whisper: return "Whisper (on-device)"
         }
     }
 
@@ -39,6 +45,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "gemini-2.5-flash"
         case .openaiCompatible: return ""
         case .local: return ""
+        case .whisper: return "large-v3"   // the accuracy judge
         }
     }
 
@@ -47,7 +54,7 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
 
     /// Local runs a downloaded model on-device — it takes no API key (the model
     /// is loaded straight from the HF cache; the token is only for downloading).
-    var needsAPIKey: Bool { self != .local }
+    var needsAPIKey: Bool { self != .local && self != .whisper }
 
     /// True when the model is a downloaded local one, chosen from the cache
     /// rather than typed/fetched from a provider's list.
@@ -60,8 +67,14 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
         case .openai: return "sk-…  (platform.openai.com)"
         case .gemini: return "AIza…  (aistudio.google.com)"
         case .openaiCompatible: return "provider key for your base URL"
-        case .local: return ""
+        case .local, .whisper: return ""
         }
+    }
+
+    /// Providers the Assistant hotkey can talk to — Whisper only transcribes,
+    /// so it exists solely for the ground-truth picker.
+    static var assistantChoices: [AssistantProvider] {
+        allCases.filter { $0 != .whisper }
     }
 
     /// Keychain account name for this provider's API key.
