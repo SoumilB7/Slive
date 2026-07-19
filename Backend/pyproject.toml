@@ -1,8 +1,9 @@
 [project]
 name = "flowy"
 version = "0.1.0"
-description = "Local speech translation experiments with Gemma 4"
+description = "Slive's local backend: AI proxy, on-device LLM inference, Whisper fine-tuning"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "accelerate>=1.10.0",
