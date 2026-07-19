@@ -50,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// tail only pays off when the release overlaps speech, so a quiet mic means
     /// the stop (and thus transcription) can start immediately.
     private var lastVoiceAt = Date.distantPast
+    /// When the hotkey lifted — anchor for the always-on release→typed log.
+    private var releasedAt: Date?
 
     /// How long a result box stays on screen before collapsing.
     private let resultDisplayDuration: TimeInterval = 6.0
@@ -222,25 +224,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Don't stop the instant the key lifts — keep listening for a beat so
         // the tail of the last word makes it into the audio. The tail is
-        // ADAPTIVE: it only matters when the release overlaps speech, so if the
-        // mic has already been quiet for longer than the tail, skip it and stop
-        // right away — transcription starts ~200ms sooner in the common
-        // "finish the sentence, then release" case. (Continuous keeps the fixed
-        // tail: its voice activity isn't tracked by `recorder.onLevels`.)
+        // ADAPTIVE twice over: if the mic has already been quiet long enough,
+        // skip it entirely; otherwise poll while it runs and stop the moment
+        // ~110ms of silence has been observed (word endings decay in well
+        // under that) instead of always paying the full 200ms. (Continuous
+        // keeps the fixed tail: its voice activity isn't tracked by
+        // `recorder.onLevels`.)
         pendingStop?.cancel()
+        releasedAt = Date()   // anchors the release→typed timing log
         let action = currentAction
-        if action != .stream, Date().timeIntervalSince(lastVoiceAt) > releaseTail + 0.15 {
+        if action == .stream {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.pendingStop = nil
+                self.stopLiveDictation()
+            }
+            pendingStop = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + releaseTail, execute: work)
+            return
+        }
+        if Date().timeIntervalSince(lastVoiceAt) > Self.tailSilence + 0.07 {
             stopRecording()
             return
         }
+        armAdaptiveTail(startedAt: Date())
+    }
+
+    /// Observed post-release silence that ends the tail early — word tails
+    /// decay in <100ms, and `lastVoiceAt` staleness (level coalescing) is
+    /// bounded ~64ms, both inside this margin.
+    private static let tailSilence: TimeInterval = 0.11
+
+    /// The polling release tail: every 25ms, stop as soon as `tailSilence` of
+    /// quiet has been seen — or when the full `releaseTail` elapses. Common
+    /// case ("finish word, release") stops ~80–100ms sooner than the fixed
+    /// wait did. The chained work item lives in `pendingStop`, so
+    /// `flushPendingStop()` (a new hold starting) cancels the chain exactly
+    /// like it cancelled the one-shot timer.
+    private func armAdaptiveTail(startedAt: Date) {
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingStop = nil
-            if action == .stream { self.stopLiveDictation() }
-            else { self.stopRecording() }
+            guard let self, self.pendingStop != nil else { return }
+            let quiet = Date().timeIntervalSince(self.lastVoiceAt)
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if quiet >= Self.tailSilence || elapsed >= self.releaseTail {
+                self.pendingStop = nil
+                self.stopRecording()
+            } else {
+                self.armAdaptiveTail(startedAt: startedAt)
+            }
         }
         pendingStop = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + releaseTail, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025, execute: work)
     }
 
     /// Run the pending delayed stop right now (if any) — used when a new hold
@@ -334,8 +368,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if transcript == nil {
                 transcript = await whisper.transcribe(wavURL, model: whisperModel)
             }
-            Log.stt(String(format: "transcribed %.1fs audio in %.2fs (%@)",
-                           duration, Date().timeIntervalSince(tTranscribe), whisperModel))
+            // Unconditional: one line per dictation, and THE number to check
+            // whenever "dictation feels slow" comes up again.
+            NSLog("Slive: decoded %.1fs audio in %.2fs (%@)",
+                  duration, Date().timeIntervalSince(tTranscribe), whisperModel)
             if Task.isCancelled { return }
             guard let text = transcript, !text.isEmpty else {
                 await MainActor.run { self.handleNoTranscript() }
@@ -411,6 +447,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.beginTranscribing()
         Task { @MainActor in
             let outcome = await continuous.stop()
+            if let releasedAt {
+                NSLog("Slive: stream release→final %.2fs (tail+final pass)",
+                      Date().timeIntervalSince(releasedAt))
+                self.releasedAt = nil
+            }
             let text = outcome.text
             if !text.isEmpty {
                 HistoryStore.shared.add(text)
@@ -589,6 +630,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // save, stats — can ever sit in front of the typeout. This ordering is
         // the guarantee; saving happens strictly after the text is on its way.
         let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed)
+        if let releasedAt {
+            NSLog("Slive: release→typed %.2fs (tail+decode+dispatch)",
+                  Date().timeIntervalSince(releasedAt))
+            self.releasedAt = nil
+        }
         if typed {
             model.finishListening()
             hideOverlaySoon()

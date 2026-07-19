@@ -138,7 +138,12 @@ final class ContinuousDictation {
     // MARK: - Stitched release
 
     /// Holds longer than this get the stitched (tail-only) release decode.
-    private static let stitchedReleaseThreshold: TimeInterval = 60
+    /// Was 60s (conservative first ship); the stitcher has since held up, and
+    /// a full re-decode of even 20–60s on release is the single biggest
+    /// release-latency cost — so any hold past ~12s now re-decodes only the
+    /// unconfirmed tail (+0.3s seam pre-roll), making release time roughly
+    /// constant regardless of hold length.
+    private static let stitchedReleaseThreshold: TimeInterval = 12
     /// Re-decode this much audio BEFORE the confirmed boundary so the tail
     /// decode has context at the seam; the stitcher drops the duplicate words.
     private static let seamPreRollSeconds: Double = 0.3

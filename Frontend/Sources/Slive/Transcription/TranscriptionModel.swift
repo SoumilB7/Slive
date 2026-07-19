@@ -282,7 +282,8 @@ final class TranscriptionModel: ObservableObject {
     func transcribeSamples(_ samples: [Float], model: String) async -> String? {
         guard let pipe = pipes[model], samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
         let results: [TranscriptionResult]? =
-            try? await pipe.transcribe(audioArray: samples, decodeOptions: decodeOptions())
+            try? await pipe.transcribe(audioArray: samples,
+                                       decodeOptions: decodeOptions(chunking: true))
         guard let results else { return nil }
         return Self.cleanStreamText(results.map { $0.text }.joined())
     }
@@ -292,10 +293,25 @@ final class TranscriptionModel: ObservableObject {
     /// with timestamps on (WhisperKit's default) a <1s utterance often decodes to
     /// no content token at all — so quick dictations returned empty and nothing
     /// typed. `skipSpecialTokens` keeps `<|…|>` control tokens out of the text.
-    private func decodeOptions() -> DecodingOptions {
+    ///
+    /// Latency knobs (measured against the release→typed budget):
+    /// - `temperatureFallbackCount` 5 → 1. Each fallback re-decodes the whole
+    ///   window, and the trailing silence every dictation carries (release
+    ///   tail + natural pauses) trips the logprob/compression thresholds
+    ///   constantly — hundreds of ms of retries that essentially never change
+    ///   the text. One retry keeps the safety net for genuine mis-decodes.
+    /// - `chunking` (one-shot paths only): VAD-split >30s audio and decode the
+    ///   chunks CONCURRENTLY instead of serial 30s windows — long dictations
+    ///   release in roughly constant time. The live stream keeps linear
+    ///   decoding: its confirmation logic is tuned to unchunked segments.
+    private func decodeOptions(chunking: Bool = false) -> DecodingOptions {
         var options = DecodingOptions(language: "en")
         options.skipSpecialTokens = true
         options.withoutTimestamps = true
+        options.temperatureFallbackCount = 1
+        if chunking {
+            options.chunkingStrategy = .vad
+        }
         return options
     }
 
@@ -447,7 +463,7 @@ final class TranscriptionModel: ObservableObject {
         do {
             let results = try await pipe.transcribe(
                 audioPath: url.path,
-                decodeOptions: decodeOptions()
+                decodeOptions: decodeOptions(chunking: true)
             )
             return results
                 .map { $0.text }
