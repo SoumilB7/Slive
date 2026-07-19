@@ -205,9 +205,9 @@ struct SettingsView: View {
         Group {
             if layout == .wide {
                 // 880pt grid: pace hero full width, then two two-up rows.
+                // Key + model lead — the two things you actually set up.
+                // Pace and the speed graph are readouts; they live below.
                 VStack(spacing: SliveTheme.cardGap) {
-                    speakingPaceCard
-                    speedCard
                     HStack(alignment: .top, spacing: SliveTheme.gridGap) {
                         keyCard
                         modelCard
@@ -216,15 +216,17 @@ struct SettingsView: View {
                         behaviorCard
                         advancedCard
                     }
+                    speedCard
+                    speakingPaceCard
                 }
                 .frame(maxWidth: SliveTheme.generalGridWidth)
             } else {
                 VStack(spacing: SliveTheme.cardGap) {
-                    speakingPaceCard
-                    speedCard
                     keyCard
                     modelCard
                     behaviorCard
+                    speedCard
+                    speakingPaceCard
                     advancedCard
                 }
                 .frame(maxWidth: formCap)
