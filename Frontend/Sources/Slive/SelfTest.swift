@@ -23,6 +23,7 @@ enum SelfTest {
         speedTierChecks()
         silenceTrimChecks()
         textHygieneChecks()
+        pasteFocusChecks()
         pacingChecks()
         wpmChecks()
         overlayMetricsChecks()
@@ -373,6 +374,28 @@ enum SelfTest {
         equal(ContinuousDictation.normalize("<|en|>hi"), "hi", "normalize strips tokens")
         equal(ContinuousDictation.normalize("Waiting for speech... hi"), "hi", "normalize strips placeholder")
         equal(ContinuousDictation.normalize("a  b"), "a  b", "inner spacing kept")
+    }
+
+    // MARK: - Dictation fallback / copy box
+
+    private static func pasteFocusChecks() {
+        print("[Paste focus]")
+        check(PasteEngine.shouldDispatch(role: kAXTextFieldRole as String),
+              "text field receives dictation")
+        check(PasteEngine.shouldDispatch(role: kAXTextAreaRole as String),
+              "text area receives dictation")
+        check(PasteEngine.shouldDispatch(role: "AXUnknownElectronRole"),
+              "unknown Electron role fails open")
+        check(PasteEngine.shouldDispatch(role: kAXGroupRole as String),
+              "unclassified group fails open")
+        check(!PasteEngine.shouldDispatch(role: kAXWindowRole as String),
+              "window focus falls back to copy box")
+        check(!PasteEngine.shouldDispatch(role: kAXButtonRole as String),
+              "button focus falls back to copy box")
+        check(!PasteEngine.shouldDispatch(role: kAXStaticTextRole as String),
+              "static text focus falls back to copy box")
+        check(!PasteEngine.shouldDispatch(role: "AXWebArea"),
+              "ordinary web page focus falls back to copy box")
     }
 
     // MARK: - Typing pacing

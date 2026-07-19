@@ -16,9 +16,10 @@ import ApplicationServices
 /// AX cooperation, so gating them on an AX opinion was all downside. Removed
 /// entirely; the user aims dictation with their caret, same as their keyboard.
 ///
-/// The one AX read kept is the secure-field guard, and it FAILS OPEN: it only
-/// refuses when the focused element positively identifies as a password field
-/// (`AXSecureTextField`). An unreadable or asleep AX tree can never block typing.
+/// The AX reads kept are conservative, positive-only guards: refuse a password
+/// field, and fall back to the copy box when focus is definitely on a
+/// non-editable target. Unknown/asleep AX trees still fail open, so they cannot
+/// block typing into Electron.
 enum PasteEngine {
 
     /// Tag written onto every synthetic keystroke Slive posts (via the event's
@@ -34,9 +35,16 @@ enum PasteEngine {
     static func canStreamType() -> Bool {
         func check() -> Bool {
             guard AXIsProcessTrusted() else { return false }
-            if let element = focusedElement(), isSecure(element) {
-                Log.paste("stream refused — secure field")
-                return false
+            if let element = focusedElement() {
+                if isSecure(element) {
+                    Log.paste("stream refused — secure field")
+                    return false
+                }
+                let role = stringAttribute(element, kAXRoleAttribute as String)
+                if !shouldDispatch(role: role) {
+                    Log.paste("stream refused — non-text focus (\(role ?? "unknown"))")
+                    return false
+                }
             }
             return true
         }
@@ -86,9 +94,10 @@ enum PasteEngine {
 
     /// Type `text` at the caret, wherever it is.
     ///
-    /// - Returns: `true` when typing was dispatched; `false` only for empty
-    ///   text, missing Accessibility permission (events would be discarded), or
-    ///   a positively-identified password field.
+    /// - Returns: `true` when typing was dispatched; `false` for empty text,
+    ///   missing Accessibility permission, a positively-identified password
+    ///   field, or a positively-identified non-text target. Unknown/broken AX
+    ///   trees still fail open so Electron fields are never falsely refused.
     static func insertIfPossible(_ text: String) -> Bool {
         guard !text.isEmpty else { return false }
 
@@ -107,9 +116,16 @@ enum PasteEngine {
 
         // Never type into a password field. Fail-open by design: refuse only on
         // a positive identification, so a broken AX tree can't block typing.
-        if let element = focusedElement(), isSecure(element) {
-            Log.paste("insert refused — secure field")
-            return false
+        if let element = focusedElement() {
+            if isSecure(element) {
+                Log.paste("insert refused — secure field")
+                return false
+            }
+            let role = stringAttribute(element, kAXRoleAttribute as String)
+            if !shouldDispatch(role: role) {
+                Log.paste("insert refused — non-text focus (\(role ?? "unknown"))")
+                return false
+            }
         }
 
         // Type it out with synthetic key events. We deliberately do NOT use the
@@ -141,6 +157,32 @@ enum PasteEngine {
         guard err == .success, let value else { return nil }
         guard CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
         return (value as! CFString) as String
+    }
+
+    /// Decide whether keyboard text should be dispatched from the AX facts we
+    /// can trust. Known text roles type; a small set of unambiguously non-text
+    /// roles shows the copy box. Everything else remains unknown and fails open
+    /// for Electron/webview fields whose AX trees are absent or incomplete.
+    static func shouldDispatch(role: String?) -> Bool {
+        switch role {
+        case kAXTextFieldRole,
+             kAXTextAreaRole,
+             kAXComboBoxRole:
+            return true
+        case kAXWindowRole,
+             kAXApplicationRole,
+             kAXButtonRole,
+             kAXCheckBoxRole,
+             kAXRadioButtonRole,
+             kAXSliderRole,
+             kAXMenuItemRole,
+             kAXImageRole,
+             kAXStaticTextRole,
+             "AXWebArea":
+            return false
+        default:
+            return true
+        }
     }
 
     /// True if the element is a password / secure text field, which we must
