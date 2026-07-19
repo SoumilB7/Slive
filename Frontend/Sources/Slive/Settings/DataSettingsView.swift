@@ -10,8 +10,8 @@ import SwiftUI
 struct DataSettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject private var store = TrainingStore.shared
-    @ObservedObject private var player = AudioPreviewPlayer.shared
     @ObservedObject private var providers = ProviderStore.shared
+    private let player = AudioPreviewPlayer.shared
     @Environment(\.sliveLayout) private var layout
     @Environment(\.sliveScrollTo) private var scrollTo
     /// Navigates to the Models page (key entry lives there).
@@ -24,9 +24,33 @@ struct DataSettingsView: View {
     @State private var bulkTotal = 0
     @State private var gtError: String?
     @State private var confirmClear = false
+    @State private var samplePage = 0
     /// Sample ids a bulk run didn't reach (it stops on the first error) — lets
     /// "Run left" resume exactly where it stopped instead of redoing the rest.
     @State private var remaining: [String] = []
+
+    /// Keep the table bounded: the audio player's 10 Hz progress updates should
+    /// never make SwiftUI reconsider hundreds of transcript/diff rows.
+    private let samplesPerPage = 20
+
+    private var pageCount: Int {
+        max(1, (store.count + samplesPerPage - 1) / samplesPerPage)
+    }
+
+    private var visibleSamples: [EditSample] {
+        let newestFirst = Array(store.samples.reversed())
+        let safePage = min(samplePage, pageCount - 1)
+        let start = safePage * samplesPerPage
+        guard start < newestFirst.count else { return [] }
+        return Array(newestFirst[start..<min(start + samplesPerPage, newestFirst.count)])
+    }
+
+    private var visibleRangeText: String {
+        guard store.count > 0 else { return "" }
+        let start = samplePage * samplesPerPage + 1
+        let end = min(start + samplesPerPage - 1, store.count)
+        return "\(start)–\(end) of \(store.count)"
+    }
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -47,6 +71,9 @@ struct DataSettingsView: View {
             dataCard
         }
         .onAppear { store.loadSamplesIfNeeded() }   // lazy index parse
+        .onChange(of: store.count) { _, _ in
+            samplePage = min(samplePage, pageCount - 1)
+        }
         .onDisappear { player.stop() }
     }
 
@@ -296,7 +323,7 @@ struct DataSettingsView: View {
                 // count and jump to the first so they get eyes.
                 if !bulkRunning, !wayOffIDs.isEmpty {
                     Button {
-                        scrollTo(wayOffIDs[0])
+                        jumpToWayOff(wayOffIDs[0])
                     } label: {
                         Label("\(wayOffIDs.count) way off", systemImage: "exclamationmark.triangle.fill")
                             .font(SliveTheme.font(11, .semibold))
@@ -439,6 +466,16 @@ struct DataSettingsView: View {
         }
     }
 
+    /// Move to the page containing a flagged sample before asking the root
+    /// scroll view to reveal it. The async hop lets SwiftUI install that page's
+    /// row and its `.id` anchor first.
+    private func jumpToWayOff(_ id: String) {
+        let newestFirst = Array(store.samples.reversed())
+        guard let index = newestFirst.firstIndex(where: { $0.id == id }) else { return }
+        samplePage = index / samplesPerPage
+        DispatchQueue.main.async { scrollTo(id) }
+    }
+
     // MARK: - Data table
 
     private var dataCard: some View {
@@ -465,11 +502,16 @@ struct DataSettingsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     tableHeaderRow
                     Divider().overlay(.white.opacity(0.1))
-                    // Newest first. `.id` anchors the way-off jump.
-                    ForEach(Array(store.samples.reversed())) { sample in
+                    // Newest first, one bounded page at a time. `.id` anchors
+                    // the way-off jump after it switches to the target page.
+                    ForEach(visibleSamples) { sample in
                         dataRow(sample)
                             .id(sample.id)
                         Divider().overlay(.white.opacity(0.06))
+                    }
+                    if pageCount > 1 {
+                        paginationControls
+                            .padding(.top, 12)
                     }
                 }
             }
@@ -479,9 +521,40 @@ struct DataSettingsView: View {
             Button("Delete All", role: .destructive) {
                 store.clearAll()
                 TranscriptDiffCache.clear()
+                samplePage = 0
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private var paginationControls: some View {
+        HStack(spacing: 12) {
+            Button {
+                player.stop()
+                samplePage = max(0, samplePage - 1)
+            } label: {
+                Label("Newer", systemImage: "chevron.left")
+            }
+            .disabled(samplePage == 0)
+
+            Spacer()
+            Text(visibleRangeText)
+                .font(SliveTheme.mono(11))
+                .foregroundStyle(SliveTheme.textSecondary)
+            Spacer()
+
+            Button {
+                player.stop()
+                samplePage = min(pageCount - 1, samplePage + 1)
+            } label: {
+                Label("Older", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon)
+            }
+            .disabled(samplePage >= pageCount - 1)
+        }
+        .font(SliveTheme.font(11, .semibold))
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 
     /// Text columns cap at ~67 characters so the table stays readable at the
@@ -502,26 +575,10 @@ struct DataSettingsView: View {
     }
 
     private func dataRow(_ sample: EditSample) -> some View {
-        let isActive = player.currentID == sample.id
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 12) {
                 // Audio column: play/pause toggles the shared player onto this row.
-                Group {
-                    if let url = store.audioURL(sample) {
-                        Button { player.toggle(id: sample.id, url: url) } label: {
-                            Image(systemName: isActive && player.isPlaying
-                                    ? "pause.circle.fill" : "play.circle.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(SliveTheme.accent)
-                        }
-                        .buttonStyle(.plain)
-                        .help(isActive && player.isPlaying ? "Pause" : "Play")
-                    } else {
-                        Image(systemName: "waveform.slash")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.white.opacity(0.25))
-                    }
-                }
+                DataAudioButton(sampleID: sample.id, url: store.audioURL(sample))
                 .frame(width: 40, alignment: .leading)
 
                 // What Slive output.
@@ -554,36 +611,9 @@ struct DataSettingsView: View {
                 .help("Delete this sample")
             }
 
-            // Scrubber, only under the row that's loaded in the player.
-            if isActive {
-                HStack(spacing: 8) {
-                    Slider(
-                        value: Binding(
-                            get: { player.position },
-                            set: { player.seek(to: $0) }
-                        ),
-                        in: 0...max(player.duration, 0.01)
-                    )
-                    .controlSize(.mini)
-                    .tint(SliveTheme.accent)
-                    .frame(maxWidth: 220)
-                    Text("\(AudioPreviewPlayer.timeText(player.position)) / \(AudioPreviewPlayer.timeText(player.duration))")
-                        .font(SliveTheme.mono(10))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .fixedSize()
-                }
-                .padding(.leading, 52)   // align under the text columns
-            }
+            DataPlaybackScrubber(sampleID: sample.id)
         }
         .padding(.vertical, 9)
-        .background {
-            // The "live row" marker — whichever sample is loaded in the player.
-            if isActive {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.white.opacity(0.04))
-                    .padding(.horizontal, -8)
-            }
-        }
     }
 
     /// SHOULD BE cell states: word-diffed LLM transcript → legacy final text →
@@ -649,5 +679,62 @@ struct DataSettingsView: View {
 
     private func byteText(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+/// Playback observation lives in these tiny row-local views. The 10 Hz ticker
+/// therefore refreshes the controls, not the whole Data page and every diff.
+private struct DataAudioButton: View {
+    let sampleID: String
+    let url: URL?
+    @ObservedObject private var player = AudioPreviewPlayer.shared
+
+    var body: some View {
+        if let url {
+            Button { player.toggle(id: sampleID, url: url) } label: {
+                Image(systemName: player.currentID == sampleID && player.isPlaying
+                      ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(SliveTheme.accent)
+            }
+            .buttonStyle(.plain)
+            .help(player.currentID == sampleID && player.isPlaying ? "Pause" : "Play")
+        } else {
+            Image(systemName: "waveform.slash")
+                .font(.system(size: 14))
+                .foregroundStyle(.white.opacity(0.25))
+        }
+    }
+}
+
+private struct DataPlaybackScrubber: View {
+    let sampleID: String
+    @ObservedObject private var player = AudioPreviewPlayer.shared
+
+    var body: some View {
+        if player.currentID == sampleID {
+            HStack(spacing: 8) {
+                Slider(
+                    value: Binding(
+                        get: { player.position },
+                        set: { player.seek(to: $0) }
+                    ),
+                    in: 0...max(player.duration, 0.01)
+                )
+                .controlSize(.mini)
+                .tint(SliveTheme.accent)
+                .frame(maxWidth: 220)
+                Text("\(AudioPreviewPlayer.timeText(player.position)) / \(AudioPreviewPlayer.timeText(player.duration))")
+                    .font(SliveTheme.mono(10))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .fixedSize()
+            }
+            .padding(.leading, 52)
+            .padding(.horizontal, -8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.white.opacity(0.04))
+            )
+        }
     }
 }

@@ -537,6 +537,21 @@ enum SelfTest {
                 && dropTo.map { String($0.characters) } == "can you explain me the flow"
                 && dropTo!.runs.contains { $0.underlineStyle != nil },
               "a single dropped word underlines its neighbor only")
+        let screenshotOutput = TranscriptDiff.words(
+            "How is the legacy roles creeping in? Can you explain to me the flow? "
+            + "Why are even the legacy roles making this issue? And also, where in code "
+            + "are they actually being used? And since the DB doesn't have any mapping "
+            + "for legacy roles, how did you even get to know that these were the roles assigned?")
+        let screenshotTruth = TranscriptDiff.words(
+            "How is the legacy roles creeping in? Can you explain me the flow? "
+            + "Why are even the legacy roles making this issue? And also, where in code "
+            + "are they actually being used? And since the DB doesn't have any mapping "
+            + "for legacy roles, how did you even get to know that these were the roles assigned?")
+        let screenshotDiff = TranscriptDiff.diff(
+            output: screenshotOutput, truth: screenshotTruth)
+        check(screenshotDiff.mask.allSatisfy { $0 }
+                && screenshotDiff.deletionSites.count == 1,
+              "full screenshot deletion keeps every remaining word unchanged")
 
         let emptyOut = TranscriptDiff.matchMask(output: [], truth: ["a", "b"])
         check(emptyOut == [false, false], "empty output marks all truth words changed")
