@@ -242,7 +242,7 @@ struct LocalInferenceControls: View {
         VStack(alignment: .leading, spacing: 10) {
             ToggleRow(
                 title: "Quantized",
-                caption: "8-bit weights — 30–50% less memory, near-identical answers. Flipping this reloads the model on the next ask.",
+                caption: "8-bit weights — 30–50% less memory for near-identical answers. Flip it and the model reloads on your next ask.",
                 isOn: $settings.localQuantized
             )
             SliderRow(
@@ -251,7 +251,7 @@ struct LocalInferenceControls: View {
                 range: 2...12,
                 step: 1,
                 valueText: "\(Int(settings.localMemLimitGB)) GB",
-                caption: "A model that can't fit under the limit is refused with an error instead of freezing the Mac."
+                caption: "Too big to fit under the limit? Slive turns it away with an error instead of freezing your Mac."
             )
         }
     }

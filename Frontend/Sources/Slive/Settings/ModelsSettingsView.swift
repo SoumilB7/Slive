@@ -46,7 +46,7 @@ struct ModelsSettingsView: View {
             Text("Connect an AI provider")
                 .font(SliveTheme.font(17, .bold))
                 .foregroundStyle(SliveTheme.textPrimary)
-            Text("Add a key once here. The Assistant and Training then let you pick any of that provider's models — you never set it up twice.")
+            Text("Drop a key in once. Assistant and Training then let you pick any of that provider's models — set it up here, never again.")
                 .font(SliveTheme.font(12))
                 .foregroundStyle(SliveTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -55,7 +55,7 @@ struct ModelsSettingsView: View {
                 Image(systemName: "lock.fill")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(SliveTheme.textTertiary)
-                Text("Keys stay in your macOS Keychain — never written to disk.")
+                Text("Keys live in your macOS Keychain — they never touch disk.")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textTertiary)
                 Spacer(minLength: 12)
@@ -185,7 +185,7 @@ private struct ProviderRow: View {
     }
 
     private var statusLine: String {
-        guard connected else { return "Not connected — tap to add a key" }
+        guard connected else { return "Not connected — tap to drop a key in" }
         return modelCount > 0 ? "Connected · \(modelCount) models" : "Connected"
     }
 
@@ -267,7 +267,7 @@ private struct ProviderRow: View {
                     .foregroundStyle(.orange.opacity(0.95))
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Optional — lets you pick from the live list in Assistant & Training instead of typing a model id.")
+                Text("Optional — so you can pick from a live list in Assistant & Training instead of typing an id.")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -413,7 +413,7 @@ private struct LocalProviderRow: View {
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Downloads land in your standard Hugging Face cache (shared with transformers / PyTorch) and run in the Python backend. Running downloaded models for the Assistant is the next milestone.")
+            Text("Downloads drop into your usual Hugging Face cache (shared with transformers / PyTorch) and run in the Python backend. Wiring these up for the Assistant is next on the list.")
                 .sliveCaption()
 
             // Access token (saves as you type — the pill confirms it).
@@ -429,7 +429,7 @@ private struct LocalProviderRow: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .onChange(of: tokenDraft) { _, new in providers.setHuggingFaceToken(new) }
-                Text("Saved automatically to your Keychain — no button needed.")
+                Text("Auto-saved to your Keychain — no button to hunt for.")
                     .sliveCaption()
             }
 
@@ -531,7 +531,7 @@ private struct LocalProviderRow: View {
             }
 
             if hiddenSmallCount > 0 {
-                Text("\(hiddenSmallCount) small config-only repos under 50 MB hidden.")
+                Text("\(hiddenSmallCount) tiny config-only repos (under 50 MB) tucked away.")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textTertiary)
             }

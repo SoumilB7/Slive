@@ -14,7 +14,7 @@ struct ContinuousSettingsView: View {
             ModelPickerCard(
                 title: "MODEL",
                 model: $settings.continuousModel,
-                footnote: "Streaming works best with Tiny or Fast — they keep up as you speak. Choosing the same model as Dictation keeps just one copy in memory."
+                footnote: "Tiny or Fast keep up best as the words fly by. Match your Dictation model and only one copy sits in memory."
             )
             typingSpeedCard
         }
@@ -29,11 +29,11 @@ struct ContinuousSettingsView: View {
             HotkeyRecorderView(
                 target: .stream,
                 title: "Continuous shortcut",
-                subtitle: "Hold to transcribe as you speak — words type straight into the focused field, live."
+                subtitle: "Hold it and your words type themselves into the field, live, as you talk."
             )
             CardDivider()
             if settings.streamHotkey == nil {
-                Label("Continuous dictation is off until you record a shortcut.",
+                Label("Continuous dictation stays asleep until you record a shortcut.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.9))
@@ -60,7 +60,7 @@ struct ContinuousSettingsView: View {
         }) {
             Slider(value: $settings.continuousTypeCPS, in: 12...120, step: 1)
                 .tint(SliveTheme.accent)
-            Text("How fast dictated words appear as you speak. Instant types each phrase at once; lower is a smoother typewriter reveal.")
+            Text("How fast words land as you talk. Instant drops each phrase at once; lower is a smooth typewriter roll.")
                 .sliveCaption()
         }
     }

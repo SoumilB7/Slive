@@ -246,7 +246,7 @@ struct SettingsView: View {
                                 paceStat("TAKES", "\(stats.sampleCount)")
                             }
                         } else {
-                            Text("Speak to measure your pace — your words-per-minute appears here after each dictation.")
+                            Text("Talk to me — your words-per-minute lands here after every take.")
                                 .font(SliveTheme.font(12))
                                 .foregroundStyle(SliveTheme.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -275,7 +275,7 @@ struct SettingsView: View {
                             .font(SliveTheme.captionFont)
                             .foregroundStyle(.white.opacity(0.45))
                     } else {
-                        Text("Speak to measure your pace — your words-per-minute appears here after each dictation.")
+                        Text("Talk to me — your words-per-minute lands here after every take.")
                             .font(SliveTheme.font(12))
                             .foregroundStyle(SliveTheme.textSecondary)
                             .multilineTextAlignment(.center)
@@ -322,7 +322,7 @@ struct SettingsView: View {
         ModelPickerCard(
             title: "TRANSCRIPTION MODEL",
             model: $settings.whisperModel,
-            footnote: "Runs on-device (Apple Neural Engine) — private and fast. A new model takes a moment to prepare the first time."
+            footnote: "Runs right on the Neural Engine — fast, and nothing ever leaves your Mac. A fresh model takes a moment to warm up the first time."
         )
     }
 
@@ -337,7 +337,7 @@ struct SettingsView: View {
                 value: $settings.holdActivationDelay,
                 range: 0...0.6, step: 0.05,
                 valueText: String(format: "%.2fs", settings.holdActivationDelay),
-                caption: "How long to hold your key before recording starts. Shorter = snappier; longer avoids accidental taps."
+                caption: "The beat between press and record. Short feels instant; long shrugs off accidental taps."
             )
             CardDivider()
             SliderRow(
@@ -345,7 +345,7 @@ struct SettingsView: View {
                 value: $settings.overlayOpacity,
                 range: 0.35...1.0, step: 0.01,
                 valueText: "\(Int(settings.overlayOpacity * 100))%",
-                caption: "How see-through the floating pill and answer box are. Lower blends them into what's behind; text stays readable."
+                caption: "Ghost the pill into your wallpaper, or keep it bold — readable either way."
             )
             CardDivider()
             ToggleRow(title: "Launch at login", isOn: $settings.launchAtLogin)
@@ -358,19 +358,19 @@ struct SettingsView: View {
         SettingsCard("ADVANCED") {
             ToggleRow(
                 title: "Echo cancellation (open mic)",
-                caption: "Keeps what your speakers are playing (music, videos) out of the mic while you dictate — the same canceller FaceTime uses. May pop/crackle briefly when recording starts on some Macs; leave off unless speaker bleed is hurting your transcripts.",
+                caption: "Walls off whatever your speakers are blasting so it never leaks into the mic — the same canceller FaceTime uses. It can pop for a moment when recording starts on some Macs, so leave it off unless speaker bleed is wrecking your transcripts.",
                 isOn: $settings.echoCancellation
             )
             CardDivider()
             ToggleRow(
                 title: "Save dictation recordings (training data)",
-                caption: "Saves each dictation's audio plus what Slive transcribed it as. Stored locally only, for later fine-tuning.",
+                caption: "Slive keeps every take — the audio and what it heard — so it can learn how you really talk. Stays on your Mac, always.",
                 isOn: $settings.captureEdits
             )
             CardDivider()
             ToggleRow(
                 title: "Verbose logging (developer)",
-                caption: "Emit diagnostic logs. View in Console.app or `log stream` filtered by “Slive.”. Off for normal use.",
+                caption: "Spills diagnostic logs when you're chasing a bug — read them in Console.app or `log stream`, filtered by “Slive.”. Leave it off otherwise.",
                 isOn: $settings.verboseLogging
             )
         }
@@ -392,21 +392,21 @@ struct SettingsView: View {
         }) {
             permissionRow(
                 title: "Input Monitoring",
-                detail: "Detect your push-to-talk key",
+                detail: "So Slive can feel your push-to-talk key",
                 granted: permissions.inputMonitoringGranted || settings.hotkeyActive,
                 action: { permissions.requestInputMonitoring() }
             )
             CardDivider()
             permissionRow(
                 title: "Microphone",
-                detail: "Record your voice",
+                detail: "So Slive can hear your voice",
                 granted: permissions.micGranted,
                 action: { permissions.requestMic() }
             )
             CardDivider()
             permissionRow(
                 title: "Accessibility",
-                detail: "Type transcripts into text fields",
+                detail: "So Slive can type into whatever field you're in",
                 granted: permissions.accessibilityGranted,
                 action: { permissions.requestAccessibility() }
             )
@@ -415,7 +415,7 @@ struct SettingsView: View {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .foregroundStyle(SliveTheme.accent)
                     .font(.system(size: 14))
-                Text("macOS applies permission changes after a relaunch.")
+                Text("macOS only notices permission changes after a relaunch.")
                     .sliveCaption()
                 Spacer()
                 Button("Relaunch", action: onRelaunch)
@@ -458,21 +458,21 @@ struct SettingsView: View {
                 HStack(alignment: .top, spacing: 16) {
                     VocabularyField(
                         label: "Custom words",
-                        hint: "Names, jargon, acronyms — space or comma separated. Helps the model spell them right.",
+                        hint: "Names, jargon, acronyms — comma or space between them. So Slive spells your world right.",
                         height: 96, text: $settings.hotwords)
                     VocabularyField(
                         label: "Context prompt",
-                        hint: "A sentence of context to steer transcription (optional).",
+                        hint: "A line of context to nudge transcription your way. Totally optional.",
                         height: 96, text: $settings.contextPrompt)
                 }
             } else {
                 VocabularyField(
                     label: "Custom words",
-                    hint: "Names, jargon, acronyms — space or comma separated. Helps the model spell them right.",
+                    hint: "Names, jargon, acronyms — comma or space between them. So Slive spells your world right.",
                     height: 96, text: $settings.hotwords)
                 VocabularyField(
                     label: "Context prompt",
-                    hint: "A sentence of context to steer transcription (optional).",
+                    hint: "A line of context to nudge transcription your way. Totally optional.",
                     height: 72, text: $settings.contextPrompt)
             }
         }
@@ -498,7 +498,7 @@ struct SettingsView: View {
                 EmptyState(
                     icon: "waveform",
                     title: "No transcripts yet",
-                    caption: "Dictations from the last 24 hours appear here."
+                    caption: "Everything you've said in the last 24 hours waits here."
                 )
             } else {
                 // The page scrolls — no inner scroll view.

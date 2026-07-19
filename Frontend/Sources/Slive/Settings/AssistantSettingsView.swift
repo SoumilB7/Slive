@@ -52,11 +52,11 @@ struct AssistantSettingsView: View {
             HotkeyRecorderView(
                 target: .assistant,
                 title: "Assistant shortcut",
-                subtitle: "Hold to ask the LLM — e.g. fn + control. Its answer appears in the floating box."
+                subtitle: "Hold it, ask out loud — the answer floats back in a little box."
             )
             CardDivider()
             if settings.assistantHotkey == nil {
-                Label("Assistant mode is off until you record a shortcut.",
+                Label("Assistant mode stays asleep until you record a shortcut.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.9))
@@ -134,13 +134,13 @@ struct AssistantSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else if settings.assistantConfig.provider.isLocal {
                     Text(currentFetched.isEmpty
-                         ? "Runs on this Mac — no key, no cloud. Download a model in Models, then refresh."
-                         : "\(currentFetched.count) downloaded — the model loads on your first ask (can take a minute).")
+                         ? "All on this Mac — no key, no cloud. Grab a model in Models, then hit refresh."
+                         : "\(currentFetched.count) downloaded — it loads on your first ask (give it a minute).")
                         .sliveCaption()
                 } else {
                     Text(currentFetched.isEmpty
-                         ? "Fetch live models to pick from your provider, or type any id."
-                         : "\(currentFetched.count) live models saved — refetch to update.")
+                         ? "Fetch the live list to pick from, or just type any model id."
+                         : "\(currentFetched.count) live models on tap — refetch whenever they change.")
                         .sliveCaption()
                 }
             }
@@ -149,7 +149,7 @@ struct AssistantSettingsView: View {
 
             ToggleRow(
                 title: "Attach a full-screen screenshot",
-                caption: "Sends a screenshot with every question — macOS asks for Screen Recording once.",
+                caption: "Slips a screenshot in with every question — macOS asks for Screen Recording just once.",
                 isOn: $settings.assistantConfig.attachScreenshot
             )
         }
@@ -264,7 +264,7 @@ struct AssistantSettingsView: View {
                 }
                 .frame(maxHeight: 180)
                 .innerWell()
-                Text("Edit the file — changes apply on the next ask.")
+                Text("Tweak the file — it takes effect on your next ask.")
                     .sliveCaption()
             }
         }

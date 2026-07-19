@@ -54,7 +54,7 @@ struct DataSettingsView: View {
         SettingsCard("CAPTURE") {
             ToggleRow(
                 title: "Save dictations (audio + transcript)",
-                caption: "Saves after typing finishes — never adds latency.",
+                caption: "Saves once your text has landed — never adds a beat of latency.",
                 isOn: $settings.captureEdits
             )
             CardDivider()
@@ -153,7 +153,7 @@ struct DataSettingsView: View {
             .help(settings.groundTruthProvider.isLocal
                   ? "Models are downloaded in Models" : "Keys are managed in Models")
         }) {
-            Text("A model that can hear re-transcribes your audio into the Should-be column — the supervision signal for fine-tuning.")
+            Text("A model with ears re-transcribes your audio into the Should-be column — the answer key Slive learns from.")
                 .sliveCaption()
 
             HStack(spacing: 10) {
@@ -381,7 +381,7 @@ struct DataSettingsView: View {
                 EmptyState(
                     icon: "waveform",
                     title: "No samples yet",
-                    caption: "Turn on Capture above and dictate — each row is one recording, what Slive wrote, and what it should have been."
+                    caption: "Flip on Capture above and start dictating — each row is one take: the audio, what Slive wrote, and what it should've been."
                 )
             } else {
                 VStack(alignment: .leading, spacing: 0) {

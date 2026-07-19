@@ -300,7 +300,7 @@ struct TrainingSettingsView: View {
                         .frame(maxWidth: 260)
                         .disabled(job?.isActive == true)
                 }
-                Text("Names the finished model in the Dictation picker — spaces become dashes, letters/digits/._- only. Leave empty for the dated default.")
+                Text("What the finished model goes by in your Dictation picker — spaces turn to dashes, letters/digits/._- only. Leave it empty for a dated default.")
                     .sliveCaption()
             }
         }
@@ -536,7 +536,7 @@ struct TrainingSettingsView: View {
             }
 
             if let readiness, !readiness.ready {
-                Text("Training unlocks at \(readiness.requiredSamples) well-populated recordings — valid audio with a correction of 3+ words — and \(Int(max(readiness.requiredAudioMinutes, 1))) minutes of total speech.")
+                Text("Training wakes up once you've banked \(readiness.requiredSamples) solid recordings — real audio with a 3-plus-word fix — and \(Int(max(readiness.requiredAudioMinutes, 1))) minutes of speech.")
                     .sliveCaption()
             }
         }
@@ -586,14 +586,14 @@ struct TrainingSettingsView: View {
                 // What the two curves will mean, before there's anything to plot.
                 VStack(alignment: .leading, spacing: 8) {
                     legendExplainer(color: SliveTheme.accent, title: "CE loss",
-                                    text: "How closely the model matches your corrected transcripts — should fall as it learns your voice.")
+                                    text: "How closely the model matches your fixes — it should drop as it picks up your voice.")
                     legendExplainer(color: .orange.opacity(0.9), title: "KL divergence vs the base model",
-                                    text: "How far the adapted model drifts from the checkpoint you picked, in nats per token. Staying low means it keeps its general accuracy while picking up your speech.")
+                                    text: "How far the tuned model drifts from the checkpoint you started with, in nats per token. Staying low means it keeps its general smarts while picking up your voice.")
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .innerWell()
-                Text("Charts live once a training run starts.")
+                Text("The chart comes alive once a run kicks off.")
                     .sliveCaption()
             }
         }
@@ -642,7 +642,7 @@ struct TrainingSettingsView: View {
             CardDivider()
 
             if transcription.customModels.isEmpty {
-                Text("No personal models yet — the first finished run appears here and in the Dictation model picker.")
+                Text("No models of your own yet. Finish a run and it lands here, ready in your Dictation picker.")
                     .sliveCaption()
             } else {
                 ForEach(transcription.customModels) { model in
