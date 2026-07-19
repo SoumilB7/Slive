@@ -626,6 +626,73 @@ _META_REPLY_MARKERS = (
 )
 
 
+#: Compact instruction for the dedicated transcriptions endpoint (its prompt
+#: field has tight token limits — whisper-1 caps around 224 tokens).
+_ENDPOINT_TRANSCRIBE_PROMPT = (
+    "Verbatim English transcription. Translate any non-English speech inline "
+    "to English. Write accidental back-to-back repetitions once; drop "
+    "abandoned false starts. No commentary."
+)
+
+
+def _transcribe_fallback_models(chosen: str) -> list[str]:
+    """Dedicated-endpoint models to try for a chat-audio pick, best first.
+
+    A pick that already IS an endpoint model goes first verbatim; otherwise
+    mini picks map to the mini transcribe model. whisper-1 is the universal
+    last resort (every OpenAI-compatible host that does audio serves it).
+    """
+    lowered = chosen.lower()
+    candidates: list[str] = []
+    if "transcribe" in lowered or lowered.startswith("whisper"):
+        candidates.append(chosen)
+    candidates.append("gpt-4o-mini-transcribe" if "mini" in lowered else "gpt-4o-transcribe")
+    candidates.append("whisper-1")
+    seen: set[str] = set()
+    return [c for c in candidates if not (c in seen or seen.add(c))]
+
+
+async def _transcriptions_endpoint(
+    client: httpx.AsyncClient,
+    root: str,
+    api_key: str,
+    chosen_model: str,
+    audio_b64: str,
+    audio_format: str,
+) -> str | None:
+    """POST /audio/transcriptions — the endpoint that can only transcribe.
+
+    Tries the mapped model, then whisper-1; returns None only if every
+    candidate fails (caller then surfaces the original guard error).
+    """
+    import base64 as _b64
+
+    try:
+        audio_bytes = _b64.b64decode(audio_b64)
+    except Exception:  # noqa: BLE001 - fall back to the guard error
+        return None
+    mime = "audio/mpeg" if audio_format == "mp3" else "audio/wav"
+    for candidate in _transcribe_fallback_models(chosen_model):
+        try:
+            resp = await client.post(
+                f"{root}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (f"audio.{audio_format}", audio_bytes, mime)},
+                data={"model": candidate,
+                      "prompt": _ENDPOINT_TRANSCRIBE_PROMPT,
+                      "response_format": "text"},
+            )
+        except httpx.HTTPError:
+            return None
+        if resp.status_code // 100 != 2:
+            continue   # unknown model / not served here — try the next
+        text = resp.text.strip()
+        if text:
+            logger.info("transcriptions-endpoint fallback served by %s", candidate)
+            return text
+    return None
+
+
 def _guard_transcription(text: str) -> str:
     """Fail loudly when the reply is an answer rather than a transcript.
 
@@ -700,26 +767,29 @@ async def transcribe_audio(
         if provider in ("openai", "openai_compatible"):
             if provider == "openai_compatible" and not base_url:
                 raise ValueError("base_url is required for openai_compatible")
-            url = (
-                f"{base_url.rstrip('/')}/chat/completions"
+            root = (
+                base_url.rstrip("/")
                 if provider == "openai_compatible"
-                else "https://api.openai.com/v1/chat/completions"
+                else "https://api.openai.com/v1"
             )
             audio_format = "mp3" if "mp3" in media_type or "mpeg" in media_type else "wav"
             body = {
                 "model": model,
                 "modalities": ["text"],
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": TRANSCRIBE_PROMPT},
+                "messages": [
+                    # Instructions ride in the system turn; the user turn is
+                    # ONLY the audio. A model can't answer "please provide the
+                    # audio" to a turn whose entire content is the audio.
+                    {"role": "system", "content": TRANSCRIBE_PROMPT},
+                    {"role": "user", "content": [
                         {"type": "input_audio",
                          "input_audio": {"data": audio_b64, "format": audio_format}},
-                    ],
-                }],
+                    ]},
+                ],
             }
             resp = await client.post(
-                url, headers={"Authorization": f"Bearer {api_key}"}, json=body
+                f"{root}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"}, json=body
             )
             _raise_for_status(provider, resp)
             data = resp.json()
@@ -727,7 +797,18 @@ async def transcribe_audio(
                 text = (data["choices"][0]["message"]["content"] or "").strip()
             except (KeyError, IndexError) as exc:
                 raise ValueError(f"Unexpected OpenAI response shape: {data}") from exc
-            return _guard_transcription(text)
+            try:
+                return _guard_transcription(text)
+            except ValueError:
+                # Deterministic layer: the dedicated transcriptions endpoint
+                # CANNOT chat — a transcript is its only possible output. If
+                # the chat-audio model went meta anyway, reroute instead of
+                # bothering the user.
+                fallback = await _transcriptions_endpoint(
+                    client, root, api_key, model, audio_b64, audio_format)
+                if fallback is not None:
+                    return fallback
+                raise
 
         if provider == "anthropic":
             raise ValueError(

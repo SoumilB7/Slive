@@ -100,3 +100,17 @@ def test_transcription_guard_rejects_meta_replies() -> None:
     ok = "Please check the recording pipeline. " + "x " * 120 + "the audio file was fine."
     assert _guard_transcription(ok) == ok
     assert _guard_transcription("Add the ability to delete one sample.") != ""
+
+
+def test_transcribe_fallback_model_mapping() -> None:
+    from flowy.assistant import _transcribe_fallback_models as fallback
+
+    assert fallback("gpt-audio-mini") == ["gpt-4o-mini-transcribe", "whisper-1"]
+    assert fallback("gpt-audio") == ["gpt-4o-transcribe", "whisper-1"]
+    # A pick that already is an endpoint model leads verbatim.
+    assert fallback("gpt-4o-transcribe")[0] == "gpt-4o-transcribe"
+    assert fallback("whisper-1") == ["whisper-1", "gpt-4o-transcribe"]
+    # No duplicates, whisper-1 always reachable.
+    for pick in ("gpt-audio-mini", "gpt-4o-mini-transcribe", "anything-else"):
+        models = fallback(pick)
+        assert len(models) == len(set(models)) and "whisper-1" in models
