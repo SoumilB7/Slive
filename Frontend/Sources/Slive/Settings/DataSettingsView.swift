@@ -631,7 +631,7 @@ struct DataSettingsView: View {
     }
 
     /// The word-diffed ground-truth text (whole-string fallback for over-length
-    /// or deletion-only corrections).
+    /// corrections; deletions render as an underline on the neighboring word).
     @ViewBuilder private func llmTextView(_ llm: String, sample: EditSample) -> some View {
         if let diffed = TranscriptDiffCache.styled(
             id: sample.id, output: sample.transcript, truth: llm,

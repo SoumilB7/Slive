@@ -511,16 +511,32 @@ enum SelfTest {
             truth: ["WhisperKit", "engine"])
         check(replace == [false, true], "replacement (incl. case change) marks the corrected word")
 
-        // Deletion (output hallucinated an extra word): every truth word is on
-        // the LCS, so truth-side coloring has nothing to mark — attributed()
-        // must fall back to whole-string styling, not render all-white.
-        let deletion = TranscriptDiff.matchMask(
+        // Deletion (output had an extra word the truth dropped): every truth
+        // word is on the LCS, so there's no word to recolor — instead the
+        // word at the deletion site gets an underline, and the text stays
+        // verbatim (one small mark, not a whole orange paragraph).
+        let deletion = TranscriptDiff.diff(
             output: ["the", "the", "cat"], truth: ["the", "cat"])
-        check(deletion == [true, true], "deletion case matches every truth word")
+        check(deletion.mask == [true, true], "deletion case matches every truth word")
+        check(!deletion.deletionSites.isEmpty, "deletion case reports its site")
         let deletionStyled = TranscriptDiff.attributed(
             output: "the the cat", truth: "the cat", base: .white, changed: .orange)
-        check(deletionStyled == nil,
-              "deletion-only correction falls back to whole-string styling (nil)")
+        check(deletionStyled != nil, "deletion-only correction renders a real diff")
+        if let deletionStyled {
+            check(String(deletionStyled.characters) == "the cat",
+                  "deletion rendering keeps the truth text verbatim")
+            check(deletionStyled.runs.contains { $0.underlineStyle != nil },
+                  "deletion site is underlined")
+        }
+        // The screenshot case: "explain to me" → "explain me" must underline
+        // one word, not orange the sentence.
+        let dropTo = TranscriptDiff.attributed(
+            output: "can you explain to me the flow",
+            truth: "can you explain me the flow", base: .white, changed: .orange)
+        check(dropTo != nil
+                && dropTo.map { String($0.characters) } == "can you explain me the flow"
+                && dropTo!.runs.contains { $0.underlineStyle != nil },
+              "a single dropped word underlines its neighbor only")
 
         let emptyOut = TranscriptDiff.matchMask(output: [], truth: ["a", "b"])
         check(emptyOut == [false, false], "empty output marks all truth words changed")

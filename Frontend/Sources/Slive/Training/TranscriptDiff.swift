@@ -17,8 +17,20 @@ enum TranscriptDiff {
     /// For each word of `truth`, whether it is part of the longest common
     /// subsequence with `output` (true = unchanged, false = a correction).
     static func matchMask(output: [String], truth: [String]) -> [Bool] {
+        diff(output: output, truth: truth).mask
+    }
+
+    /// Full word diff: the truth-side match mask, plus the truth indices
+    /// where output words were DELETED (a deletion before `truth[j]` reports
+    /// site `j`; a deletion after the last word reports `truth.count`).
+    /// Deletions have no truth word to color — the sites let the renderer
+    /// underline the neighbor instead of giving up on the whole string.
+    static func diff(output: [String], truth: [String])
+        -> (mask: [Bool], deletionSites: Set<Int>) {
         let n = output.count, m = truth.count
-        guard n > 0, m > 0 else { return [Bool](repeating: false, count: m) }
+        guard n > 0, m > 0 else {
+            return ([Bool](repeating: false, count: m), n > 0 ? [0] : [])
+        }
         // LCS length table (n+1)×(m+1), flat Int32 — at the 600-word cap a
         // nested [[Int]] would transiently cost ~23 MB; this stays ~1.4 MB.
         let stride = m + 1
@@ -30,20 +42,24 @@ enum TranscriptDiff {
                     : max(dp[(i - 1) * stride + j], dp[i * stride + (j - 1)])
             }
         }
-        // Walk back, marking truth words that are on the common subsequence.
+        // Walk back: mark truth words on the common subsequence, and note
+        // where output-side words fell out entirely.
         var mask = [Bool](repeating: false, count: m)
+        var deletions = Set<Int>()
         var i = n, j = m
         while i > 0 && j > 0 {
             if output[i - 1] == truth[j - 1] {
                 mask[j - 1] = true
                 i -= 1; j -= 1
             } else if dp[(i - 1) * stride + j] >= dp[i * stride + (j - 1)] {
+                deletions.insert(j)   // output[i-1] deleted before truth[j]
                 i -= 1
             } else {
                 j -= 1
             }
         }
-        return mask
+        if i > 0 { deletions.insert(0) }   // leading output words deleted
+        return (mask, deletions)
     }
 
     /// How far apart the pair is, word-level: 1 − LCS / max(word count) —
@@ -61,18 +77,20 @@ enum TranscriptDiff {
         return 1 - Double(common) / Double(max(out.count, tru.count))
     }
 
-    /// The ground-truth string with corrected words emphasized, or nil when the
-    /// caller should fall back to whole-string coloring: either side exceeds
-    /// `maxWords`, or the correction is a pure DELETION (output has extra words,
-    /// every truth word matches — nothing truth-side to highlight, yet the pair
-    /// differs; all-white here would read as "no correction").
+    /// The ground-truth string with corrected words emphasized: replaced or
+    /// new words in the changed color, and DELETIONS (output words the truth
+    /// dropped — nothing truth-side to color) as a changed-color underline on
+    /// the word right after the deletion site. The text itself stays verbatim
+    /// (nothing inserted), so selection/copy is clean. nil only when either
+    /// side exceeds `maxWords` — the caller falls back to whole-string
+    /// coloring there.
     static func attributed(output: String, truth: String,
                            base: Color, changed: Color) -> AttributedString? {
         let out = words(output)
         let tru = words(truth)
         guard out.count <= maxWords, tru.count <= maxWords else { return nil }
-        let mask = matchMask(output: out, truth: tru)
-        if out != tru && !mask.contains(false) { return nil }
+        guard !tru.isEmpty else { return nil }
+        let (mask, deletions) = diff(output: out, truth: tru)
         var result = AttributedString()
         for (index, word) in tru.enumerated() {
             var piece = AttributedString(word)
@@ -81,6 +99,14 @@ enum TranscriptDiff {
             } else {
                 piece.foregroundColor = changed
                 piece.font = SliveTheme.font(12, .semibold)
+            }
+            // A deletion before this word (or, for the final site, after the
+            // last word) underlines the neighbor — one small mark instead of
+            // the whole string turning orange for one dropped word.
+            if deletions.contains(index)
+                || (index == tru.count - 1 && deletions.contains(tru.count)) {
+                piece.underlineStyle = .single
+                piece.underlineColor = NSColor(changed)
             }
             result += piece
             if index < tru.count - 1 { result += AttributedString(" ") }
