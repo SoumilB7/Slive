@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 /// The Data page: capture pipeline (CAPTURE), ground-truth transcription
@@ -328,11 +329,30 @@ struct DataSettingsView: View {
         }
     }
 
+    /// Proof the audio is real BEFORE anything is sent: open the file as
+    /// audio and count its frames. An empty or truncated WAV produces
+    /// exactly the "model says there is no audio" failure — so it fails
+    /// here, loudly, instead of confusing a provider.
+    private func validatedAudioSeconds(_ url: URL) throws -> Double {
+        guard let file = try? AVAudioFile(forReading: url) else {
+            throw GroundTruthClient.GroundTruthError.server(
+                "This recording can't be opened as audio — the file is broken. Delete the row.")
+        }
+        let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1)
+        guard seconds >= 0.3 else {
+            throw GroundTruthClient.GroundTruthError.server(String(
+                format: "This recording holds only %.2fs of audio — nothing to transcribe. Delete the row.",
+                seconds))
+        }
+        return seconds
+    }
+
     /// One transcription, routed by provider: Whisper runs entirely in-app on
     /// the WhisperKit registry (no backend, no key); everything else goes
     /// through the backend proxy.
     private func groundTruthText(url: URL, provider: AssistantProvider,
                                  model: String) async throws -> String {
+        _ = try validatedAudioSeconds(url)
         if provider == .whisper {
             guard let text = await TranscriptionModel.shared.transcribe(url, model: model),
                   !text.isEmpty else {

@@ -626,6 +626,28 @@ _META_REPLY_MARKERS = (
 )
 
 
+def _validate_audio_payload(audio_b64: str) -> int:
+    """Decoded byte count, or ValueError when the payload can't be real audio.
+
+    4 KB ≈ a tenth of a second of canonical WAV — anything under that is a
+    header-only or truncated file, and sending it forward produces the
+    confusing "model says there is no audio" class of failure.
+    """
+    import base64 as _b64
+    import binascii as _binascii
+
+    try:
+        raw_len = len(_b64.b64decode(audio_b64, validate=True))
+    except (_binascii.Error, ValueError) as exc:
+        raise ValueError("Audio payload is not valid base64 — no audio went in.") from exc
+    if raw_len < 4_000:
+        raise ValueError(
+            f"Audio payload is only {raw_len} bytes — the recording is empty "
+            f"or truncated, no usable audio went in."
+        )
+    return raw_len
+
+
 #: Compact instruction for the dedicated transcriptions endpoint (its prompt
 #: field has tight token limits — whisper-1 caps around 224 tokens).
 _ENDPOINT_TRANSCRIBE_PROMPT = (
@@ -731,6 +753,12 @@ async def transcribe_audio(
     """
     if not audio_b64:
         raise ValueError("Missing audio")
+    # Proof the audio actually went in — validated on arrival, size logged on
+    # every request. An empty/truncated payload fails HERE with a clear
+    # message instead of confusing a provider into "please provide the audio".
+    audio_bytes_len = _validate_audio_payload(audio_b64)
+    logger.info("transcribe_llm: %.0f KB audio in → %s / %s",
+                audio_bytes_len / 1024, provider, model)
     if provider == "local":
         from flowy import local_infer
         return _guard_transcription(await run_in_threadpool(

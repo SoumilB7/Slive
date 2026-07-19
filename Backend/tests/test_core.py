@@ -114,3 +114,21 @@ def test_transcribe_fallback_model_mapping() -> None:
     for pick in ("gpt-audio-mini", "gpt-4o-mini-transcribe", "anything-else"):
         models = fallback(pick)
         assert len(models) == len(set(models)) and "whisper-1" in models
+
+
+def test_audio_payload_validation() -> None:
+    import base64
+
+    import pytest
+
+    from flowy.assistant import _validate_audio_payload
+
+    real = base64.b64encode(b"\x00" * 32_000).decode()   # ~1s of canonical WAV
+    assert _validate_audio_payload(real) == 32_000
+
+    tiny = base64.b64encode(b"RIFF" + b"\x00" * 40).decode()   # header-only WAV
+    with pytest.raises(ValueError, match="empty or truncated"):
+        _validate_audio_payload(tiny)
+
+    with pytest.raises(ValueError, match="not valid base64"):
+        _validate_audio_payload("!!!not-base64!!!")
