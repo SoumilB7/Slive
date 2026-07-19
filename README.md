@@ -22,11 +22,11 @@
 
 ## What it does
 
-- **Dictate** — hold your key, speak, release. Words are typed straight into whatever app you're in. A second **continuous** mode streams text live while you hold.
-- **Ask** — a second hotkey sends your question to the AI of your choice — Claude, GPT, Gemini, any OpenAI-compatible endpoint, or a **model running on this Mac** — and the answer streams into a floating box. Attach a screenshot, keep the thread going.
-- **Learn your voice** — every dictation can become training data. Correct it with a ground-truth model, then **fine-tune any Whisper checkpoint on your own speech** — LoRA on-device, compiled for the Neural Engine, installed straight into the model picker.
+- **Dictate.** Hold your key, speak, release. Your words get typed right where your cursor is, in whatever app you're using. There's also a continuous mode that types live while you keep holding.
+- **Ask.** A second hotkey sends your question to the AI you pick: Claude, GPT, Gemini, any OpenAI-compatible endpoint, or a model running right on this Mac. The answer streams into a small floating box. You can attach a screenshot and keep the conversation going.
+- **Learn your voice.** Every dictation can become training data. Correct it with a ground-truth model, then fine-tune any Whisper checkpoint on your own speech. The training runs on your Mac, gets compiled for the Neural Engine, and lands straight in your model picker.
 
-Transcription is on-device. Local LLMs are on-device. Fine-tuning is on-device. The only bytes that leave this Mac are the ones you explicitly send to a cloud AI.
+Transcription happens on your Mac. Local models run on your Mac. Fine-tuning happens on your Mac. The only bytes that ever leave are the ones you deliberately send to a cloud AI.
 
 ## Quick start
 
@@ -36,7 +36,7 @@ cd Slive
 ./setup.sh        # installs, builds, launches ☕
 ```
 
-Then one manual step (macOS requires it): hit **Grant** on each permission in the Slive window, then **Relaunch**.
+Then one manual step, because macOS insists: hit **Grant** on each permission in the Slive window, then **Relaunch**.
 
 | Permission | Why |
 |---|---|
@@ -46,7 +46,7 @@ Then one manual step (macOS requires it): hit **Grant** on each permission in th
 
 That's it. Hold your key, speak, release.
 
-*(Using a cloud AI? Add a key once in Settings → Models. Running local? Download a model there instead — no key.)*
+*(Using a cloud AI? Add a key once in Settings → Models. Running local? Download a model there instead. No key needed.)*
 
 ## The training loop
 
@@ -54,8 +54,8 @@ That's it. Hold your key, speak, release.
  dictate ──▶ capture (audio + what Slive wrote)
                 │
                 ▼
-         ground truth ("what it should have been" — any audio-capable model,
-                │        cloud or local Gemma)
+         ground truth ("what it should have been" from any model
+                │        with ears, cloud or on-device)
                 ▼
     LoRA fine-tune any Whisper checkpoint          loss + KL, live-charted
                 │
@@ -63,18 +63,18 @@ That's it. Hold your key, speak, release.
      merge → CoreML → Neural Engine → it's in your model picker
 ```
 
-Gated so it only runs when the data is worth it: 50+ well-populated recordings and 5+ minutes of speech.
+Training only unlocks when the data is actually worth it: 50 well-populated recordings and at least 5 minutes of real speech.
 
 ## Under the hood
 
-Two pieces — a Swift app and a local Python server it manages for you:
+Slive is two pieces. The app does everything you see and touch, and it quietly runs a small local server for the heavy model work.
 
 | | | |
 |---|---|---|
-| **The Mac app** | Swift/SwiftUI · hotkeys, overlay, typing, on-device STT, settings | [`Frontend/README.md`](Frontend/README.md) |
-| **The local server** | Python/FastAPI on `127.0.0.1` · AI proxy, local LLM inference, fine-tuning | [`Backend/README.md`](Backend/README.md) |
+| **Slive App** | Swift/SwiftUI. Hotkeys, overlay, typing, on-device transcription, settings. | [`Frontend/README.md`](Frontend/README.md) |
+| **Slive Server** | Python/FastAPI on `127.0.0.1`. AI relay, local LLM inference, fine-tuning. | [`Backend/README.md`](Backend/README.md) |
 
-The module map — and where to plug in new code — lives in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+The module map, and where new code should plug in, lives in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 API keys live in the macOS Keychain, never on disk. The binary ships its own test suite: `Slive --self-test`.
 
