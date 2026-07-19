@@ -145,11 +145,6 @@ struct AssistantSettingsView: View {
                 }
             }
 
-            if settings.assistantConfig.provider.isLocal {
-                CardDivider()
-                LocalInferenceControls(settings: settings)
-            }
-
             CardDivider()
 
             ToggleRow(

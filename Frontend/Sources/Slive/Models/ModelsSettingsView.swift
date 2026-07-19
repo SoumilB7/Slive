@@ -466,6 +466,23 @@ private struct LocalProviderRow: View {
             CardDivider()
 
             cacheList
+
+            CardDivider()
+
+            runtimeSection
+        }
+    }
+
+    /// How downloaded models run — quantization + the memory ceiling. These are
+    /// one global pair, configured here (not repeated in Assistant / Ground
+    /// Truth, which only pick a provider and a model).
+    private var runtimeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("HOW MODELS RUN")
+                .font(SliveTheme.font(10, .bold))
+                .foregroundStyle(SliveTheme.textTertiary)
+                .tracking(1.1)
+            LocalInferenceControls(settings: .shared)
         }
     }
 
