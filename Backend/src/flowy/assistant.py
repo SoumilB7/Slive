@@ -593,7 +593,10 @@ TRANSCRIBE_PROMPT = (
     "'Understood', a summary, a description of the audio — is a failure. "
     "Transcribe verbatim into English: output ONLY the words that are "
     "spoken, with correct spelling, natural punctuation and capitalization, "
-    "as one plain-text passage. The output must be entirely English in "
+    "as one plain-text passage. Verbatim means the speaker's EXACT words: "
+    "never paraphrase, reorder, drop, or add words, and never 'improve' "
+    "grammar or phrasing — if the speaker says 'explain to me', write "
+    "'explain to me', not 'explain me'. The output must be entirely English in "
     "Latin script: if any part of the speech is in another language, do not "
     "transcribe it in that language or its script — replace that part "
     "inline with its natural English translation, so the whole output reads "
@@ -651,9 +654,10 @@ def _validate_audio_payload(audio_b64: str) -> int:
 #: Compact instruction for the dedicated transcriptions endpoint (its prompt
 #: field has tight token limits — whisper-1 caps around 224 tokens).
 _ENDPOINT_TRANSCRIBE_PROMPT = (
-    "Verbatim English transcription. Translate any non-English speech inline "
-    "to English. Write accidental back-to-back repetitions once; drop "
-    "abandoned false starts. No commentary."
+    "Verbatim English transcription — the speaker's exact words; never "
+    "paraphrase, drop words, or fix grammar. Translate any non-English "
+    "speech inline to English. Write accidental back-to-back repetitions "
+    "once; drop abandoned false starts. No commentary."
 )
 
 
