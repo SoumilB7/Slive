@@ -127,8 +127,8 @@ struct LatencyGraphView: View {
                               width: tubeWidth, height: (plotBottom + 4) - (plotTop - 10))
         let tube = Path(roundedRect: tubeRect,
                         cornerRadii: RectangleCornerRadii(
-                            topLeading: 4, bottomLeading: tubeWidth / 2,
-                            bottomTrailing: tubeWidth / 2, topTrailing: 4))
+                            topLeading: tubeWidth / 2, bottomLeading: tubeWidth / 2,
+                            bottomTrailing: tubeWidth / 2, topTrailing: tubeWidth / 2))
         ctx.fill(tube, with: .linearGradient(
             Gradient(colors: [SliveTheme.accent.opacity(0.02),
                               SliveTheme.accent.opacity(0.18)]),
