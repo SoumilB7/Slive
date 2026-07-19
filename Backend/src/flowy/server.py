@@ -38,7 +38,7 @@ PORT = 50711
 
 logger = logging.getLogger("flowy.server")
 
-app = FastAPI(title="Flowy STT", version="0.1.0")
+app = FastAPI(title="Slive Server", version="0.1.0")
 
 
 # NOTE: no model loading at startup. Dictation STT runs on-device (WhisperKit)

@@ -1,9 +1,9 @@
-# Flowy prompts
+# Slive prompts
 
-Drop a plain-text prompt file here (`.md` or `.txt`) and Flowy's **assistant
+Drop a plain-text prompt file here (`.md` or `.txt`) and Slive's **assistant
 hotkey** can use it as the system prompt that steers its answers.
 
-- The **file name** (without extension) is what shows up in Flowy → Settings →
+- The **file name** (without extension) is what shows up in Slive → Settings →
   **Assistant** → *Prompt* picker. e.g. `email-reply.md` appears as
   "email-reply".
 - The **file contents** are sent as the system prompt for that mode.

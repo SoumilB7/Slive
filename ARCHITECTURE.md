@@ -5,13 +5,13 @@ the **Python backend** (spawned lazily by the app on `127.0.0.1:50711`) owns
 everything model-heavy. They speak plain JSON over localhost.
 
 ```
-┌──────────────────────────── Slive.app (Swift) ────────────────────────────┐
+┌──────────────────────────── Slive App (Swift) ────────────────────────────┐
 │  Hotkey ──▶ Audio ──▶ Transcription (WhisperKit · ANE) ──▶ Paste          │
 │     │                                                        ▲            │
 │     └──▶ Assistant ── HTTP ──┐              Overlay / Settings UI         │
 └──────────────────────────────┼────────────────────────────────────────────┘
                                ▼
-┌───────────────────── flowy server (Python · lazy) ────────────────────────┐
+┌──────────────────── Slive Server (Python · lazy) ─────────────────────────┐
 │  /assistant[,/stream]  cloud providers + local_infer (transformers, MPS)  │
 │  /transcribe_llm       ground truth        /local/*   HF cache + download │
 │  /training/*           LoRA → merge → CoreML/ANE → install                │

@@ -1,4 +1,4 @@
-# Slive — the local server (Backend)
+# Slive Server (Backend)
 
 A small FastAPI server that runs on `127.0.0.1:50711`. It does two jobs:
 

@@ -32,7 +32,7 @@ training = [
 
 [project.scripts]
 flowy-translate = "flowy.cli:main"
-flowy-server = "flowy.server:main"
+slive-server = "flowy.server:main"
 flowy-train = "flowy.training.cli:main"
 
 [build-system]

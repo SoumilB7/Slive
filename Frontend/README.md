@@ -1,4 +1,4 @@
-# Slive — the Mac app (Frontend)
+# Slive App (Frontend)
 
 The Swift/SwiftUI macOS app: it listens for your push-to-talk key, records your
 voice, shows the floating overlay, and either **types the text** into the focused
