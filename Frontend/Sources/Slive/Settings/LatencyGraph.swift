@@ -14,7 +14,8 @@ struct LatencyGraphView: View {
     /// Measured on this machine when calibration exists, else the estimate.
     private var effective: (factor: Double, measured: Bool) {
         SpeedTier.effectiveFactor(
-            measuredRate: TranscriptionModel.measuredRate(for: settings.whisperModel),
+            measuredTypicalDecode: TranscriptionModel.measuredTypicalDecode(
+                for: settings.whisperModel),
             model: settings.whisperModel)
     }
     private var modelFactor: Double { effective.factor }
@@ -89,7 +90,7 @@ struct LatencyGraphView: View {
                             }
                             TranscriptionModel.shared.applySpeedTier()
                         }
-                        .help("\(tier.label) — ≈\(Self.ms(latencies[index]))")
+                        .help("\(tier.label) — \(Self.ms(latencies[index]))")
                 }
             }
         }

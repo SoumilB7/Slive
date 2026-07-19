@@ -405,14 +405,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   duration, decodeSeconds, whisperModel,
                   ProcessInfo.processInfo.isLowPowerModeEnabled
                       ? " [LOW POWER MODE — decode throttled]" : "")
-            // Calibrate the speed graph with what this machine actually did
-            // (voiced audio only — trimmed silence never reached the decoder).
-            if transcript?.isEmpty == false {
-                TranscriptionModel.recordDecode(
-                    model: whisperModel,
-                    audioSeconds: Double(voiced.count) / 16_000,
-                    decodeSeconds: decodeSeconds)
-            }
+            // (Speed-graph calibration happens inside transcribeSamples, where
+            // the pipe is guaranteed resident — timing here can include a
+            // model load, which once poisoned the graph into "~15s".)
             if Task.isCancelled { return }
             guard let text = transcript, !text.isEmpty else {
                 await MainActor.run { self.handleNoTranscript() }

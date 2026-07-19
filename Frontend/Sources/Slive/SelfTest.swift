@@ -274,16 +274,23 @@ enum SelfTest {
         check(LatencyGraphView.ms(0.34) == "~340ms" && LatencyGraphView.ms(1.2) == "~1.2s",
               "latency labels format ms under 1s, seconds above")
 
-        // Calibration: measured rates override the static family guess.
-        let measured = SpeedTier.effectiveFactor(measuredRate: 0.05, model: "large-v3")
-        check(measured.measured && abs(measured.factor - 0.4) < 0.001,
-              "measured decode rate drives the graph (0.05×8s = 0.4)")
-        let fallback = SpeedTier.effectiveFactor(measuredRate: nil, model: "large-v3")
+        // Calibration: measured typical-decode seconds override the guess.
+        let measured = SpeedTier.effectiveFactor(measuredTypicalDecode: 0.62, model: "large-v3")
+        check(measured.measured && measured.factor == 0.62,
+              "measured decode seconds drive the graph directly (no scaling)")
+        let fallback = SpeedTier.effectiveFactor(measuredTypicalDecode: nil, model: "large-v3")
         check(!fallback.measured && fallback.factor == SpeedTier.decodeFactor(for: "large-v3"),
               "no calibration falls back to the family estimate")
+        let poisoned = SpeedTier.effectiveFactor(measuredTypicalDecode: 45, model: "large-v3")
+        check(poisoned.factor <= 10,
+              "a poisoned calibration value can never put absurd numbers on the axis")
         check(TranscriptionModel.blendedRate(old: nil, new: 0.2) == 0.2
                 && abs(TranscriptionModel.blendedRate(old: 0.2, new: 0.4) - 0.26) < 0.0001,
               "decode-rate EMA seeds on first sample, blends 70/30 after")
+        check(!TranscriptionModel.acceptableCalibrationClip(1.0)
+                && TranscriptionModel.acceptableCalibrationClip(8)
+                && !TranscriptionModel.acceptableCalibrationClip(45),
+              "calibration only trusts one-window, dictation-sized clips (3–30s)")
 
         // The machine checker behind the "maximum reach" tag.
         check(MachineProfile.ramGB > 0, "machine checker reads physical RAM")

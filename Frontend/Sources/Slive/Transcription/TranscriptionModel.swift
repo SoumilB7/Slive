@@ -308,10 +308,15 @@ final class TranscriptionModel: ObservableObject {
     func transcribeSamples(_ samples: [Float], model: String) async -> String? {
         guard let pipe = pipes[model], samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
         lastDecodeAt = Date()
+        let t0 = Date()
         let results: [TranscriptionResult]? =
             try? await pipe.transcribe(audioArray: samples,
                                        decodeOptions: decodeOptions(chunking: true))
         guard let results else { return nil }
+        // Pure decode on a resident pipe — the only honest calibration source.
+        Self.recordDecode(model: model,
+                          audioSeconds: Double(samples.count) / 16_000,
+                          decodeSeconds: Date().timeIntervalSince(t0))
         return Self.cleanStreamText(results.map { $0.text }.joined())
     }
 
@@ -379,29 +384,39 @@ final class TranscriptionModel: ObservableObject {
 
     // MARK: - Measured decode rate (calibration for the speed graph)
 
-    /// Rolling decode-seconds per audio-second, per model, persisted — the
-    /// speed graph shows THIS machine's measured numbers instead of the
+    /// Rolling "seconds to decode a typical dictation", per model, persisted —
+    /// the speed graph shows THIS machine's measured numbers instead of the
     /// static family guesses once a few dictations exist.
-    private nonisolated static let decodeRatesKey = "decodeRates"
+    ///
+    /// Measured ONLY inside `transcribeSamples` (the pipe is already resident
+    /// there, so model-load time can never leak in — the bug that once put
+    /// "~15s" on the graph), and only from clips in the calibration band:
+    /// long enough that fixed per-window overhead doesn't dominate, short
+    /// enough to be one Whisper window like a real dictation.
+    private nonisolated static let typicalDecodeKey = "typicalDecodeSeconds"
+
+    /// Clips this long are honest one-window "typical dictation" samples.
+    nonisolated static func acceptableCalibrationClip(_ audioSeconds: Double) -> Bool {
+        (3...30).contains(audioSeconds)
+    }
 
     /// EMA blend: measurements settle fast but one outlier can't lie.
     nonisolated static func blendedRate(old: Double?, new: Double) -> Double {
         old.map { $0 * 0.7 + new * 0.3 } ?? new
     }
 
-    nonisolated static func measuredRate(for model: String) -> Double? {
-        (UserDefaults.standard.dictionary(forKey: decodeRatesKey) as? [String: Double])?[model]
+    nonisolated static func measuredTypicalDecode(for model: String) -> Double? {
+        (UserDefaults.standard.dictionary(forKey: typicalDecodeKey) as? [String: Double])?[model]
     }
 
-    /// Record one real decode (ignores sub-second clips and warmups — their
-    /// rates are all overhead, no signal).
-    nonisolated static func recordDecode(model: String, audioSeconds: Double,
-                                         decodeSeconds: Double) {
-        guard audioSeconds > 1, decodeSeconds > 0 else { return }
-        var rates = (UserDefaults.standard.dictionary(forKey: decodeRatesKey)
-                     as? [String: Double]) ?? [:]
-        rates[model] = blendedRate(old: rates[model], new: decodeSeconds / audioSeconds)
-        UserDefaults.standard.set(rates, forKey: decodeRatesKey)
+    private nonisolated static func recordDecode(model: String, audioSeconds: Double,
+                                                 decodeSeconds: Double) {
+        guard acceptableCalibrationClip(audioSeconds),
+              decodeSeconds > 0, decodeSeconds < 30 else { return }
+        var values = (UserDefaults.standard.dictionary(forKey: typicalDecodeKey)
+                      as? [String: Double]) ?? [:]
+        values[model] = blendedRate(old: values[model], new: decodeSeconds)
+        UserDefaults.standard.set(values, forKey: typicalDecodeKey)
     }
 
     // MARK: - Warmup + residency (speed vs battery)

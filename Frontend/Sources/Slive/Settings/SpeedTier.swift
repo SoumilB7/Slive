@@ -140,17 +140,15 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
 
     // MARK: - Model-derived inputs
 
-    /// Seconds of audio in the "typical short dictation" all latency
-    /// estimates are quoted for.
-    static let typicalDictationSeconds = 8.0
-
     /// The decode factor the graph should use: THIS machine's measured
-    /// decode rate (× a typical dictation) once calibration exists, else the
+    /// typical-dictation decode seconds once calibration exists, else the
     /// static family estimate. `measured` tells the UI which one it got.
-    static func effectiveFactor(measuredRate: Double?, model: String)
+    /// The clamp is a backstop — a poisoned store can never put absurd
+    /// numbers on the axis again.
+    static func effectiveFactor(measuredTypicalDecode: Double?, model: String)
         -> (factor: Double, measured: Bool) {
-        if let rate = measuredRate, rate > 0 {
-            return (rate * typicalDictationSeconds, true)
+        if let seconds = measuredTypicalDecode, seconds > 0.01 {
+            return (min(seconds, 10), true)
         }
         return (decodeFactor(for: model), false)
     }
