@@ -70,22 +70,46 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
         }
     }
 
-    /// Relative ongoing battery drain 0…1 — the price of keeping tensors hot:
-    /// resident weights add memory pressure (swap on small Macs), warmups and
-    /// cold-primes burn ANE cycles between dictations, and the clock
-    /// assertion spends watts on every hold. Feather idles at nearly nothing.
-    var batteryIndex: Double {
+    /// The battery price of keeping tensors hot, as numbers: continuous idle
+    /// draw above Feather (milliwatts — resident-weight memory pressure,
+    /// keep-warm ANE work) and extra energy per dictation (joules — clock
+    /// assertion ≈2 J for the boosted half-second, cold-prime ≈1.5 J).
+    /// Engineering estimates with stated assumptions, not marketing: the
+    /// receipt converts them to % of THIS Mac's measured battery per hour.
+    var batteryModel: (idleMW: Double, perDictationJ: Double) {
         switch self {
-        case .instant: return 1.0
-        case .snappy: return 0.6
-        case .relaxed: return 0.35
-        case .feather: return 0.1
+        case .instant: return (80, 3.5)
+        case .snappy: return (30, 2.0)
+        case .relaxed: return (30, 0.5)
+        case .feather: return (0, 0)
         }
     }
 
-    /// What this tier spends, in words — shown under the graph so the click
-    /// says exactly what it buys and costs.
-    func costLines(modelResidentGB: Double) -> [(String, String)] {
+    /// The dictations-per-hour all battery quotes assume (stated in the UI).
+    static let assumedDictationsPerHour = 30.0
+
+    /// Milliwatt-hours this tier drains per hour of use at the assumed pace.
+    var drainMWhPerHour: Double {
+        let m = batteryModel
+        return m.idleMW + m.perDictationJ * Self.assumedDictationsPerHour / 3.6
+    }
+
+    /// Percent of a `batteryWh` battery this tier costs per hour at the
+    /// assumed pace (nil when there is no battery — desktops).
+    func drainPercentPerHour(batteryWh: Double?) -> Double? {
+        guard let wh = batteryWh, wh > 1 else { return nil }
+        return drainMWhPerHour / (wh * 1000) * 100
+    }
+
+    /// Chart fraction 0…1, derived from the same numbers the receipt quotes.
+    var batteryIndex: Double {
+        let top = SpeedTier.instant.drainMWhPerHour
+        return top > 0 ? drainMWhPerHour / top : 0
+    }
+
+    /// What this tier spends, shown under the graph — numbers first, so the
+    /// click states facts you can plan around, not adjectives.
+    func costLines(modelResidentGB: Double, batteryWh: Double?) -> [(String, String)] {
         let ram = pinsModels
             ? String(format: "≈%.1f GB always resident", modelResidentGB)
             : "freed after 10 idle minutes"
@@ -98,16 +122,17 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
         let idle = pinsModels
             ? "instant, always"
             : "reloads on first hold after a break (seconds)"
+
+        let pace = Int(Self.assumedDictationsPerHour)
         let battery: String
-        switch self {
-        case .instant:
-            battery = "highest drain — hot tensors, max clocks, ANE primes"
-        case .snappy:
-            battery = "high while dictating (max clocks), calm between"
-        case .relaxed:
-            battery = "moderate — residency only, default clocks"
-        case .feather:
-            battery = "minimal — nothing stays hot"
+        if drainMWhPerHour == 0 {
+            battery = "≈0 above baseline — nothing stays hot"
+        } else if let pct = drainPercentPerHour(batteryWh: batteryWh) {
+            battery = String(format: "≈%.2f%%/hr of this battery (≈%.0f mWh) at %d dictations/hr",
+                             pct, drainMWhPerHour, pace)
+        } else {
+            battery = String(format: "≈%.0f mWh/hr at %d dictations/hr (wall power — no battery found)",
+                             drainMWhPerHour, pace)
         }
         return [("Model RAM", ram), ("Battery", battery), ("CPU clocks", clocks),
                 ("Neural Engine", prime), ("After idle", idle)]

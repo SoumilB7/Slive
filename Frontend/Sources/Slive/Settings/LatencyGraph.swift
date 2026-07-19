@@ -44,7 +44,8 @@ struct LatencyGraphView: View {
 
             // The receipt: what the clicked latency costs, itemized.
             VStack(alignment: .leading, spacing: 5) {
-                ForEach(selected.costLines(modelResidentGB: residentGB), id: \.0) { line in
+                ForEach(selected.costLines(modelResidentGB: residentGB,
+                                           batteryWh: MachineProfile.batteryWh), id: \.0) { line in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text(line.0)
                             .font(SliveTheme.font(10, .semibold))
@@ -114,13 +115,20 @@ struct LatencyGraphView: View {
         base.addLine(to: CGPoint(x: size.width, y: plotBottom))
         ctx.stroke(base, with: .color(.white.opacity(0.12)), lineWidth: 1)
 
-        // Selected column: vertical hairline + soft glow behind its points.
+        // The selector: a big test-tube shape (straight sides, fully rounded
+        // bottom) parked over the chosen column — it wraps the points AND the
+        // labels below, reading as "this is where my dial sits".
         let sel = selected.rawValue
-        var hair = Path()
-        hair.move(to: CGPoint(x: xs[sel], y: plotTop))
-        hair.addLine(to: CGPoint(x: xs[sel], y: plotBottom))
-        ctx.stroke(hair, with: .color(SliveTheme.accent.opacity(0.35)),
-                   style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        let tubeWidth = min(60, max(44, size.width / CGFloat(tiers.count) * 0.55))
+        let tubeX = min(max(xs[sel] - tubeWidth / 2, 2), size.width - tubeWidth - 2)
+        let tubeRect = CGRect(x: tubeX, y: plotTop - 8,
+                              width: tubeWidth, height: (size.height - 2) - (plotTop - 8))
+        let tube = Path(roundedRect: tubeRect,
+                        cornerRadii: RectangleCornerRadii(
+                            topLeading: 9, bottomLeading: tubeWidth / 2,
+                            bottomTrailing: tubeWidth / 2, topTrailing: 9))
+        ctx.fill(tube, with: .color(SliveTheme.accent.opacity(0.10)))
+        ctx.stroke(tube, with: .color(SliveTheme.accent.opacity(0.45)), lineWidth: 1.2)
 
         // RAM area + line (accent).
         var area = Path()

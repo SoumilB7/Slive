@@ -231,12 +231,40 @@ enum SelfTest {
         let energies = SpeedTier.allCases.map(\.energyIndex)
         check(energies == energies.sorted(by: >) && Set(energies).count == energies.count,
               "tier energy strictly decreases Instant → Feather")
-        let batteries = SpeedTier.allCases.map(\.batteryIndex)
-        check(batteries == batteries.sorted(by: >) && Set(batteries).count == batteries.count,
-              "tier battery drain strictly decreases Instant → Feather")
+        // Battery drain: real numbers, checked as numbers.
+        let drains = SpeedTier.allCases.map(\.drainMWhPerHour)
+        check(drains == drains.sorted(by: >) && Set(drains).count == drains.count,
+              "tier battery drain (mWh/hr) strictly decreases Instant → Feather")
+        check(SpeedTier.feather.drainMWhPerHour == 0,
+              "Feather drains nothing above baseline")
+        // Instant = 80 mW idle + 3.5 J × 30/hr ÷ 3.6 = 109.2 mWh/hr.
+        check(abs(SpeedTier.instant.drainMWhPerHour - 109.2) < 0.3,
+              "Instant drain math: 80 mW + 3.5 J × 30/3.6 ≈ 109 mWh/hr")
+        // On a 53 Wh Air battery that is ≈0.206 %/hr.
+        if let pct = SpeedTier.instant.drainPercentPerHour(batteryWh: 53) {
+            check(abs(pct - 0.206) < 0.01, "percent math: 109 mWh over 53 Wh ≈ 0.21%/hr")
+        } else {
+            check(false, "percent math returned nil for a real battery")
+        }
+        check(SpeedTier.instant.drainPercentPerHour(batteryWh: nil) == nil,
+              "no battery (desktop) → no percent claim")
+        check(SpeedTier.instant.batteryIndex == 1,
+              "chart battery fraction tops out at Instant")
+        // Receipts quote units, not adjectives.
+        let withBattery = SpeedTier.instant.costLines(modelResidentGB: 1.2, batteryWh: 53)
+        check(withBattery.first { $0.0 == "Battery" }?.1.contains("%/hr") == true,
+              "battery receipt quotes %/hr on machines with a battery")
+        let noBattery = SpeedTier.snappy.costLines(modelResidentGB: 1.2, batteryWh: nil)
+        check(noBattery.first { $0.0 == "Battery" }?.1.contains("mWh") == true,
+              "battery receipt falls back to mWh on wall-powered Macs")
         check(SpeedTier.allCases.allSatisfy { tier in
-            tier.costLines(modelResidentGB: 1.2).contains { $0.0 == "Battery" }
+            tier.costLines(modelResidentGB: 1.2, batteryWh: 53).contains { $0.0 == "Battery" }
         }, "every tier's receipt itemizes battery")
+        // The machine checker's battery read, when present, must be sane
+        // laptop territory (guards the mAh-vs-percent IOKit trap).
+        check(MachineProfile.batteryWh.map { $0 > 20 && $0 < 120 } ?? true,
+              "measured battery capacity is in sane laptop range",
+              "got \(String(describing: MachineProfile.batteryWh))")
         check(SpeedTier.feather.estimatedRamGB(modelResidentGB: 1.2) < 0.1,
               "Feather's idle RAM is near zero")
 
