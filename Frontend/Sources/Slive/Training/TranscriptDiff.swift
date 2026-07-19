@@ -91,4 +91,6 @@ enum TranscriptDiffCache {
     }
 
     static func clear() { cache.removeAll() }
+
+    static func remove(id: String) { cache.removeValue(forKey: id) }
 }

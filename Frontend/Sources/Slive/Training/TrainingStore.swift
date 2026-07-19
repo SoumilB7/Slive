@@ -95,6 +95,21 @@ final class TrainingStore: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Delete a single sample — its audio file and index entry — and reclaim
+    /// the bytes. No-op if it's already gone.
+    func remove(id: String) {
+        guard let idx = samples.firstIndex(where: { $0.id == id }) else { return }
+        let sample = samples[idx]
+        if let url = audioURL(sample) {
+            totalBytes -= fileSize(url)
+            try? FileManager.default.removeItem(at: url)
+        }
+        samples.remove(at: idx)
+        if latest?.id == id { latest = samples.last }
+        rewriteIndex()   // adjusts totalBytes by the index-size delta
+        Log.training("removed sample \(id)")
+    }
+
     /// Delete every captured sample + audio and reset usage.
     func clearAll() {
         try? FileManager.default.removeItem(at: indexFile)

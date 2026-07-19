@@ -459,7 +459,20 @@ struct DataSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: textColumnCap, alignment: .leading)
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+
+                // Drop this one sample (audio + row).
+                Button {
+                    if player.currentID == sample.id { player.stop() }
+                    TranscriptDiffCache.remove(id: sample.id)
+                    store.remove(id: sample.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+                .buttonStyle(.plain)
+                .help("Delete this sample")
             }
 
             // Scrubber, only under the row that's loaded in the player.
