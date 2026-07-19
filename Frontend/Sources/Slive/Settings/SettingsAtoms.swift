@@ -21,6 +21,20 @@ extension EnvironmentValues {
     }
 }
 
+/// Runs a content mutation while keeping the root settings viewport at the
+/// same distance from the bottom. Data pagination uses this so differently
+/// sized pages don't leave the reader halfway through an unrelated row.
+private struct SlivePreserveScrollKey: EnvironmentKey {
+    static let defaultValue: (@escaping () -> Void) -> Void = { change in change() }
+}
+
+extension EnvironmentValues {
+    var slivePreserveScroll: (@escaping () -> Void) -> Void {
+        get { self[SlivePreserveScrollKey.self] }
+        set { self[SlivePreserveScrollKey.self] = newValue }
+    }
+}
+
 // MARK: - Card chrome
 
 private struct SliveCardModifier: ViewModifier {

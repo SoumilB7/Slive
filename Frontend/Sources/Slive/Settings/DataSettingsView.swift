@@ -14,6 +14,7 @@ struct DataSettingsView: View {
     private let player = AudioPreviewPlayer.shared
     @Environment(\.sliveLayout) private var layout
     @Environment(\.sliveScrollTo) private var scrollTo
+    @Environment(\.slivePreserveScroll) private var preserveScroll
     /// Navigates to the Models page (key entry lives there).
     var openModels: () -> Void = {}
 
@@ -538,7 +539,9 @@ struct DataSettingsView: View {
         HStack(spacing: 12) {
             Button {
                 player.stop()
-                samplePage = max(0, samplePage - 1)
+                preserveScroll {
+                    samplePage = max(0, samplePage - 1)
+                }
             } label: {
                 Label("Newer", systemImage: "chevron.left")
             }
@@ -552,7 +555,9 @@ struct DataSettingsView: View {
 
             Button {
                 player.stop()
-                samplePage = min(pageCount - 1, samplePage + 1)
+                preserveScroll {
+                    samplePage = min(pageCount - 1, samplePage + 1)
+                }
             } label: {
                 Label("Older", systemImage: "chevron.right")
                     .labelStyle(.titleAndIcon)
