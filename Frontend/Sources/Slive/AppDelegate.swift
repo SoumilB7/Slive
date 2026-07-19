@@ -49,9 +49,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `keyUp` skip the release tail when you already finished speaking — the
     /// tail only pays off when the release overlaps speech, so a quiet mic means
     /// the stop (and thus transcription) can start immediately.
-    private var lastVoiceAt = Date.distantPast
     /// When the hotkey lifted — anchor for the always-on release→typed log.
     private var releasedAt: Date?
+    /// Latency-critical activity assertion held for hold→type, so P-cores stay
+    /// clocked and App Nap/timer coalescing can't stretch the pipeline.
+    private var dictationActivity: NSObjectProtocol?
 
     /// How long a result box stays on screen before collapsing.
     private let resultDisplayDuration: TimeInterval = 6.0
@@ -155,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         whisper.retainModels(keep)
         for m in keep { whisper.select(m) }
+        whisper.applySpeedTier()   // arm (or disarm) the Feather-tier idle unload
     }
 
     /// Clicking the Dock icon (no windows open) reopens the home window.
@@ -171,11 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Wiring
 
     private func wireAudioAndHotkey() {
+        // Voice recency for the release tail lives in the recorder itself
+        // (per-callback, no dispatch staleness) — levels here are visuals only.
         recorder.onLevels = { [weak self] bands, rms in
             self?.model.pushLevels(bands, rms: rms)
-            // Voice-activity note for the adaptive release tail. The floor sits
-            // above room noise but below quiet speech.
-            if rms > 0.03 { self?.lastVoiceAt = Date() }
         }
         hotkey.onStart = { [weak self] action in self?.keyDown(action) }
         hotkey.onStop = { [weak self] _ in self?.keyUp() }
@@ -243,30 +245,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + releaseTail, execute: work)
             return
         }
-        if Date().timeIntervalSince(lastVoiceAt) > Self.tailSilence + 0.07 {
+        if recorder.quietFor() > Self.tailSilence + 0.06 {
             stopRecording()
             return
         }
         armAdaptiveTail(startedAt: Date())
     }
 
-    /// Observed post-release silence that ends the tail early — word tails
-    /// decay in <100ms, and `lastVoiceAt` staleness (level coalescing) is
-    /// bounded ~64ms, both inside this margin.
-    private static let tailSilence: TimeInterval = 0.11
+    /// Observed post-release silence that ends the tail early. Word endings
+    /// decay in well under 80ms, and the recorder tracks voice per tap
+    /// callback (~21ms granularity, no dispatch coalescing), so 85ms of
+    /// observed quiet is genuinely quiet.
+    private static let tailSilence: TimeInterval = 0.085
 
-    /// The polling release tail: every 25ms, stop as soon as `tailSilence` of
+    /// The polling release tail: every 15ms, stop as soon as `tailSilence` of
     /// quiet has been seen — or when the full `releaseTail` elapses. Common
-    /// case ("finish word, release") stops ~80–100ms sooner than the fixed
+    /// case ("finish word, release") stops ~100ms+ sooner than the fixed
     /// wait did. The chained work item lives in `pendingStop`, so
     /// `flushPendingStop()` (a new hold starting) cancels the chain exactly
     /// like it cancelled the one-shot timer.
     private func armAdaptiveTail(startedAt: Date) {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.pendingStop != nil else { return }
-            let quiet = Date().timeIntervalSince(self.lastVoiceAt)
             let elapsed = Date().timeIntervalSince(startedAt)
-            if quiet >= Self.tailSilence || elapsed >= self.releaseTail {
+            if self.recorder.quietFor() >= Self.tailSilence || elapsed >= self.releaseTail {
                 self.pendingStop = nil
                 self.stopRecording()
             } else {
@@ -274,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         pendingStop = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.015, execute: work)
     }
 
     /// Run the pending delayed stop right now (if any) — used when a new hold
@@ -310,12 +312,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hideOverlaySoon()
             return
         }
+        // Hold the machine at speed for the whole hold→type window (tier
+        // knob): no App Nap, no timer coalescing, P-cores clocked — decode
+        // latency on battery matches plugged-in.
+        if dictationActivity == nil, Settings.shared.resolvedSpeedTier.holdsLatencyAssertion {
+            dictationActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical], reason: "Slive dictation")
+        }
+        // Prime the Neural Engine while the user is still speaking (tier
+        // knob; also the Feather tier's reload-on-hold path): after minutes
+        // of idle the compiled graph pages back in on first use — pay that
+        // now, in parallel with the hold, not after release.
+        whisper.primeIfCold(Settings.shared.whisperModel)
         // Subtle audio cue that a call activated — distinct per call type.
         // Posted on the NEXT runloop turn: its engine restart (auto-shutdown
         // wake) is a few ms of main-thread work that shouldn't sit between
         // key-down and the pill/mic being live.
         let cueAction = currentAction
         DispatchQueue.main.async { FeedbackPlayer.shared.playActivation(for: cueAction) }
+    }
+
+    /// Drop the latency-critical assertion once a dictation cycle fully ends.
+    private func endDictationActivity() {
+        if let activity = dictationActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            dictationActivity = nil
+        }
     }
 
     private func stopRecording() {
@@ -361,17 +383,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             //    the file when they're unavailable (native-format fallback, or
             //    the model needs a load — the file path loads it).
             let tTranscribe = Date()
+            // Trim leading/trailing silence first: dead air before the first
+            // word (hold → think → speak) and the release tail's quiet both
+            // cost decode windows and trip fallback thresholds for nothing.
+            let voiced = TranscriptionModel.trimSilence(samples)
             var transcript: String?
-            if samples.count > 16_000 / 3 {
-                transcript = await whisper.transcribeSamples(samples, model: whisperModel)
+            if voiced.count > 16_000 / 3 {
+                transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
             }
-            if transcript == nil {
+            // File fallback: native-format recordings have no canonical
+            // samples, and a failed samples decode (model still loading) also
+            // lands here. Skipped only when the canonical buffer positively
+            // shows the hold was silence.
+            if transcript == nil, samples.isEmpty || voiced.count > 16_000 / 3 {
                 transcript = await whisper.transcribe(wavURL, model: whisperModel)
             }
             // Unconditional: one line per dictation, and THE number to check
             // whenever "dictation feels slow" comes up again.
-            NSLog("Slive: decoded %.1fs audio in %.2fs (%@)",
-                  duration, Date().timeIntervalSince(tTranscribe), whisperModel)
+            NSLog("Slive: decoded %.1fs audio in %.2fs (%@)%@",
+                  duration, Date().timeIntervalSince(tTranscribe), whisperModel,
+                  ProcessInfo.processInfo.isLowPowerModeEnabled
+                      ? " [LOW POWER MODE — decode throttled]" : "")
             if Task.isCancelled { return }
             guard let text = transcript, !text.isEmpty else {
                 await MainActor.run { self.handleNoTranscript() }
@@ -447,6 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.beginTranscribing()
         Task { @MainActor in
             let outcome = await continuous.stop()
+            endDictationActivity()
             if let releasedAt {
                 NSLog("Slive: stream release→final %.2fs (tail+final pass)",
                       Date().timeIntervalSince(releasedAt))
@@ -548,6 +581,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Settle the streamed answer into a final, text-sized box with a Continue
     /// footer, remember the turn (for a possible continuation), and record it.
     @MainActor private func finalizeAssist(question: String, answer: String) {
+        endDictationActivity()
         let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             pendingTurn = nil; model.finishListening(); hideOverlaySoon(); return
@@ -567,6 +601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Empty/failed transcript. If the model isn't ready, say so (with what to
     /// do); otherwise just fade the overlay (silence / a mis-hit key).
     @MainActor private func handleNoTranscript() {
+        endDictationActivity()
         let message: String?
         switch whisper.status(for: Settings.shared.whisperModel) {
         case .notDownloaded:
@@ -630,6 +665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // save, stats — can ever sit in front of the typeout. This ordering is
         // the guarantee; saving happens strictly after the text is on its way.
         let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed)
+        endDictationActivity()
         if let releasedAt {
             NSLog("Slive: release→typed %.2fs (tail+decode+dispatch)",
                   Date().timeIntervalSince(releasedAt))
@@ -789,6 +825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shown when the backend couldn't be brought up in time — a clear message
     /// instead of an empty result.
     @MainActor private func showBackendError() {
+        endDictationActivity()
         let msg = "Backend is still starting — hold and try again in a moment."
         model.showResult(msg)
         overlay.resize(to: OverlayMetrics.panelSize(for: msg))

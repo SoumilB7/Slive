@@ -275,12 +275,39 @@ final class TranscriptionModel: ObservableObject {
         return Array(pipe.audioProcessor.audioSamples)
     }
 
+    /// Trim leading and trailing silence from a canonical 16 kHz mono buffer,
+    /// keeping `pad` samples (default 150ms) around the voiced span. Dead air
+    /// costs decode windows and trips fallback thresholds for nothing — every
+    /// one-shot dictation runs through this first. Pure function, covered by
+    /// `--self-test`. Returns an empty slice when nothing crosses the
+    /// threshold (the hold was silence).
+    static func trimSilence(_ samples: [Float], threshold: Float = 0.01,
+                            pad: Int = 2_400) -> ArraySlice<Float> {
+        let frame = 160   // 10ms at 16k
+        guard samples.count >= frame else { return samples[0..<0] }
+        var first = -1
+        var last = -1
+        var i = 0
+        while i + frame <= samples.count {
+            var sum: Float = 0
+            for j in i..<(i + frame) { sum += samples[j] * samples[j] }
+            if (sum / Float(frame)).squareRoot() > threshold {
+                if first < 0 { first = i }
+                last = i + frame
+            }
+            i += frame
+        }
+        guard first >= 0 else { return samples[0..<0] }
+        return samples[max(0, first - pad)..<min(samples.count, last + pad)]
+    }
+
     /// Transcribe a raw sample array in full on `model`'s pipe. Used on release to
     /// produce the complete, accurate transcript — including the final sub-second
     /// the streaming loop never processed (it only runs on >1s of new buffer).
     /// `model` is explicit so this still works after `stopLiveDictation()`.
     func transcribeSamples(_ samples: [Float], model: String) async -> String? {
         guard let pipe = pipes[model], samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
+        lastDecodeAt = Date()
         let results: [TranscriptionResult]? =
             try? await pipe.transcribe(audioArray: samples,
                                        decodeOptions: decodeOptions(chunking: true))
@@ -348,6 +375,75 @@ final class TranscriptionModel: ObservableObject {
             guard liveTranscriber == nil, let model, let pipe = pipes[model] else { return }
             pipe.audioProcessor.purgeAudioSamples(keepingLast: 0)
         }
+    }
+
+    // MARK: - Warmup + residency (speed vs battery)
+
+    /// Stamped at the start of every decode; drives the battery-mode idle
+    /// unload and the cold-graph priming heuristic.
+    private var lastDecodeAt = Date()
+    private var warming = false
+    private var idleUnloadTimer: Timer?
+
+    /// One tiny decode (0.5s of silence) so the compiled ANE graph is resident
+    /// and kernels are hot. Fire-and-forget; self-serialising.
+    func warmUp(_ model: String) {
+        guard let pipe = pipes[model], !warming else { return }
+        warming = true
+        Task {
+            let t0 = Date()
+            _ = try? await pipe.transcribe(audioArray: [Float](repeating: 0, count: 8_000),
+                                           decodeOptions: decodeOptions())
+            warming = false
+            Log.stt(String(format: "warmed %@ in %.2fs", model, Date().timeIntervalSince(t0)))
+        }
+    }
+
+    /// Called at hold-start: if the model was unloaded (Feather tier) start
+    /// loading NOW — overlapped with the user speaking — and, on tiers that
+    /// prime, if the graph has merely gone cold (minutes since the last
+    /// decode), run a warmup in parallel with the hold so release pays
+    /// inference only.
+    func primeIfCold(_ model: String) {
+        if pipes[model] == nil {
+            if isDownloaded(model), !loadingModels.contains(model) {
+                Task { await load(model) }   // load() warms up on success
+            }
+            return
+        }
+        guard Settings.shared.resolvedSpeedTier.primesOnHold,
+              Date().timeIntervalSince(lastDecodeAt) > 300 else { return }
+        lastDecodeAt = Date()   // debounce repeat holds while warming
+        warmUp(model)
+    }
+
+    /// Apply the residency side of the selected SpeedTier. Pinned tiers just
+    /// disarm the timer; Feather arms a 60s check that releases every pipe
+    /// after the tier's idle window — `primeIfCold` reloads on the next hold,
+    /// overlapped with the user speaking, and the file path self-heals
+    /// regardless.
+    func applySpeedTier() {
+        idleUnloadTimer?.invalidate()
+        idleUnloadTimer = nil
+        guard Settings.shared.resolvedSpeedTier.idleUnloadAfter != nil else { return }
+        let timer = Timer(timeInterval: 60, repeats: true) { _ in
+            Task { @MainActor in TranscriptionModel.shared.unloadIfIdle() }
+        }
+        timer.tolerance = 10
+        RunLoop.main.add(timer, forMode: .common)
+        idleUnloadTimer = timer
+    }
+
+    private func unloadIfIdle() {
+        guard let after = Settings.shared.resolvedSpeedTier.idleUnloadAfter,
+              Date().timeIntervalSince(lastDecodeAt) > after,
+              liveTranscriber == nil,
+              !pipes.isEmpty else { return }
+        NSLog("Slive: Feather tier — released idle transcription model(s)")
+        // Statuses stay .ready on purpose: the models are still downloaded and
+        // one hold away — every decode path load-on-demands through
+        // `primeIfCold` / `transcribe(url:)`.
+        pipes.removeAll()
     }
 
     // MARK: - Selection / loading
@@ -439,6 +535,10 @@ final class TranscriptionModel: ObservableObject {
             statuses[model] = .ready
             Log.stt(String(format: "READY \(model) in %.1fs (resident: \(pipes.keys.sorted()))", Date().timeIntervalSince(t0)))
             NSLog("Slive: WhisperKit ready (\(model)).")
+            // Immediately push the compiled graph through one tiny decode so
+            // the FIRST real dictation pays inference only, not residency
+            // (skipped on the Feather tier — its ethos is no idle spend).
+            if Settings.shared.resolvedSpeedTier.warmsAfterLoad { warmUp(model) }
         } catch is TimeoutError {
             loadingModels.remove(model)
             statuses[model] = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
@@ -460,6 +560,7 @@ final class TranscriptionModel: ObservableObject {
             await load(model)
         }
         guard let pipe = pipes[model] else { return nil }
+        lastDecodeAt = Date()
         do {
             let results = try await pipe.transcribe(
                 audioPath: url.path,

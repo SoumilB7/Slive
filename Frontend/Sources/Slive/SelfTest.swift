@@ -20,6 +20,8 @@ enum SelfTest {
         hotkeyModelChecks()
         hotkeyMatchingChecks()
         providerChecks()
+        speedTierChecks()
+        silenceTrimChecks()
         textHygieneChecks()
         pacingChecks()
         wpmChecks()
@@ -200,6 +202,66 @@ enum SelfTest {
         equal(config.model(for: .local), "", "local has no default model — must be picked")
         config.setModel("google/gemma-3n-E2B-it", for: .local)
         equal(config.model(for: .local), "google/gemma-3n-E2B-it", "local model override sticks")
+    }
+
+    // MARK: - Speed tiers (the latency ⇄ resources contract)
+
+    private static func speedTierChecks() {
+        print("[Speed tiers]")
+        check(SpeedTier.instant.pinsModels && SpeedTier.instant.primesOnHold
+                && SpeedTier.instant.holdsLatencyAssertion && SpeedTier.instant.warmsAfterLoad,
+              "Instant spends everything for speed")
+        check(!SpeedTier.feather.pinsModels && SpeedTier.feather.idleUnloadAfter != nil
+                && !SpeedTier.feather.warmsAfterLoad && !SpeedTier.feather.primesOnHold,
+              "Feather spends nothing while idle")
+        check(SpeedTier.snappy.pinsModels && !SpeedTier.snappy.primesOnHold
+                && SpeedTier.snappy.holdsLatencyAssertion,
+              "Snappy keeps models and clocks, drops per-hold priming")
+
+        let factor = SpeedTier.decodeFactor(for: "large-v3-v20240930_626MB")
+        let latencies = SpeedTier.allCases.map { $0.estimatedLatency(modelFactor: factor) }
+        check(latencies == latencies.sorted() && Set(latencies).count == latencies.count,
+              "tier latencies strictly increase Instant → Feather")
+        let energies = SpeedTier.allCases.map(\.energyIndex)
+        check(energies == energies.sorted(by: >) && Set(energies).count == energies.count,
+              "tier energy strictly decreases Instant → Feather")
+        check(SpeedTier.feather.estimatedRamGB(modelResidentGB: 1.2) < 0.1,
+              "Feather's idle RAM is near zero")
+
+        let xs = LatencyGraphView.xPositions(latencies: latencies, width: 400)
+        check(xs == xs.sorted() && xs.first! >= 0 && xs.last! <= 400,
+              "graph x-positions are ordered and inside the plot")
+        check(LatencyGraphView.ms(0.34) == "~340ms" && LatencyGraphView.ms(1.2) == "~1.2s",
+              "latency labels format ms under 1s, seconds above")
+    }
+
+    // MARK: - Silence trim (pre-decode)
+
+    private static func silenceTrimChecks() {
+        print("[Silence trim]")
+        let rate = 16_000
+        let quiet = [Float](repeating: 0.001, count: rate)          // 1s near-silence
+        let voice = [Float](repeating: 0.1, count: rate / 2)        // 0.5s clear voice
+
+        check(TranscriptionModel.trimSilence(quiet).isEmpty,
+              "pure silence trims to empty (skip decode entirely)")
+
+        let padded = quiet + voice + quiet
+        let trimmed = TranscriptionModel.trimSilence(padded)
+        let padSamples = 2_400
+        check(!trimmed.isEmpty
+                && trimmed.count >= voice.count
+                && trimmed.count <= voice.count + 2 * padSamples + 320,
+              "silence-padded voice trims to the voiced span + ~150ms pads",
+              "got \(trimmed.count) samples for \(voice.count) voiced")
+        // The voiced span itself must survive intact.
+        check(trimmed.contains(0.1), "voiced samples survive the trim")
+
+        let bare = TranscriptionModel.trimSilence(voice)
+        check(bare.count == voice.count, "no-silence input passes through whole")
+
+        check(TranscriptionModel.trimSilence([Float](repeating: 0, count: 100)).isEmpty,
+              "sub-frame input trims to empty")
     }
 
     // MARK: - Text hygiene

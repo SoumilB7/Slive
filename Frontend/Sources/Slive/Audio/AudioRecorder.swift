@@ -57,6 +57,20 @@ final class AudioRecorder {
     /// the file). Guarded by a lock: the tap thread appends while stop() reads.
     private var sessionSamples: [Float] = []
     private let samplesLock = NSLock()
+    /// Last tap callback whose RMS crossed the voice threshold (guarded by
+    /// `samplesLock`; written on the tap thread, read from main).
+    private var lastVoiceTime: CFAbsoluteTime = 0
+
+    /// Seconds since the tap last heard voice-level audio, at full callback
+    /// granularity (~21ms). `.infinity` before any voice this session — a
+    /// hold with no speech releases with no tail at all.
+    func quietFor() -> TimeInterval {
+        samplesLock.lock()
+        let t = lastVoiceTime
+        samplesLock.unlock()
+        guard t > 0 else { return .infinity }
+        return CFAbsoluteTimeGetCurrent() - t
+    }
     /// FFT is rebuilt only when the analysis rate changes (device switch), not
     /// per hold.
     private var fftRate: Double = 0
@@ -130,6 +144,9 @@ final class AudioRecorder {
     @discardableResult
     func start() -> Bool {
         guard !isRecording else { return true }
+        samplesLock.lock()
+        lastVoiceTime = 0   // fresh session — no stale voice recency
+        samplesLock.unlock()
 
         let input = engine.inputNode
         // Attach AEC BEFORE reading the format — voice processing changes the
@@ -285,7 +302,17 @@ final class AudioRecorder {
         // detection, whose fidelity we keep at full rate via the running max.
         var meanSquare: Float = 0
         vDSP_measqv(channelData[0], 1, &meanSquare, vDSP_Length(frames))
-        windowMaxRMS = max(windowMaxRMS, sqrtf(meanSquare))
+        let instantRMS = sqrtf(meanSquare)
+        windowMaxRMS = max(windowMaxRMS, instantRMS)
+        // Voice recency at full callback rate (~21ms buffers): the coalesced
+        // level dispatch below is fine for visuals but adds up to ~64ms of
+        // staleness — the release tail reads THIS instead, so it can end the
+        // moment real silence is observed.
+        if instantRMS > 0.03 {
+            samplesLock.lock()
+            lastVoiceTime = CFAbsoluteTimeGetCurrent()
+            samplesLock.unlock()
+        }
 
         // FFT + main-thread dispatch only every 3rd callback (~15/s instead of
         // ~47/s): the 60fps easer interpolates the visual identically, and the

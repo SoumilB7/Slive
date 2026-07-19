@@ -1,0 +1,192 @@
+import SwiftUI
+
+/// The latency ⇄ resources graph: four real configurations plotted by their
+/// estimated release→typed latency (X) against what they spend (Y — resident
+/// RAM in accent, energy behavior in orange). Click a point to LIVE that
+/// point: the tier applies immediately, and the readout below itemizes
+/// exactly what the chosen latency costs. Estimates track the selected
+/// dictation model, so the chart tells the truth for Balanced, not for a
+/// demo-sized model.
+struct LatencyGraphView: View {
+    @ObservedObject var settings: Settings
+
+    private var tiers: [SpeedTier] { SpeedTier.allCases }
+    private var modelFactor: Double { SpeedTier.decodeFactor(for: settings.whisperModel) }
+    private var residentGB: Double { SpeedTier.residentGB(for: settings.whisperModel) }
+    private var latencies: [Double] { tiers.map { $0.estimatedLatency(modelFactor: modelFactor) } }
+    private var selected: SpeedTier { settings.resolvedSpeedTier }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            chart
+                .frame(height: 148)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 8)
+                .innerWell()
+
+            HStack(spacing: 14) {
+                legendDot(color: SliveTheme.accent, label: "Model RAM")
+                legendDot(color: .orange.opacity(0.9), label: "Energy")
+                Spacer()
+                Text("estimates for \(settings.whisperModel) — applies instantly")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textTertiary)
+            }
+
+            // The receipt: what the clicked latency costs, itemized.
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(selected.costLines(modelResidentGB: residentGB), id: \.0) { line in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(line.0)
+                            .font(SliveTheme.font(10, .semibold))
+                            .foregroundStyle(SliveTheme.textSecondary)
+                            .frame(width: 92, alignment: .leading)
+                        Text(line.1)
+                            .font(SliveTheme.mono(10.5))
+                            .foregroundStyle(SliveTheme.textMid)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .innerWell()
+        }
+    }
+
+    // MARK: - Chart
+
+    private var chart: some View {
+        GeometryReader { geo in
+            let xs = Self.xPositions(latencies: latencies, width: geo.size.width)
+            ZStack(alignment: .topLeading) {
+                Canvas { ctx, size in
+                    draw(in: &ctx, size: size, xs: xs)
+                }
+                // One generous hit column per tier — a graph you can't easily
+                // click is a diagram, not a control.
+                ForEach(Array(tiers.enumerated()), id: \.element.id) { index, tier in
+                    let lo = index == 0 ? 0 : (xs[index - 1] + xs[index]) / 2
+                    let hi = index == tiers.count - 1 ? geo.size.width : (xs[index] + xs[index + 1]) / 2
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .frame(width: max(hi - lo, 8), height: geo.size.height)
+                        .offset(x: lo)
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                settings.speedTier = tier.rawValue
+                            }
+                            TranscriptionModel.shared.applySpeedTier()
+                        }
+                        .help("\(tier.label) — ≈\(Self.ms(latencies[index]))")
+                }
+            }
+        }
+    }
+
+    private func draw(in ctx: inout GraphicsContext, size: CGSize, xs: [CGFloat]) {
+        let plotTop: CGFloat = 8
+        let plotBottom = size.height - 30   // room for the tier labels
+        let plotHeight = plotBottom - plotTop
+
+        func y(_ fraction: Double) -> CGFloat {
+            plotBottom - plotHeight * CGFloat(min(max(fraction, 0), 1))
+        }
+
+        // Series, each normalised to its own scale (shape is the message).
+        let maxRam = max(residentGB, 0.1)
+        let ramFractions = tiers.map { $0.estimatedRamGB(modelResidentGB: residentGB) / maxRam }
+        let energyFractions = tiers.map(\.energyIndex)
+
+        // Baseline.
+        var base = Path()
+        base.move(to: CGPoint(x: 0, y: plotBottom))
+        base.addLine(to: CGPoint(x: size.width, y: plotBottom))
+        ctx.stroke(base, with: .color(.white.opacity(0.12)), lineWidth: 1)
+
+        // Selected column: vertical hairline + soft glow behind its points.
+        let sel = selected.rawValue
+        var hair = Path()
+        hair.move(to: CGPoint(x: xs[sel], y: plotTop))
+        hair.addLine(to: CGPoint(x: xs[sel], y: plotBottom))
+        ctx.stroke(hair, with: .color(SliveTheme.accent.opacity(0.35)),
+                   style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+
+        // RAM area + line (accent).
+        var area = Path()
+        area.move(to: CGPoint(x: xs[0], y: plotBottom))
+        for (i, x) in xs.enumerated() { area.addLine(to: CGPoint(x: x, y: y(ramFractions[i]))) }
+        area.addLine(to: CGPoint(x: xs[xs.count - 1], y: plotBottom))
+        area.closeSubpath()
+        ctx.fill(area, with: .color(SliveTheme.accent.opacity(0.08)))
+        drawSeries(&ctx, xs: xs, ys: ramFractions.map(y),
+                   color: SliveTheme.accent, selectedIndex: sel)
+
+        // Energy line (orange).
+        drawSeries(&ctx, xs: xs, ys: energyFractions.map(y),
+                   color: .orange.opacity(0.9), selectedIndex: sel)
+
+        // Tier labels along the X axis: latency first (it IS the axis), name under.
+        for (i, tier) in tiers.enumerated() {
+            let isSel = i == sel
+            let latency = Text(Self.ms(latencies[i]))
+                .font(SliveTheme.mono(9.5))
+                .foregroundColor(isSel ? SliveTheme.accent : .white.opacity(0.55))
+            ctx.draw(ctx.resolve(latency), at: CGPoint(x: xs[i], y: plotBottom + 9))
+            let name = Text(tier.label)
+                .font(SliveTheme.font(9, isSel ? .bold : .medium))
+                .foregroundColor(isSel ? .white.opacity(0.9) : .white.opacity(0.4))
+            ctx.draw(ctx.resolve(name), at: CGPoint(x: xs[i], y: plotBottom + 21))
+        }
+    }
+
+    private func drawSeries(_ ctx: inout GraphicsContext, xs: [CGFloat], ys: [CGFloat],
+                            color: Color, selectedIndex: Int) {
+        var line = Path()
+        for (i, x) in xs.enumerated() {
+            let p = CGPoint(x: x, y: ys[i])
+            if i == 0 { line.move(to: p) } else { line.addLine(to: p) }
+        }
+        ctx.stroke(line, with: .color(color.opacity(0.8)), lineWidth: 1.5)
+        for (i, x) in xs.enumerated() {
+            let p = CGPoint(x: x, y: ys[i])
+            let r: CGFloat = i == selectedIndex ? 4 : 2.5
+            if i == selectedIndex {
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 7, y: p.y - 7, width: 14, height: 14)),
+                         with: .color(color.opacity(0.18)))
+            }
+            ctx.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)),
+                     with: .color(color))
+        }
+    }
+
+    private func legendDot(color: Color, label: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(label)
+                .font(SliveTheme.font(10, .semibold))
+                .foregroundStyle(SliveTheme.textSecondary)
+        }
+    }
+
+    // MARK: - Pure layout math (self-tested)
+
+    /// X position per tier, spaced by actual estimated latency so the axis is
+    /// honest — equal visual gaps would lie about how close the tiers are.
+    static func xPositions(latencies: [Double], width: CGFloat,
+                           inset: CGFloat = 26) -> [CGFloat] {
+        guard let lo = latencies.min(), let hi = latencies.max(), hi > lo else {
+            return latencies.enumerated().map { i, _ in
+                inset + (width - 2 * inset) * CGFloat(i) / CGFloat(max(latencies.count - 1, 1))
+            }
+        }
+        let span = width - 2 * inset
+        return latencies.map { inset + span * CGFloat(($0 - lo) / (hi - lo)) }
+    }
+
+    static func ms(_ seconds: Double) -> String {
+        seconds < 1 ? "~\(Int((seconds * 1000).rounded()))ms"
+                    : String(format: "~%.1fs", seconds)
+    }
+}

@@ -30,6 +30,7 @@ final class Settings: ObservableObject {
         static let groundTruthBaseURL = "groundTruthBaseURL"
         static let localQuantized = "localQuantized"
         static let localMemLimitGB = "localMemLimitGB"
+        static let speedTier = "speedTier"
         static let didFirstRun = "didFirstRun"
     }
 
@@ -211,6 +212,17 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(localMemLimitGB, forKey: Keys.localMemLimitGB) }
     }
 
+    /// The latency ⇄ resources tier (SpeedTier raw value; 0 = Instant).
+    /// Picked on the General page's tradeoff graph — each tier is a real set
+    /// of residency/clock/warmup knobs, applied by TranscriptionModel and
+    /// AppDelegate.
+    @Published var speedTier: Int {
+        didSet { UserDefaults.standard.set(speedTier, forKey: Keys.speedTier) }
+    }
+
+    /// The typed tier, clamped safe against any stored value.
+    var resolvedSpeedTier: SpeedTier { SpeedTier(rawValue: speedTier) ?? .instant }
+
     /// Snapshot of the local-inference knobs, safe to read off the main actor —
     /// the HTTP clients build request bodies on background executors.
     nonisolated static func localInferenceOptions() -> (quantized: Bool, memGB: Double) {
@@ -304,6 +316,9 @@ final class Settings: ObservableObject {
         let localOpts = Self.localInferenceOptions()
         localQuantized = localOpts.quantized
         localMemLimitGB = localOpts.memGB
+        speedTier = UserDefaults.standard.object(forKey: Keys.speedTier) == nil
+            ? SpeedTier.instant.rawValue
+            : UserDefaults.standard.integer(forKey: Keys.speedTier)
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.
         Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"

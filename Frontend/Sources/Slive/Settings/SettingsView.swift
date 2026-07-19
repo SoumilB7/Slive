@@ -207,6 +207,7 @@ struct SettingsView: View {
                 // 880pt grid: pace hero full width, then two two-up rows.
                 VStack(spacing: SliveTheme.cardGap) {
                     speakingPaceCard
+                    speedCard
                     HStack(alignment: .top, spacing: SliveTheme.gridGap) {
                         keyCard
                         modelCard
@@ -220,6 +221,7 @@ struct SettingsView: View {
             } else {
                 VStack(spacing: SliveTheme.cardGap) {
                     speakingPaceCard
+                    speedCard
                     keyCard
                     modelCard
                     behaviorCard
@@ -375,6 +377,16 @@ struct SettingsView: View {
     }
 
     // MARK: Advanced
+
+    /// The latency ⇄ resources tradeoff, as a clickable graph: pick the
+    /// latency you want, see exactly what it spends.
+    private var speedCard: some View {
+        SettingsCard("SPEED ⇄ RESOURCES") {
+            Text("Click the latency you want. Lower latency pins more in RAM and holds the machine at speed — the receipt below says exactly what your pick spends.")
+                .sliveCaption()
+            LatencyGraphView(settings: settings)
+        }
+    }
 
     private var advancedCard: some View {
         SettingsCard("ADVANCED") {
