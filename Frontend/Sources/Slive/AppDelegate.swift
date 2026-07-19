@@ -39,16 +39,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chatActive = false
     private var pendingTurn: (question: String, answer: String)?
 
-    /// How long the mic stays open AFTER the key is released. Releasing the key
-    /// often overlaps the last word — stopping instantly clips its tail and
-    /// the transcript loses the final word or two. A short grace captures it.
-    private let releaseTail: TimeInterval = 0.20
+    /// The mic stays open for a full half-second AFTER release. The listening
+    /// pill disappears immediately, so this correctness margin has no perceived
+    /// UI cost and protects quiet/slow final syllables from being clipped.
+    static let postReleaseCaptureSeconds: TimeInterval = 0.50
     /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
     private var pendingStop: DispatchWorkItem?
-    /// Last time the mic heard something voice-like (RMS above a floor). Lets
-    /// `keyUp` skip the release tail when you already finished speaking — the
-    /// tail only pays off when the release overlaps speech, so a quiet mic means
-    /// the stop (and thus transcription) can start immediately.
     /// When the hotkey lifted — anchor for the always-on release→typed log.
     private var releasedAt: Date?
     /// Latency-critical activity assertion held for hold→type, so P-cores stay
@@ -224,59 +220,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             armWorkItem = nil
             return
         }
-        // Don't stop the instant the key lifts — keep listening for a beat so
-        // the tail of the last word makes it into the audio. The tail is
-        // ADAPTIVE twice over: if the mic has already been quiet long enough,
-        // skip it entirely; otherwise poll while it runs and stop the moment
-        // ~110ms of silence has been observed (word endings decay in well
-        // under that) instead of always paying the full 200ms. (Continuous
-        // keeps the fixed tail: its voice activity isn't tracked by
-        // `recorder.onLevels`.)
+        // Visual release is immediate, but audio release is deliberately not:
+        // keep capturing for a full 0.5s so the final word cannot be clipped.
+        // `hideVisual` preserves the session; stopRecording/stopLiveDictation
+        // later move it to transcribing, and any copy/assistant result can
+        // explicitly present the panel again.
         pendingStop?.cancel()
         releasedAt = Date()   // anchors the release→typed timing log
+        overlay.hideVisual()
+        model.reset()
         let action = currentAction
-        if action == .stream {
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.pendingStop = nil
-                self.stopLiveDictation()
-            }
-            pendingStop = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + releaseTail, execute: work)
-            return
-        }
-        if recorder.quietFor() > Self.tailSilence + 0.06 {
-            stopRecording()
-            return
-        }
-        armAdaptiveTail(startedAt: Date())
-    }
-
-    /// Observed post-release silence that ends the tail early. Word endings
-    /// decay in well under 80ms, and the recorder tracks voice per tap
-    /// callback (~21ms granularity, no dispatch coalescing), so 85ms of
-    /// observed quiet is genuinely quiet.
-    private static let tailSilence: TimeInterval = 0.085
-
-    /// The polling release tail: every 15ms, stop as soon as `tailSilence` of
-    /// quiet has been seen — or when the full `releaseTail` elapses. Common
-    /// case ("finish word, release") stops ~100ms+ sooner than the fixed
-    /// wait did. The chained work item lives in `pendingStop`, so
-    /// `flushPendingStop()` (a new hold starting) cancels the chain exactly
-    /// like it cancelled the one-shot timer.
-    private func armAdaptiveTail(startedAt: Date) {
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.pendingStop != nil else { return }
-            let elapsed = Date().timeIntervalSince(startedAt)
-            if self.recorder.quietFor() >= Self.tailSilence || elapsed >= self.releaseTail {
-                self.pendingStop = nil
-                self.stopRecording()
-            } else {
-                self.armAdaptiveTail(startedAt: startedAt)
-            }
+            guard let self else { return }
+            self.pendingStop = nil
+            if action == .stream { self.stopLiveDictation() }
+            else { self.stopRecording() }
         }
         pendingStop = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.015, execute: work)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.postReleaseCaptureSeconds, execute: work)
     }
 
     /// Run the pending delayed stop right now (if any) — used when a new hold
@@ -450,9 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             whisper.select(Settings.shared.continuousModel)
             let msg = "Preparing the transcription model — hold again in a moment."
             model.showResult(msg)
-            overlay.show()
-            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
-            overlay.setInteractive(true)
+            overlay.showResult(size: OverlayMetrics.panelSize(for: msg))
             scheduleCollapse(after: 3.5)
             return
         }
@@ -496,8 +456,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if !outcome.typed && !text.isEmpty {
                 model.showResult(text)
-                overlay.resize(to: OverlayMetrics.panelSize(for: text))
-                overlay.setInteractive(true)          // copy button clickable
+                overlay.showResult(size: OverlayMetrics.panelSize(for: text))
                 scheduleCollapse(after: resultDisplayDuration)
             } else {
                 model.finishListening()
@@ -551,8 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AudioModel.ChatTurn(role: $0.role, text: $0.content)
         }
         model.beginStreaming(priorTurns: priorTurns, question: question)
-        overlay.resize(to: OverlayMetrics.streamingPanelSize)
-        overlay.setInteractive(true)
+        overlay.showResult(size: OverlayMetrics.streamingPanelSize)
 
         var accumulated = ""
         var lastRender = Date.distantPast
@@ -596,9 +554,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.showAssistantResult(trimmed)
         // Chat transcripts use the fixed scrolling box; a fresh single answer
         // sizes to its text.
-        overlay.resize(to: wasChat ? OverlayMetrics.assistantStreamingPanelSize
-                                   : OverlayMetrics.assistantPanelSize(for: trimmed))
-        overlay.setInteractive(true)
+        overlay.showResult(size: wasChat ? OverlayMetrics.assistantStreamingPanelSize
+                                         : OverlayMetrics.assistantPanelSize(for: trimmed))
         scheduleCollapse(after: assistantDisplayDuration)
     }
 
@@ -623,8 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.finishListening(); hideOverlaySoon(); return
         }
         model.showResult(message)
-        overlay.resize(to: OverlayMetrics.panelSize(for: message))
-        overlay.setInteractive(true)
+        overlay.showResult(size: OverlayMetrics.panelSize(for: message))
         scheduleCollapse(after: 5.0)
     }
 
@@ -632,8 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func showAssistantError(_ text: String) {
         pendingTurn = nil
         model.showResult(text)
-        overlay.resize(to: OverlayMetrics.panelSize(for: text))
-        overlay.setInteractive(true)
+        overlay.showResult(size: OverlayMetrics.panelSize(for: text))
         scheduleCollapse(after: 6.0)
     }
 
@@ -681,8 +636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Auto-insert off (or blocked by a password field) → the copy box.
             model.showResult(trimmed)
-            overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
-            overlay.setInteractive(true)          // let the copy button be clicked
+            overlay.showResult(size: OverlayMetrics.panelSize(for: trimmed))
             scheduleCollapse(after: resultDisplayDuration)
         }
 
@@ -832,8 +786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         endDictationActivity()
         let msg = "Backend is still starting — hold and try again in a moment."
         model.showResult(msg)
-        overlay.resize(to: OverlayMetrics.panelSize(for: msg))
-        overlay.setInteractive(true)
+        overlay.showResult(size: OverlayMetrics.panelSize(for: msg))
         scheduleCollapse(after: 3.5)
     }
 
