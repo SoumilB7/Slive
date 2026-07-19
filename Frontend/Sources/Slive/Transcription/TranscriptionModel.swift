@@ -382,7 +382,7 @@ final class TranscriptionModel: ObservableObject {
     /// Rolling decode-seconds per audio-second, per model, persisted — the
     /// speed graph shows THIS machine's measured numbers instead of the
     /// static family guesses once a few dictations exist.
-    private static let decodeRatesKey = "decodeRates"
+    private nonisolated static let decodeRatesKey = "decodeRates"
 
     /// EMA blend: measurements settle fast but one outlier can't lie.
     nonisolated static func blendedRate(old: Double?, new: Double) -> Double {
