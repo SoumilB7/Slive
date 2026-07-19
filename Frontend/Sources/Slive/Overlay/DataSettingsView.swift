@@ -22,6 +22,9 @@ struct DataSettingsView: View {
     @State private var bulkTotal = 0
     @State private var gtError: String?
     @State private var confirmClear = false
+    /// Sample ids a bulk run didn't reach (it stops on the first error) — lets
+    /// "Run left" resume exactly where it stopped instead of redoing the rest.
+    @State private var remaining: [String] = []
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -239,6 +242,22 @@ struct DataSettingsView: View {
                 .disabled(bulkRunning || audioSampleCount == 0)
                 .help("Re-transcribe every recording with \(settings.groundTruthModel), replacing existing ground truth")
 
+                // Appears only after a run stopped early — resumes the untouched
+                // tail, which "Transcribe missing" can't reach once a Run-all has
+                // already given those samples an (old) value.
+                if !bulkRunning, !leftoverIDs.isEmpty {
+                    Button {
+                        runRemaining()
+                    } label: {
+                        Label("Run left (\(leftoverIDs.count))", systemImage: "arrow.uturn.left")
+                            .font(SliveTheme.font(11, .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.orange)
+                    .help("Resume where the last run stopped — only the \(leftoverIDs.count) it didn't reach")
+                }
+
                 if bulkRunning {
                     ProgressView(value: Double(bulkDone), total: Double(max(bulkTotal, 1)))
                         .frame(width: 80)
@@ -284,28 +303,47 @@ struct DataSettingsView: View {
         }
     }
 
-    /// Sequentially fetch every sample that has audio but no ground truth yet.
-    /// Sequential on purpose: provider rate limits, and errors stop the run
-    /// instead of failing 30 requests at once.
-    /// With `includeExisting`, every recording is re-run and its Should-be
-    /// value replaced — the way to upgrade all ground truth after switching
-    /// to a better model.
+    /// Sample ids a stopped run left behind that still exist and have audio.
+    /// (Deletions since the stop drop out.)
+    private var leftoverIDs: [String] {
+        let present = Set(store.samples.filter { store.audioURL($0) != nil }.map(\.id))
+        return remaining.filter { present.contains($0) }
+    }
+
+    /// Transcribe every sample that has audio but no ground truth yet. With
+    /// `includeExisting`, re-run every recording and replace its Should-be
+    /// value — the way to upgrade all ground truth after switching models.
     private func bulkTranscribe(includeExisting: Bool = false) {
-        guard !bulkRunning else { return }
+        let todo = store.samples.filter {
+            store.audioURL($0) != nil && (includeExisting || $0.llmTranscript == nil)
+        }
+        runBulk(todo)
+    }
+
+    /// Resume a run that stopped: only the samples it never reached, with the
+    /// currently selected model (so fixing the model then resuming works).
+    private func runRemaining() {
+        let ids = Set(leftoverIDs)
+        runBulk(store.samples.filter { ids.contains($0.id) && store.audioURL($0) != nil })
+    }
+
+    /// The shared sequential loop. Sequential on purpose: provider rate limits,
+    /// and one error stops the run instead of failing 30 requests at once —
+    /// remembering the untouched tail so "Run left" can pick it up.
+    private func runBulk(_ todo: [EditSample]) {
+        guard !bulkRunning, !todo.isEmpty else { return }
         bulkRunning = true
         gtError = nil
+        remaining = []
         let provider = settings.groundTruthProvider
         let model = settings.groundTruthModel
         let key = providers.apiKey(for: provider)
         let baseURL = providers.baseURL(for: provider)
-        let todo = store.samples.filter {
-            store.audioURL($0) != nil && (includeExisting || $0.llmTranscript == nil)
-        }
         bulkTotal = todo.count
         bulkDone = 0
         Task { @MainActor in
             defer { bulkRunning = false }
-            for sample in todo {
+            for (index, sample) in todo.enumerated() {
                 guard let url = store.audioURL(sample) else { continue }
                 do {
                     let text = try await GroundTruthClient().transcribe(
@@ -314,7 +352,9 @@ struct DataSettingsView: View {
                     store.setLLMTranscript(id: sample.id, text: text, model: model)
                     bulkDone += 1
                 } catch {
-                    gtError = "\(error.localizedDescription) — stopped (\(missingCount) left)"
+                    // Remember this sample and every one after it.
+                    remaining = todo[index...].map(\.id)
+                    gtError = "\(error.localizedDescription) — stopped, \(remaining.count) left"
                     return
                 }
             }
