@@ -217,16 +217,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyUp()
             return
         }
-        // A DIFFERENT session is running (other toggle, or a held key) —
-        // ignore the tap; one session at a time, and holds own their keys.
-        guard toggleActive == nil, !isSessionLive else {
-            Log.hotkey("toggle \(action) ignored — another session is live")
+        guard toggleActive == nil else {
+            Log.hotkey("toggle \(action) ignored — another toggle session is live")
             return
+        }
+        // Taps slower than holdActivationDelay make the FIRST tap of a double
+        // mature into a real hold session — by the second tap it's recording
+        // (or already winding down / transcribing a 0.3s fragment). The
+        // completed double outranks that false start: abort it, type nothing
+        // from it, and give the mic to the toggle. Age-gated so a stray
+        // double-tap can never kill a long-running real dictation.
+        if isSessionLive {
+            guard sessionStartedRecently(within: 1.0) else {
+                Log.hotkey("toggle \(action) ignored — a real session is live")
+                return
+            }
+            abortFalseStartSession()
         }
         toggleActive = action
         currentAction = action
         // No hold-activation delay for a tap: the tap IS deliberate.
         if action == .stream { beginLiveDictation() } else { beginRecording() }
+    }
+
+    /// True when the live session began moments ago — i.e. it is the first
+    /// tap of this double, not a dictation someone is mid-sentence into.
+    private func sessionStartedRecently(within interval: TimeInterval) -> Bool {
+        if let t = recordStart, Date().timeIntervalSince(t) < interval { return true }
+        if let t = liveStart, Date().timeIntervalSince(t) < interval { return true }
+        return pendingStop != nil   // tap-1's delayed stop is still queued
+    }
+
+    /// Discard a false-start session completely: no transcription, no typing,
+    /// no training capture — the fragment never happened.
+    private func abortFalseStartSession() {
+        pendingStop?.cancel(); pendingStop = nil
+        armWorkItem?.cancel(); armWorkItem = nil
+        transcribeTask?.cancel(); transcribeTask = nil
+        if continuous.isActive { continuous.cancel() }
+        if recorder.isRecording {
+            let capture = recorder.stop()
+            if let url = capture.url { try? FileManager.default.removeItem(at: url) }
+        }
+        Log.hotkey("false-start hold session aborted by double-tap")
     }
 
     /// True while any recording/stream session is actually running.
