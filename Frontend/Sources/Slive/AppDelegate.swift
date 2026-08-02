@@ -90,15 +90,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         Settings.shared.onHotkeyChange = { [weak self] hk in self?.hotkey.hotkey = hk }
         Settings.shared.onAssistantHotkeyChange = { [weak self] hk in self?.hotkey.assistantHotkey = hk }
-        Settings.shared.onStreamHotkeyChange = { [weak self] hk in
-            self?.hotkey.streamHotkey = hk
+        Settings.shared.onStreamHotkeyChange = { [weak self] _ in
+            self?.syncBindings()
             // Recording/removing the continuous shortcut also decides whether its
             // model belongs in memory.
             self?.refreshModelResidency()
         }
+        Settings.shared.onToggleBindingsChange = { [weak self] in
+            self?.syncBindings()
+            self?.refreshModelResidency()   // a stream toggle also earns the model RAM
+        }
         hotkey.hotkey = Settings.shared.hotkey
         hotkey.assistantHotkey = Settings.shared.assistantHotkey
-        hotkey.streamHotkey = Settings.shared.streamHotkey
+        syncBindings()
 
         // Preload the on-device transcription model IF it's already downloaded
         // (never auto-downloads — the user does that from Settings), and refresh
@@ -142,12 +146,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Push the EFFECTIVE bindings into the monitor: a bind whose on/off
+    /// switch is off simply isn't a binding (hold-dictate keeps its key but
+    /// gets an enabled flag, since it's non-optional).
+    private func syncBindings() {
+        let s = Settings.shared
+        hotkey.dictateHoldEnabled = s.dictateHoldOn
+        hotkey.streamHotkey = s.streamHoldOn ? s.streamHotkey : nil
+        hotkey.dictateToggleHotkey = s.dictateToggleOn ? s.dictateToggleHotkey : nil
+        hotkey.streamToggleHotkey = s.streamToggleOn ? s.streamToggleHotkey : nil
+    }
+
     /// Keep exactly the models that are in use resident: dictation's always,
     /// continuous's only while its shortcut is set (same name = one shared
     /// instance). Everything else is evicted from RAM/ANE.
     private func refreshModelResidency() {
         var keep: Set<String> = [Settings.shared.whisperModel]
-        if Settings.shared.streamHotkey != nil {
+        if (Settings.shared.streamHoldOn && Settings.shared.streamHotkey != nil)
+            || (Settings.shared.streamToggleOn && Settings.shared.streamToggleHotkey != nil) {
             keep.insert(Settings.shared.continuousModel)
         }
         whisper.retainModels(keep)
@@ -179,12 +195,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onDismiss = { [weak self] in self?.dismissOverlay() }
         model.onContinue = { [weak self] in self?.continueChat() }
         continuous.onEnergy = { [weak self] energy in self?.model.pushStreamEnergy(energy) }
+        hotkey.onToggle = { [weak self] action in self?.toggleTapped(action) }
+    }
+
+    // MARK: - Tap-to-toggle flow (click to start, click again to stop)
+
+    /// Which toggle session is live, if any. Toggle sessions reuse the exact
+    /// hold machinery (begin/stop + the 0.3s post-release capture); only who
+    /// decides "release" differs — the second tap instead of a key-up.
+    private var toggleActive: HotkeyAction?
+
+    private func toggleTapped(_ action: HotkeyAction) {
+        // Second tap of the live toggle session → the release.
+        if toggleActive == action {
+            toggleActive = nil
+            keyUp()
+            return
+        }
+        // A DIFFERENT session is running (other toggle, or a held key) —
+        // ignore the tap; one session at a time, and holds own their keys.
+        guard toggleActive == nil, !isSessionLive else {
+            Log.hotkey("toggle \(action) ignored — another session is live")
+            return
+        }
+        toggleActive = action
+        currentAction = action
+        // No hold-activation delay for a tap: the tap IS deliberate.
+        if action == .stream { beginLiveDictation() } else { beginRecording() }
+    }
+
+    /// True while any recording/stream session is actually running.
+    private var isSessionLive: Bool {
+        recorder.isRecording || continuous.isActive || pendingStop != nil
     }
 
     /// User tapped ✕ — cancel any in-flight work, end the chat, and collapse now.
     private func dismissOverlay() {
         transcribeTask?.cancel(); transcribeTask = nil
         collapseWorkItem?.cancel(); collapseWorkItem = nil
+        toggleActive = nil
         continuous.cancel()
         chatActive = false
         conversation.removeAll()
@@ -195,6 +244,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Hold-to-talk flow
 
     private func keyDown(_ action: HotkeyAction) {
+        // A held key takes over from a live toggle session: close the toggle
+        // (schedules its stop), then flush so the new hold starts clean.
+        if toggleActive != nil {
+            toggleActive = nil
+            keyUp()
+        }
         // A delayed stop may still be pending from the previous release — flush
         // it now (stop + hand off to transcription immediately) so the new hold
         // starts from a clean state instead of colliding with a live session.

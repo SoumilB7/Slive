@@ -8,7 +8,7 @@ import CoreGraphics
 /// needs no special permission and never leaks the keys into the app.
 struct HotkeyRecorderView: View {
     /// Which shortcut this recorder edits.
-    enum Target { case dictation, assistant, stream }
+    enum Target { case dictation, assistant, stream, dictationToggle, streamToggle }
 
     @ObservedObject private var settings = Settings.shared
     var target: Target = .dictation
@@ -25,6 +25,8 @@ struct HotkeyRecorderView: View {
         case .dictation: return settings.hotkey
         case .assistant: return settings.assistantHotkey
         case .stream:    return settings.streamHotkey
+        case .dictationToggle: return settings.dictateToggleHotkey
+        case .streamToggle:    return settings.streamToggleHotkey
         }
     }
 
@@ -98,6 +100,8 @@ struct HotkeyRecorderView: View {
         case .dictation: settings.hotkey = hotkey
         case .assistant: settings.assistantHotkey = hotkey
         case .stream:    settings.streamHotkey = hotkey
+        case .dictationToggle: settings.dictateToggleHotkey = hotkey
+        case .streamToggle:    settings.streamToggleHotkey = hotkey
         }
         cancel()
     }
@@ -107,6 +111,8 @@ struct HotkeyRecorderView: View {
         case .dictation: break                     // the primary key can't be unset
         case .assistant: settings.assistantHotkey = nil
         case .stream:    settings.streamHotkey = nil
+        case .dictationToggle: settings.dictateToggleHotkey = nil
+        case .streamToggle:    settings.streamToggleHotkey = nil
         }
     }
 

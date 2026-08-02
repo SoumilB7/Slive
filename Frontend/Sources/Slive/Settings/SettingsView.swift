@@ -335,14 +335,37 @@ struct SettingsView: View {
     // MARK: Push-to-talk key
 
     private var keyCard: some View {
-        SettingsCard("PUSH-TO-TALK KEY") {
-            HotkeyRecorderView(target: .dictation)
+        SettingsCard("DICTATION KEYS") {
+            // Hold: press-and-speak. Its switch can turn the hold bind off
+            // entirely (toggle-only users).
+            HStack(alignment: .top, spacing: 12) {
+                HotkeyRecorderView(
+                    target: .dictation,
+                    title: "Hold to talk",
+                    subtitle: "Hold, speak, release — text lands at your cursor.")
+                    .opacity(settings.dictateHoldOn ? 1 : 0.45)
+                Toggle("", isOn: $settings.dictateHoldOn)
+                    .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
+                    .help("Turn the hold bind on or off")
+            }
+            CardDivider()
+            // Toggle: tap to start, tap again to stop.
+            HStack(alignment: .top, spacing: 12) {
+                HotkeyRecorderView(
+                    target: .dictationToggle,
+                    title: "Tap to toggle",
+                    subtitle: "Tap once to start listening, tap again to finish and type.")
+                    .opacity(settings.dictateToggleOn ? 1 : 0.45)
+                Toggle("", isOn: $settings.dictateToggleOn)
+                    .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
+                    .help("Turn the toggle bind on or off")
+            }
             CardDivider()
             StepsRibbon(steps: [
-                .init(icon: "hand.point.up.left.fill", text: "Hold",
+                .init(icon: "hand.point.up.left.fill", text: "Hold or tap",
                       key: settings.hotkey.label),
                 .init(icon: "waveform", text: "Speak"),
-                .init(icon: "checkmark.circle.fill", text: "Release to type"),
+                .init(icon: "checkmark.circle.fill", text: "Text appears"),
             ])
         }
     }

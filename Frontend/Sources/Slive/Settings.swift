@@ -11,6 +11,12 @@ final class Settings: ObservableObject {
         static let hotkey = "hotkey"
         static let assistantHotkey = "assistantHotkey"
         static let streamHotkey = "streamHotkey"
+        static let dictateToggleHotkey = "dictateToggleHotkey"
+        static let streamToggleHotkey = "streamToggleHotkey"
+        static let dictateHoldOn = "dictateHoldOn"
+        static let dictateToggleOn = "dictateToggleOn"
+        static let streamHoldOn = "streamHoldOn"
+        static let streamToggleOn = "streamToggleOn"
         static let assistantConfig = "assistantConfig"
         static let launchAtLogin = "launchAtLogin"
         static let autoInsert = "autoInsert"
@@ -82,6 +88,54 @@ final class Settings: ObservableObject {
             }
             onStreamHotkeyChange?(streamHotkey)
         }
+    }
+
+    // MARK: Toggle bindings (tap to start, tap again to stop)
+
+    /// Fired when any toggle bind or any of the four on/off switches changes —
+    /// the AppDelegate resyncs the monitor's effective bindings.
+    var onToggleBindingsChange: (() -> Void)?
+
+    /// Tap-to-toggle bind for one-shot dictation (nil = not set). Persisted JSON.
+    @Published var dictateToggleHotkey: Hotkey? {
+        didSet {
+            if let hk = dictateToggleHotkey, let data = try? JSONEncoder().encode(hk) {
+                UserDefaults.standard.set(data, forKey: Keys.dictateToggleHotkey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Keys.dictateToggleHotkey)
+            }
+            onToggleBindingsChange?()
+        }
+    }
+
+    /// Tap-to-toggle bind for continuous dictation (nil = not set). Persisted JSON.
+    @Published var streamToggleHotkey: Hotkey? {
+        didSet {
+            if let hk = streamToggleHotkey, let data = try? JSONEncoder().encode(hk) {
+                UserDefaults.standard.set(data, forKey: Keys.streamToggleHotkey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Keys.streamToggleHotkey)
+            }
+            onToggleBindingsChange?()
+        }
+    }
+
+    /// The four on/off switches — one per config row (hold/toggle × modes).
+    @Published var dictateHoldOn: Bool {
+        didSet { UserDefaults.standard.set(dictateHoldOn, forKey: Keys.dictateHoldOn)
+                 onToggleBindingsChange?() }
+    }
+    @Published var dictateToggleOn: Bool {
+        didSet { UserDefaults.standard.set(dictateToggleOn, forKey: Keys.dictateToggleOn)
+                 onToggleBindingsChange?() }
+    }
+    @Published var streamHoldOn: Bool {
+        didSet { UserDefaults.standard.set(streamHoldOn, forKey: Keys.streamHoldOn)
+                 onToggleBindingsChange?() }
+    }
+    @Published var streamToggleOn: Bool {
+        didSet { UserDefaults.standard.set(streamToggleOn, forKey: Keys.streamToggleOn)
+                 onToggleBindingsChange?() }
     }
 
     /// Non-secret assistant settings (provider, model, base URL, system prompt).
@@ -258,6 +312,28 @@ final class Settings: ObservableObject {
         } else {
             streamHotkey = nil
         }
+        if let data = UserDefaults.standard.data(forKey: Keys.dictateToggleHotkey),
+           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
+            dictateToggleHotkey = decoded
+        } else {
+            dictateToggleHotkey = nil
+        }
+        if let data = UserDefaults.standard.data(forKey: Keys.streamToggleHotkey),
+           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
+            streamToggleHotkey = decoded
+        } else {
+            streamToggleHotkey = nil
+        }
+        // All four switches default ON — a config only acts when its bind is
+        // also set, so fresh installs behave exactly as before.
+        func boolDefault(_ key: String, _ fallback: Bool) -> Bool {
+            UserDefaults.standard.object(forKey: key) == nil
+                ? fallback : UserDefaults.standard.bool(forKey: key)
+        }
+        dictateHoldOn = boolDefault(Keys.dictateHoldOn, true)
+        dictateToggleOn = boolDefault(Keys.dictateToggleOn, true)
+        streamHoldOn = boolDefault(Keys.streamHoldOn, true)
+        streamToggleOn = boolDefault(Keys.streamToggleOn, true)
         if let data = UserDefaults.standard.data(forKey: Keys.assistantConfig),
            let decoded = try? JSONDecoder().decode(AssistantConfig.self, from: data) {
             assistantConfig = decoded

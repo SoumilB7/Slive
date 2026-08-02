@@ -25,22 +25,38 @@ struct ContinuousSettingsView: View {
     // MARK: - Shortcut
 
     private var shortcutCard: some View {
-        SettingsCard("CONTINUOUS SHORTCUT") {
-            HotkeyRecorderView(
-                target: .stream,
-                title: "Continuous shortcut",
-                subtitle: "Hold it and your words type themselves into the field, live, as you talk."
-            )
+        SettingsCard("CONTINUOUS KEYS") {
+            HStack(alignment: .top, spacing: 12) {
+                HotkeyRecorderView(
+                    target: .stream,
+                    title: "Hold to stream",
+                    subtitle: "Hold it and your words type themselves into the field, live, as you talk.")
+                    .opacity(settings.streamHoldOn ? 1 : 0.45)
+                Toggle("", isOn: $settings.streamHoldOn)
+                    .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
+                    .help("Turn the hold bind on or off")
+            }
             CardDivider()
-            if settings.streamHotkey == nil {
+            HStack(alignment: .top, spacing: 12) {
+                HotkeyRecorderView(
+                    target: .streamToggle,
+                    title: "Tap to toggle",
+                    subtitle: "Tap once to start live typing, tap again to finish.")
+                    .opacity(settings.streamToggleOn ? 1 : 0.45)
+                Toggle("", isOn: $settings.streamToggleOn)
+                    .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
+                    .help("Turn the toggle bind on or off")
+            }
+            CardDivider()
+            if settings.streamHotkey == nil && settings.streamToggleHotkey == nil {
                 Label("Continuous dictation stays asleep until you record a shortcut.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.9))
             } else {
                 StepsRibbon(steps: [
-                    .init(icon: "hand.point.up.left.fill", text: "Hold",
-                          key: settings.streamHotkey?.label),
+                    .init(icon: "hand.point.up.left.fill", text: "Hold or tap",
+                          key: (settings.streamHotkey ?? settings.streamToggleHotkey)?.label),
                     .init(icon: "waveform", text: "Speak"),
                     .init(icon: "text.cursor", text: "Types live"),
                 ])

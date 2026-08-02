@@ -185,6 +185,48 @@ enum SelfTest {
         plain.flags = []
         check(!m.handle(type: .keyDown, event: plain), "plain key passes through")
 
+        // Tap-to-toggle: a modifier toggle fires on the exact-match DOWN edge
+        // only; releases do nothing; and its gesture never doubles as a hold.
+        started = []; stopped = []
+        var toggled: [HotkeyAction] = []
+        m = makeMonitor(started: { started.append($0) }, stopped: { stopped.append($0) })
+        m.streamHotkey = nil
+        m.dictateToggleHotkey = Hotkey(modifiers: ctrl, keyCode: nil, label: "⌃")
+        m.onToggle = { toggled.append($0) }
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(ctrl))
+        equal(toggled, [.dictate], "modifier toggle fires on its down edge")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(0))
+        equal(toggled, [.dictate], "releasing the toggle modifier does nothing")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(ctrl))
+        equal(toggled, [.dictate, .dictate], "second tap toggles again")
+        check(started.isEmpty && stopped.isEmpty,
+              "a toggle-bound gesture never starts a hold")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(0))
+        // The unrelated hold key still holds normally alongside the toggle.
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(fn))
+        equal(started, [.dictate], "hold bind still works beside a toggle bind")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(0))
+
+        // Chord toggle: fires once on keyDown (not autorepeat), swallows both
+        // key events.
+        started = []; stopped = []; toggled = []
+        m = makeMonitor(started: { started.append($0) }, stopped: { stopped.append($0) })
+        m.streamToggleHotkey = Hotkey(modifiers: alt, keyCode: 40, label: "⌥ K")
+        m.onToggle = { toggled.append($0) }
+        let tDown = CGEvent(keyboardEventSource: nil, virtualKey: 40, keyDown: true)!
+        tDown.flags = CGEventFlags(rawValue: alt)
+        check(m.handle(type: .keyDown, event: tDown), "chord toggle key-down swallowed")
+        equal(toggled, [.stream], "chord toggle fires on key-down")
+        let tRepeat = CGEvent(keyboardEventSource: nil, virtualKey: 40, keyDown: true)!
+        tRepeat.flags = CGEventFlags(rawValue: alt)
+        tRepeat.setIntegerValueField(.keyboardEventAutorepeat, value: 1)
+        check(m.handle(type: .keyDown, event: tRepeat), "autorepeat still swallowed")
+        equal(toggled, [.stream], "autorepeat does NOT re-fire the toggle")
+        let tUp = CGEvent(keyboardEventSource: nil, virtualKey: 40, keyDown: false)!
+        tUp.flags = CGEventFlags(rawValue: alt)
+        check(m.handle(type: .keyUp, event: tUp), "chord toggle key-up swallowed")
+        check(started.isEmpty && stopped.isEmpty, "chord toggle never engages a hold")
+
         // macOS synthesizes arrow/Home/End/Page keys as fn+key: their keyDown
         // and keyUp events CARRY maskSecondaryFn without fn ever being
         // touched. They must never read as the fn hotkey (this was the

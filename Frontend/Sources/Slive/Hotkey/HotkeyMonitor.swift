@@ -22,9 +22,18 @@ final class HotkeyMonitor {
     /// Fired with the action of the shortcut that just engaged / released.
     var onStart: ((HotkeyAction) -> Void)?
     var onStop: ((HotkeyAction) -> Void)?
+    /// Fired when a TOGGLE bind is tapped (click to start, click to stop —
+    /// the session state machine lives with the receiver, not here).
+    var onToggle: ((HotkeyAction) -> Void)?
 
     /// Primary dictation shortcut. Change live; the tap re-arms if needed.
     var hotkey: Hotkey = Settings.shared.hotkey {
+        didSet { hotkeysChanged() }
+    }
+
+    /// Hold-to-dictate can now be switched off (the toggle bind may be the
+    /// only way the user wants to dictate).
+    var dictateHoldEnabled: Bool = true {
         didSet { hotkeysChanged() }
     }
 
@@ -38,6 +47,15 @@ final class HotkeyMonitor {
         didSet { hotkeysChanged() }
     }
 
+    /// Tap-to-toggle binds (nil = off). The receiver passes EFFECTIVE values —
+    /// a bind whose switch is off arrives here as nil.
+    var dictateToggleHotkey: Hotkey? = nil {
+        didSet { hotkeysChanged() }
+    }
+    var streamToggleHotkey: Hotkey? = nil {
+        didSet { hotkeysChanged() }
+    }
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var pollTimer: Timer?
@@ -48,6 +66,10 @@ final class HotkeyMonitor {
     private var activeAction: HotkeyAction?    // shortcut currently held
     private var engagedKeyCode: UInt16?        // consumed chord key's keycode
     private var hasReceivedEvent = false
+    /// Toggle chord whose keyUp is still owed a swallow.
+    private var toggleSwallowKeycode: UInt16?
+    /// Last seen flags state — the down-edge detector for modifier toggles.
+    private var previousFlags: UInt64 = 0
 
     // MARK: - Targets
 
@@ -61,17 +83,27 @@ final class HotkeyMonitor {
     private var targets: [Target] = []
     /// The modifier-only subset `handle()` matches against (priority order).
     private var modifierOnlyTargets: [Target] = []
+    /// Tap-to-toggle targets (chords fire on keyDown; modifier-only fire on
+    /// the exact-match down edge of flagsChanged).
+    private var toggleTargets: [Target] = []
+    private var modifierOnlyToggles: [Target] = []
     /// True when any shortcut is a chord (has a key), so the tap must consume.
     private var needsConsume = false
 
-    /// Rebuild the cached match tables from the three shortcut properties.
+    /// Rebuild the cached match tables from the shortcut properties.
     private func rebuildTargets() {
-        var t = [Target(hotkey: hotkey, action: .dictate)]
+        var t: [Target] = []
+        if dictateHoldEnabled { t.append(Target(hotkey: hotkey, action: .dictate)) }
         if let a = assistantHotkey { t.append(Target(hotkey: a, action: .assist)) }
         if let s = streamHotkey { t.append(Target(hotkey: s, action: .stream)) }
         targets = t
         modifierOnlyTargets = t.filter { $0.hotkey.isModifierOnly && $0.hotkey.modifiers != 0 }
-        needsConsume = t.contains { !$0.hotkey.isModifierOnly }
+        var toggles: [Target] = []
+        if let d = dictateToggleHotkey { toggles.append(Target(hotkey: d, action: .dictate)) }
+        if let s = streamToggleHotkey { toggles.append(Target(hotkey: s, action: .stream)) }
+        toggleTargets = toggles
+        modifierOnlyToggles = toggles.filter { $0.hotkey.isModifierOnly && $0.hotkey.modifiers != 0 }
+        needsConsume = (t + toggles).contains { !$0.hotkey.isModifierOnly }
     }
 
     init() {
@@ -238,6 +270,41 @@ final class HotkeyMonitor {
         let flags = event.flags.rawValue & Hotkey.modifierMask
         let keycode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
 
+        // 0. Tap-to-toggle binds — checked FIRST so a gesture bound as a
+        //    toggle can never double as a hold. Chord toggles fire once on
+        //    the non-autorepeat keyDown (and swallow their keyUp); modifier-
+        //    only toggles fire on the exact-match DOWN EDGE of flagsChanged
+        //    (previous flags differed) — releasing the modifier does nothing,
+        //    the next press toggles again.
+        switch type {
+        case .keyDown:
+            for t in toggleTargets where !t.hotkey.isModifierOnly {
+                if keycode == t.hotkey.keyCode && flags == t.hotkey.modifiers {
+                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                        toggleSwallowKeycode = keycode
+                        onToggle?(t.action)
+                    }
+                    return true    // swallow, incl. autorepeats
+                }
+            }
+        case .keyUp:
+            if let sk = toggleSwallowKeycode, keycode == sk {
+                toggleSwallowKeycode = nil
+                return true        // swallow the toggle chord's key-up too
+            }
+        case .flagsChanged:
+            if engagedKeyCode == nil,
+               let t = modifierOnlyToggles.first(where: { $0.hotkey.modifiers == flags }),
+               previousFlags != flags {
+                previousFlags = flags
+                onToggle?(t.action)
+                return false       // modifiers are never consumed
+            }
+        default:
+            break
+        }
+        if type == .flagsChanged { previousFlags = flags }   // edge detector state
+
         // 1. Chord shortcuts (a key + modifiers) — these consume the key.
         switch type {
         case .keyDown:
@@ -283,7 +350,10 @@ final class HotkeyMonitor {
         //    shortcut whose modifiers are ALL held wins. `targets` is ordered
         //    dictate → assist → stream, so plain (all-at-once) dictation
         //    dominates over the continuous and assistant keys.
-        if engagedKeyCode == nil, type == .flagsChanged {
+        if engagedKeyCode == nil, type == .flagsChanged,
+           // A flags state that exactly matches a toggle bind belongs to the
+           // toggle — the hold matcher must not read it as a held gesture.
+           !modifierOnlyToggles.contains(where: { $0.hotkey.modifiers == flags }) {
             let mods = modifierOnlyTargets   // cached; no per-event filter
             let matched: HotkeyAction? =
                 mods.first { $0.hotkey.modifiers == flags }?.action
