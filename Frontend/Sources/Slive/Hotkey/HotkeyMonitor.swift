@@ -426,21 +426,40 @@ final class HotkeyMonitor {
         }
     }
 
-    /// Pure decision, self-tested: with these modifiers required, does this
-    /// physical flag state mean the hold is over?
-    static func physicallyReleased(requiredModifiers: UInt64, physicalFlags: UInt64) -> Bool {
-        (physicalFlags & requiredModifiers) != requiredModifiers
+    /// Physical keycodes for each modifier flag (left/right variants).
+    /// The watchdog asks about KEYS, not flag state: Slive's own synthetic
+    /// keystrokes carry flags=[] (so a held modifier can't mutate typed
+    /// characters), and posting them updates the HID source's FLAG state —
+    /// which made the flags-based watchdog believe the modifier was released
+    /// the moment continuous typing began, killing every held stream a few
+    /// seconds in. Per-key hardware state is untouched by synthetic Unicode
+    /// events.
+    static let modifierKeycodes: [(flag: UInt64, keys: [CGKeyCode])] = [
+        (CGEventFlags.maskCommand.rawValue, [55, 54]),
+        (CGEventFlags.maskShift.rawValue, [56, 60]),
+        (CGEventFlags.maskAlternate.rawValue, [58, 61]),
+        (CGEventFlags.maskControl.rawValue, [59, 62]),
+        (CGEventFlags.maskSecondaryFn.rawValue, [63]),
+    ]
+
+    /// Pure decision, self-tested via the injected key probe: every required
+    /// modifier must have at least one of its physical variants down.
+    static func physicallyHeld(requiredModifiers: UInt64,
+                               keyDown: (CGKeyCode) -> Bool) -> Bool {
+        for entry in modifierKeycodes where requiredModifiers & entry.flag != 0 {
+            if !entry.keys.contains(where: keyDown) { return false }
+        }
+        return true
     }
 
     private func verifyPhysicalHold() {
         guard let action = activeAction else { syncReleaseWatchdog(); return }
-        let physical = CGEventSource.flagsState(.hidSystemState).rawValue & Hotkey.modifierMask
+        let probe: (CGKeyCode) -> Bool = { CGEventSource.keyState(.hidSystemState, key: $0) }
         if let engaged = engagedKeyCode {
             // Chord: the key itself and its modifiers must both still be down.
             guard let t = targets.first(where: { $0.action == action }) else { return }
-            if !CGEventSource.keyState(.hidSystemState, key: CGKeyCode(engaged))
-                || Self.physicallyReleased(requiredModifiers: t.hotkey.modifiers,
-                                           physicalFlags: physical) {
+            if !probe(CGKeyCode(engaged))
+                || !Self.physicallyHeld(requiredModifiers: t.hotkey.modifiers, keyDown: probe) {
                 Log.hotkey("watchdog: chord physically released — unsticking")
                 engagedKeyCode = nil
                 release()
@@ -448,7 +467,7 @@ final class HotkeyMonitor {
             return
         }
         guard let t = modifierOnlyTargets.first(where: { $0.action == action }) else { return }
-        if Self.physicallyReleased(requiredModifiers: t.hotkey.modifiers, physicalFlags: physical) {
+        if !Self.physicallyHeld(requiredModifiers: t.hotkey.modifiers, keyDown: probe) {
             Log.hotkey("watchdog: \(action) physically released — unsticking")
             release()
         }

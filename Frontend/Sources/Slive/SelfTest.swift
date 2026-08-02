@@ -287,16 +287,20 @@ enum SelfTest {
         _ = m.handle(type: .flagsChanged, event: flagsEvent(0))
         equal(stopped, [.dictate], "and still releases")
 
-        // The stuck-hold watchdog's decision logic: release exactly when the
-        // physical state no longer holds every required modifier.
-        check(HotkeyMonitor.physicallyReleased(requiredModifiers: fn, physicalFlags: 0),
-              "watchdog releases when fn is physically up")
-        check(!HotkeyMonitor.physicallyReleased(requiredModifiers: fn, physicalFlags: fn),
-              "watchdog holds while fn is physically down")
-        check(HotkeyMonitor.physicallyReleased(requiredModifiers: fn | ctrl, physicalFlags: fn),
-              "watchdog releases when only part of a combo remains")
-        check(!HotkeyMonitor.physicallyReleased(requiredModifiers: fn, physicalFlags: fn | cmd),
-              "extra held modifiers don't count as release")
+        // The stuck-hold watchdog asks about physical KEYS (synthetic typing
+        // pollutes flag state — the bug that killed every held stream once
+        // live typing began). Injected probe = the hardware.
+        check(!HotkeyMonitor.physicallyHeld(requiredModifiers: fn, keyDown: { _ in false }),
+              "watchdog releases when fn's key is physically up")
+        check(HotkeyMonitor.physicallyHeld(requiredModifiers: fn, keyDown: { $0 == 63 }),
+              "watchdog holds while the fn key is physically down")
+        check(!HotkeyMonitor.physicallyHeld(requiredModifiers: fn | ctrl, keyDown: { $0 == 63 }),
+              "watchdog releases when only part of a combo remains down")
+        check(HotkeyMonitor.physicallyHeld(requiredModifiers: ctrl, keyDown: { $0 == 62 }),
+              "either left or right variant of a modifier counts as held")
+        check(HotkeyMonitor.physicallyHeld(requiredModifiers: fn | ctrl,
+                                           keyDown: { $0 == 63 || $0 == 59 }),
+              "combos hold while every required modifier has a key down")
     }
 
     // MARK: - Provider model (Local runs keyless, on-device)
