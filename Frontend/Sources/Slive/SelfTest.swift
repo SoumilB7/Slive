@@ -424,15 +424,22 @@ enum SelfTest {
             check(!PasteEngine.shouldDispatch(role: role as String),
                   "container focus (\(role)) falls back to copy box")
         }
-        // AX's three answers about focus are three different verdicts:
-        // an authoritative "nothing focused" shows the box; an unreadable
-        // tree types anyway (Electron); success judges the role.
+        // AX's answers about focus map to distinct verdicts — and a claimed
+        // "nothing focused" (.noValue) is only a CLAIM: sleeping Electron
+        // trees answer it while a real field has focus, so it must be
+        // corroborated by the frontmost app before the copy box wins.
         check(PasteEngine.axSaysNothingFocused(.noValue),
-              "AX .noValue = really nothing focused → copy box")
+              "AX .noValue claims nothing focused (first stage)")
         check(!PasteEngine.axSaysNothingFocused(.cannotComplete)
                 && !PasteEngine.axSaysNothingFocused(.apiDisabled)
                 && !PasteEngine.axSaysNothingFocused(.notImplemented),
-              "AX can't-answer errors still fail open and type")
+              "AX can't-answer errors fail open and type")
+        check(PasteEngine.confirmsNoFocus(windowError: .noValue),
+              "app confirming 'no focused window' corroborates the void → copy box")
+        check(!PasteEngine.confirmsNoFocus(windowError: .success)
+                && !PasteEngine.confirmsNoFocus(windowError: .cannotComplete)
+                && !PasteEngine.confirmsNoFocus(windowError: .apiDisabled),
+              "a live window or unreadable app → type anyway (Electron safety)")
     }
 
     // MARK: - Typing pacing

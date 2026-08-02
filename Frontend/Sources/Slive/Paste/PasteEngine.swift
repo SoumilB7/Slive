@@ -176,18 +176,41 @@ enum PasteEngine {
         switch err {
         case .success:
             guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
-                return .none   // answered, but with nothing usable focused
+                return corroboratedNone()
             }
             return .element((value as! AXUIElement))
         default:
-            return Self.axSaysNothingFocused(err) ? .none : .unknown
+            return Self.axSaysNothingFocused(err) ? corroboratedNone() : .unknown
         }
     }
 
-    /// Pure decision, self-tested: which AX errors mean "really nothing is
-    /// focused" (copy box) vs "couldn't tell" (fail open and type)?
+    /// Pure decision, self-tested: which AX errors CLAIM nothing is focused
+    /// (needing corroboration) vs plainly "couldn't tell" (fail open).
     static func axSaysNothingFocused(_ error: AXError) -> Bool {
         error == .noValue
+    }
+
+    /// `.noValue` from the system-wide probe is AMBIGUOUS, learned the hard
+    /// way: a desktop with no window answers it — but so does a Chromium/
+    /// Electron app whose lazy AX tree hasn't registered its focused element
+    /// while a real field has focus (the regression that made dictation only
+    /// ever offer the copy box). So the void must be CORROBORATED: only when
+    /// the frontmost app also positively reports "no focused window" do we
+    /// believe nothing is focused. A live window, or an unreadable app,
+    /// fails open and types.
+    private static func corroboratedNone() -> FocusProbe {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return .none }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var window: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(
+            appElement, kAXFocusedWindowAttribute as CFString, &window)
+        return Self.confirmsNoFocus(windowError: err) ? .none : .unknown
+    }
+
+    /// Pure corroboration rule, self-tested: only the app's own authoritative
+    /// "no focused window" (.noValue) confirms the void.
+    static func confirmsNoFocus(windowError: AXError) -> Bool {
+        windowError == .noValue
     }
 
     static func focusedElement() -> AXUIElement? {
