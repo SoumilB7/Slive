@@ -121,8 +121,8 @@ enum PasteEngine {
         guard AXIsProcessTrusted() else { return false }
 
         // Never type into a password field, a positively non-text target, or
-        // THE VOID. Fail-open only where AX genuinely couldn't answer — an
-        // authoritative "nothing is focused" means the keystrokes would land
+        // THE VOID. Fail-open only where AX genuinely couldn't answer — a
+        // corroborated "nothing is focused" means the keystrokes would land
         // nowhere, which is exactly what the copy box is for.
         switch probeFocus() {
         case .element(let element):
@@ -157,8 +157,8 @@ enum PasteEngine {
     /// What the focus probe actually learned — the three answers mean three
     /// different things and must not be conflated:
     /// - `.element`: something has focus; judge it by role.
-    /// - `.none`: AX answered AUTHORITATIVELY that nothing has keyboard focus
-    ///   (`.noValue`). Typing would land nowhere — show the copy box.
+    /// - `.none`: AX corroborated that nothing has keyboard focus. Typing
+    ///   would land nowhere — show the copy box.
     /// - `.unknown`: AX couldn't answer (broken/asleep tree, Electron after
     ///   relaunch). Fail open and type; a wrong refusal here is the old bug
     ///   we removed detection over.
@@ -191,26 +191,40 @@ enum PasteEngine {
     }
 
     /// `.noValue` from the system-wide probe is AMBIGUOUS, learned the hard
-    /// way: a desktop with no window answers it — but so does a Chromium/
+    /// way: a desktop/no-caret window answers it — but so does a Chromium/
     /// Electron app whose lazy AX tree hasn't registered its focused element
-    /// while a real field has focus (the regression that made dictation only
-    /// ever offer the copy box). So the void must be CORROBORATED: only when
-    /// the frontmost app also positively reports "no focused window" do we
-    /// believe nothing is focused. A live window, or an unreadable app,
-    /// fails open and types.
+    /// while a real field has focus. Corroborate the void in either of the two
+    /// cases macOS can prove: the app has no focused window, or it has a focused
+    /// window whose AX tree is readable but contains no focused element. An
+    /// unreadable/asleep window remains `.unknown` and fails open for Electron.
     private static func corroboratedNone() -> FocusProbe {
         guard let app = NSWorkspace.shared.frontmostApplication else { return .none }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         var window: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(
+        let windowError = AXUIElementCopyAttributeValue(
             appElement, kAXFocusedWindowAttribute as CFString, &window)
-        return Self.confirmsNoFocus(windowError: err) ? .none : .unknown
+        if windowError == .noValue { return .none }
+        guard windowError == .success,
+              let window,
+              CFGetTypeID(window) == AXUIElementGetTypeID()
+        else { return .unknown }
+
+        // A successful children read proves this is a live AX tree. Since the
+        // system-wide probe already positively reported no focused element,
+        // this is a real no-caret window rather than a sleeping Electron tree.
+        var children: CFTypeRef?
+        let treeError = AXUIElementCopyAttributeValue(
+            (window as! AXUIElement), kAXChildrenAttribute as CFString, &children)
+        return Self.confirmsNoFocus(windowError: windowError, treeError: treeError)
+            ? .none : .unknown
     }
 
-    /// Pure corroboration rule, self-tested: only the app's own authoritative
-    /// "no focused window" (.noValue) confirms the void.
-    static func confirmsNoFocus(windowError: AXError) -> Bool {
+    /// Pure corroboration rule, self-tested. A missing window is the void; a
+    /// live, readable window corroborates the system's no-focused-element
+    /// answer. An unreadable window stays unknown so Electron can still type.
+    static func confirmsNoFocus(windowError: AXError, treeError: AXError? = nil) -> Bool {
         windowError == .noValue
+            || (windowError == .success && treeError == .success)
     }
 
     static func focusedElement() -> AXUIElement? {
