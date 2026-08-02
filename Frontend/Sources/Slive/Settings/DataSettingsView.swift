@@ -36,6 +36,11 @@ struct DataSettingsView: View {
     @State private var lastPrompt: String?
     @State private var lastPromptMeta: String?
     @State private var promptExpanded = false
+    /// The editable base instruction: draft, fetched default, editor state.
+    @State private var editorExpanded = false
+    @State private var promptDraft = ""
+    @State private var defaultPrompt: String?
+    @State private var editorNote: String?
 
     /// Keep the table bounded: the audio player's 10 Hz progress updates should
     /// never make SwiftUI reconsider hundreds of transcript/diff rows.
@@ -367,6 +372,75 @@ struct DataSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // The EDITABLE base instruction for Should-be generation. Your
+            // edit owns the instruction; the vocabulary tail below is always
+            // rebuilt LIVE from Dictation → Vocabulary and appended
+            // server-side — updated custom words flow in without touching
+            // the base you saved.
+            if settings.groundTruthProvider != .whisper {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { editorExpanded.toggle() }
+                    if editorExpanded { loadEditor() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .rotationEffect(.degrees(editorExpanded ? 90 : 0))
+                        Text("Transcription prompt")
+                            .font(SliveTheme.font(11, .semibold))
+                        Text(settings.groundTruthPrompt.trimmingCharacters(
+                                in: .whitespacesAndNewlines).isEmpty
+                             ? "Default" : "Customized")
+                            .font(SliveTheme.font(9, .semibold))
+                            .foregroundStyle(settings.groundTruthPrompt.isEmpty
+                                             ? SliveTheme.textTertiary : SliveTheme.accent)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(.white.opacity(0.07)))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(SliveTheme.textSecondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if editorExpanded {
+                    TextEditor(text: $promptDraft)
+                        .font(SliveTheme.mono(11))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(height: 130)
+                        .innerWell()
+                    HStack(spacing: 10) {
+                        Button("Save") { saveEditor() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(SliveTheme.accent)
+                            .controlSize(.small)
+                        Button("Reset to default") { resetEditor() }
+                            .buttonStyle(.plain)
+                            .font(SliveTheme.font(11, .semibold))
+                            .foregroundStyle(SliveTheme.accent)
+                        if let editorNote {
+                            Text(editorNote)
+                                .font(SliveTheme.captionFont)
+                                .foregroundStyle(SliveTheme.textTertiary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    // The live vocabulary tail — always appended, never part
+                    // of the editable base, so updated custom words flow in.
+                    Text(GroundTruthClient.vocabHint(
+                            hotwords: settings.hotwords, context: settings.contextPrompt)
+                         ?? "(no custom words set)")
+                        .font(SliveTheme.mono(10))
+                        .foregroundStyle(SliveTheme.accent.opacity(0.75))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .innerWell()
+                    Text("This tail repopulates automatically from Dictation → Vocabulary and is appended to whatever base you save — edit the words there, not here.")
+                        .sliveCaption()
+                }
+            }
+
             // What actually went in: the exact instruction the most recent
             // generation was seeded with — vocabulary hint visible at its
             // tail, so "are my words in there?" is a look, not a guess.
@@ -409,6 +483,48 @@ struct DataSettingsView: View {
         }
     }
 
+    // MARK: - Prompt editor (the editable base instruction)
+
+    /// Populate the editor: the saved custom base, else the server default
+    /// (fetched once; the backend spins up lazily on first use).
+    private func loadEditor() {
+        let custom = settings.groundTruthPrompt
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty { promptDraft = custom; return }
+        if let defaultPrompt { promptDraft = defaultPrompt; return }
+        editorNote = "loading default…"
+        Task { @MainActor in
+            defer { editorNote = nil }
+            if let fetched = try? await GroundTruthClient().defaultPrompt() {
+                defaultPrompt = fetched
+                if promptDraft.isEmpty { promptDraft = fetched }
+            } else {
+                editorNote = "couldn't load the default — type your own or retry"
+            }
+        }
+    }
+
+    /// Save: a draft identical to the default is stored as EMPTY so future
+    /// server-side default improvements keep flowing; anything else is the
+    /// user's custom base.
+    private func saveEditor() {
+        let draft = promptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if draft.isEmpty || draft == defaultPrompt {
+            settings.groundTruthPrompt = ""
+            editorNote = "following the default"
+        } else {
+            settings.groundTruthPrompt = draft
+            editorNote = "saved — applies to the next generation"
+        }
+    }
+
+    private func resetEditor() {
+        settings.groundTruthPrompt = ""
+        promptDraft = defaultPrompt ?? ""
+        editorNote = "reset to default"
+        if defaultPrompt == nil { loadEditor() }
+    }
+
     /// Proof the audio is real BEFORE anything is sent: open the file as
     /// audio and count its frames. An empty or truncated WAV produces
     /// exactly the "model says there is no audio" failure — so it fails
@@ -448,12 +564,15 @@ struct DataSettingsView: View {
         // hand-fixes for the same words. (The on-device Whisper judge can't
         // take a text hint yet — WhisperKit wants promptTokens; standing
         // regression noted in z-docs.)
+        let override = settings.groundTruthPrompt
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let result = try await GroundTruthClient().transcribe(
             audioURL: url, provider: provider, model: model,
             apiKey: providers.apiKey(for: provider),
             baseURL: providers.baseURL(for: provider),
             vocabHint: GroundTruthClient.vocabHint(
-                hotwords: settings.hotwords, context: settings.contextPrompt))
+                hotwords: settings.hotwords, context: settings.contextPrompt),
+            promptOverride: override.isEmpty ? nil : override)
         lastPrompt = result.prompt
         lastPromptMeta = "\(provider.displayName) · \(model)"
         return result.text

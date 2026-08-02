@@ -37,6 +37,22 @@ struct GroundTruthClient {
         // The user's Vocabulary (hotwords + context) so the judge spells
         // names and terms the way the main model was told to.
         let vocab_hint: String?
+        // The user's edited base instruction (nil = the server default).
+        let prompt_override: String?
+    }
+
+    /// The server's shipped default transcription instruction — the prompt
+    /// editor's starting point and its Reset target.
+    func defaultPrompt() async throws -> String {
+        guard await BackendManager.shared.ensureHealthy() else {
+            throw GroundTruthError.backendDown
+        }
+        struct Resp: Decodable { let prompt: String }
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:50711/transcribe_llm/prompt")!)
+        request.timeoutInterval = 15
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try JSONDecoder().decode(Resp.self, from: data).prompt
     }
 
     /// The vocabulary context that rides with every ground-truth request —
@@ -71,7 +87,8 @@ struct GroundTruthClient {
                     model: String,
                     apiKey: String,
                     baseURL: String?,
-                    vocabHint: String? = nil) async throws -> (text: String, prompt: String?) {
+                    vocabHint: String? = nil,
+                    promptOverride: String? = nil) async throws -> (text: String, prompt: String?) {
         guard !apiKey.isEmpty || !provider.needsAPIKey else {
             throw GroundTruthError.missingKey(provider.displayName)
         }
@@ -94,7 +111,8 @@ struct GroundTruthClient {
             base_url: (baseURL?.isEmpty ?? true) ? nil : baseURL,
             local_quantized: localOpts?.quantized,
             local_mem_gb: localOpts?.memGB,
-            vocab_hint: vocabHint)
+            vocab_hint: vocabHint,
+            prompt_override: promptOverride)
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"

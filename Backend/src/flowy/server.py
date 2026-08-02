@@ -28,6 +28,7 @@ from flowy.assistant import answer as assistant_answer
 from flowy.assistant import answer_stream as assistant_answer_stream
 from flowy.assistant import list_models as assistant_list_models
 from flowy.assistant import transcribe_audio as assistant_transcribe_audio
+from flowy.assistant import TRANSCRIBE_PROMPT as ASSISTANT_TRANSCRIBE_PROMPT
 from flowy import local as local_models
 from flowy.training import jobs as training_jobs
 from flowy.training.models import training_models_payload
@@ -208,8 +209,18 @@ class TranscribeLLMRequest(BaseModel):
     #: transcription prompt so the judge spells the speaker's names/terms
     #: the way the main dictation model was told to.
     vocab_hint: str | None = None
+    #: The user's edited base instruction (empty/None = the shipped default).
+    #: The vocabulary tail is ALWAYS appended live, whatever the base.
+    prompt_override: str | None = None
 
     _clean_key = field_validator("api_key")(_clean_api_key)
+
+
+@app.get("/transcribe_llm/prompt")
+async def transcribe_llm_prompt_endpoint() -> JSONResponse:
+    """The shipped default transcription instruction — the editor's
+    starting point and its Reset target."""
+    return JSONResponse(status_code=200, content={"prompt": ASSISTANT_TRANSCRIBE_PROMPT})
 
 
 @app.post("/transcribe_llm")
@@ -225,6 +236,7 @@ async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
             local_quantized=req.local_quantized,
             local_mem_gb=req.local_mem_gb,
             vocab_hint=req.vocab_hint,
+            prompt_override=req.prompt_override,
         )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})

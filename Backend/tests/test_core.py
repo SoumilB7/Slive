@@ -147,3 +147,11 @@ def test_vocab_hint_composition() -> None:
     # Endpoint budget: long hints are clipped, the base survives whole.
     long = _with_vocab_hint(base, "x" * 2000, limit=300)
     assert long.startswith(base) and len(long) <= len(base) + 2 + 300
+
+
+def test_effective_transcribe_prompt() -> None:
+    from flowy.assistant import TRANSCRIBE_PROMPT, _effective_transcribe_prompt
+
+    assert _effective_transcribe_prompt(None) == TRANSCRIBE_PROMPT
+    assert _effective_transcribe_prompt("   ") == TRANSCRIBE_PROMPT
+    assert _effective_transcribe_prompt("My own rules.") == "My own rules."

@@ -626,6 +626,15 @@ _META_REPLY_MARKERS = (
 )
 
 
+def _effective_transcribe_prompt(override: str | None) -> str:
+    """The base instruction for a transcription: the user's edited prompt
+    when they customized one, else the shipped contract. Blank overrides
+    mean "follow the default" so server-side improvements keep flowing."""
+    if override and override.strip():
+        return override.strip()
+    return TRANSCRIBE_PROMPT
+
+
 def _with_vocab_hint(prompt: str, hint: str | None, limit: int = 500) -> str:
     """Append the user's vocabulary context to a transcription prompt.
 
@@ -695,6 +704,7 @@ async def _transcriptions_endpoint(
     audio_b64: str,
     audio_format: str,
     vocab_hint: str | None = None,
+    prompt_override: str | None = None,
 ) -> tuple[str, str] | None:
     """POST /audio/transcriptions — the endpoint that can only transcribe.
 
@@ -709,7 +719,14 @@ async def _transcriptions_endpoint(
     except Exception:  # noqa: BLE001 - fall back to the guard error
         return None
     mime = "audio/mpeg" if audio_format == "mp3" else "audio/wav"
-    endpoint_prompt = _with_vocab_hint(_ENDPOINT_TRANSCRIBE_PROMPT, vocab_hint, limit=300)
+    # The dedicated endpoint's prompt budget is tiny (whisper-1 ≈224 tokens):
+    # a customized base is clipped to leave room for the vocabulary tail.
+    endpoint_base = (
+        _truncate(prompt_override.strip(), 500)
+        if prompt_override and prompt_override.strip()
+        else _ENDPOINT_TRANSCRIBE_PROMPT
+    )
+    endpoint_prompt = _with_vocab_hint(endpoint_base, vocab_hint, limit=300)
     for candidate in _transcribe_fallback_models(chosen_model):
         try:
             resp = await client.post(
@@ -762,6 +779,7 @@ async def transcribe_audio(
     local_quantized: bool = True,
     local_mem_gb: float | None = None,
     vocab_hint: str | None = None,
+    prompt_override: str | None = None,
 ) -> tuple[str, str | None]:
     """Ask an audio-capable multimodal model for a verbatim transcription.
 
@@ -784,7 +802,7 @@ async def transcribe_audio(
                 audio_bytes_len / 1024, provider, model)
     if provider == "local":
         from flowy import local_infer
-        local_prompt = _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)
+        local_prompt = _with_vocab_hint(_effective_transcribe_prompt(prompt_override), vocab_hint)
         text = _guard_transcription(await run_in_threadpool(
             local_infer.transcribe, model, api_key or None, audio_b64, media_type,
             448, local_quantized, local_mem_gb or local_infer.DEFAULT_MEM_GB,
@@ -800,7 +818,7 @@ async def transcribe_audio(
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model}:generateContent?key={api_key}"
             )
-            gemini_prompt = _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)
+            gemini_prompt = _with_vocab_hint(_effective_transcribe_prompt(prompt_override), vocab_hint)
             body = {
                 "contents": [{
                     "parts": [
@@ -836,14 +854,14 @@ async def transcribe_audio(
             # list fixes a chat API, so transcription simply doesn't use one.
             direct = await _transcriptions_endpoint(
                 client, root, api_key, model, audio_b64, audio_format,
-                vocab_hint=vocab_hint)
+                vocab_hint=vocab_hint, prompt_override=prompt_override)
             if direct is not None:
                 return direct
 
             # Fallback only for OpenAI-compatible gateways that don't serve
             # /audio/transcriptions: a guarded chat attempt (instructions in
             # the system turn, the user turn is audio only).
-            chat_prompt = _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)
+            chat_prompt = _with_vocab_hint(_effective_transcribe_prompt(prompt_override), vocab_hint)
             body = {
                 "model": model,
                 "modalities": ["text"],

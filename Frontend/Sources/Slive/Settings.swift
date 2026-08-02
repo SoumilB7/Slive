@@ -34,6 +34,7 @@ final class Settings: ObservableObject {
         static let groundTruthProvider = "groundTruthProvider"
         static let groundTruthModel = "groundTruthModel"
         static let groundTruthBaseURL = "groundTruthBaseURL"
+        static let groundTruthPrompt = "groundTruthPrompt"
         static let localQuantized = "localQuantized"
         static let localMemLimitGB = "localMemLimitGB"
         static let speedTier = "speedTier"
@@ -254,6 +255,13 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(groundTruthBaseURL, forKey: Keys.groundTruthBaseURL) }
     }
 
+    /// The user's edited base instruction for ground-truth transcription.
+    /// Empty = follow the server's shipped default. The vocabulary tail is
+    /// ALWAYS appended live server-side, whatever the base says.
+    @Published var groundTruthPrompt: String {
+        didSet { UserDefaults.standard.set(groundTruthPrompt, forKey: Keys.groundTruthPrompt) }
+    }
+
     /// Local provider: load models int8-quantized (≈ half the RAM of bf16,
     /// near-identical output). Default on; applies from the next local ask
     /// (flipping it reloads the model).
@@ -389,6 +397,7 @@ final class Settings: ObservableObject {
         if gtModel == "gpt-4o-audio-preview" { gtModel = "gpt-audio" }
         groundTruthModel = gtModel
         groundTruthBaseURL = UserDefaults.standard.string(forKey: Keys.groundTruthBaseURL) ?? ""
+        groundTruthPrompt = UserDefaults.standard.string(forKey: Keys.groundTruthPrompt) ?? ""
         let localOpts = Self.localInferenceOptions()
         localQuantized = localOpts.quantized
         localMemLimitGB = localOpts.memGB
