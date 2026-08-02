@@ -442,13 +442,10 @@ enum SelfTest {
               "AX can't-answer errors fail open and type")
         check(PasteEngine.confirmsNoFocus(windowError: .noValue),
               "app confirming 'no focused window' corroborates the void → copy box")
-        check(PasteEngine.confirmsNoFocus(windowError: .success, treeError: .success),
-              "readable window + no focused element → copy box")
-        check(!PasteEngine.confirmsNoFocus(windowError: .success,
-                                           treeError: .cannotComplete)
+        check(!PasteEngine.confirmsNoFocus(windowError: .success)
                 && !PasteEngine.confirmsNoFocus(windowError: .cannotComplete)
                 && !PasteEngine.confirmsNoFocus(windowError: .apiDisabled),
-              "unreadable window/app → type anyway (Electron safety)")
+              "a live or unreadable window needs element-level inspection")
     }
 
     // MARK: - Typing pacing

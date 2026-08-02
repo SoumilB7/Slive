@@ -194,37 +194,87 @@ enum PasteEngine {
     /// way: a desktop/no-caret window answers it — but so does a Chromium/
     /// Electron app whose lazy AX tree hasn't registered its focused element
     /// while a real field has focus. Corroborate the void in either of the two
-    /// cases macOS can prove: the app has no focused window, or it has a focused
-    /// window whose AX tree is readable but contains no focused element. An
-    /// unreadable/asleep window remains `.unknown` and fails open for Electron.
+    /// cases macOS can prove: the app has no focused window, or the focused
+    /// window itself is the positive focused target after checking its
+    /// descendants for a real field. An unreadable/asleep window remains
+    /// `.unknown` and fails open for Electron.
     private static func corroboratedNone() -> FocusProbe {
         guard let app = NSWorkspace.shared.frontmostApplication else { return .none }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
+
+        // The app-scoped query sometimes succeeds when the system-wide query
+        // incorrectly returns .noValue. Prefer that concrete element.
+        var appFocus: CFTypeRef?
+        let appFocusError = AXUIElementCopyAttributeValue(
+            appElement, kAXFocusedUIElementAttribute as CFString, &appFocus)
+        if appFocusError == .success, let element = axElement(appFocus) {
+            return .element(element)
+        }
+
         var window: CFTypeRef?
         let windowError = AXUIElementCopyAttributeValue(
             appElement, kAXFocusedWindowAttribute as CFString, &window)
         if windowError == .noValue { return .none }
         guard windowError == .success,
-              let window,
-              CFGetTypeID(window) == AXUIElementGetTypeID()
+              let windowElement = axElement(window)
         else { return .unknown }
 
-        // A successful children read proves this is a live AX tree. Since the
-        // system-wide probe already positively reported no focused element,
-        // this is a real no-caret window rather than a sleeping Electron tree.
-        var children: CFTypeRef?
-        let treeError = AXUIElementCopyAttributeValue(
-            (window as! AXUIElement), kAXChildrenAttribute as CFString, &children)
-        return Self.confirmsNoFocus(windowError: windowError, treeError: treeError)
-            ? .none : .unknown
+        // Some apps expose focus only below the window. Search a bounded slice
+        // of the live tree and prefer that target over the focused window — a
+        // selected text field must never be mistaken for an empty window.
+        if let descendant = focusedDescendant(in: windowElement) {
+            return .element(descendant)
+        }
+        if isFocused(windowElement) { return .element(windowElement) }
+        return .unknown
     }
 
-    /// Pure corroboration rule, self-tested. A missing window is the void; a
-    /// live, readable window corroborates the system's no-focused-element
-    /// answer. An unreadable window stays unknown so Electron can still type.
-    static func confirmsNoFocus(windowError: AXError, treeError: AXError? = nil) -> Bool {
+    /// Pure first-stage rule, self-tested. Only a positively missing focused
+    /// window proves the void by itself; a live window needs element-level
+    /// inspection because it may contain the selected text field.
+    static func confirmsNoFocus(windowError: AXError) -> Bool {
         windowError == .noValue
-            || (windowError == .success && treeError == .success)
+    }
+
+    private static func axElement(_ value: CFTypeRef?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    private static func isFocused(_ element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(
+            element, kAXFocusedAttribute as CFString, &value)
+        guard error == .success, let value,
+              CFGetTypeID(value) == CFBooleanGetTypeID()
+        else { return false }
+        return CFBooleanGetValue((value as! CFBoolean))
+    }
+
+    /// Bounded breadth-first search used only after the system-wide focus
+    /// query failed. Descendants are checked before the window so a focused
+    /// text field wins over its also-focused containing window.
+    private static func focusedDescendant(in root: AXUIElement) -> AXUIElement? {
+        var queue: [AXUIElement] = children(of: root)
+        var index = 0
+        let limit = 256
+        while index < queue.count && index < limit {
+            let element = queue[index]
+            index += 1
+            if isFocused(element) { return element }
+            if queue.count < limit {
+                queue.append(contentsOf: children(of: element).prefix(limit - queue.count))
+            }
+        }
+        return nil
+    }
+
+    private static func children(of element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(
+            element, kAXChildrenAttribute as CFString, &value)
+        guard error == .success, let values = value as? [Any] else { return [] }
+        return values.compactMap { axElement($0 as CFTypeRef) }
     }
 
     static func focusedElement() -> AXUIElement? {
