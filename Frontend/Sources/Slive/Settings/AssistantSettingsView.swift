@@ -12,6 +12,8 @@ struct AssistantSettingsView: View {
     var openModels: () -> Void = {}
 
     @State private var promptNames: [String] = []
+    @ObservedObject private var promptLog = AssistantPromptLog.shared
+    @State private var sentPromptExpanded = false
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -266,6 +268,45 @@ struct AssistantSettingsView: View {
                 .innerWell()
                 Text("Tweak the file — it takes effect on your next ask.")
                     .sliveCaption()
+            }
+
+            // What actually went in on the LAST ask — the resolved system
+            // prompt as sent, not the file preview above (they can differ if
+            // the file changed since, or a Custom prompt is live).
+            if let sent = promptLog.lastSystemPrompt {
+                CardDivider()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { sentPromptExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .rotationEffect(.degrees(sentPromptExpanded ? 90 : 0))
+                        Text("Last prompt sent")
+                            .font(SliveTheme.font(11, .semibold))
+                        if let meta = promptLog.lastMeta {
+                            Text(meta)
+                                .font(SliveTheme.mono(10))
+                                .foregroundStyle(SliveTheme.textTertiary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(SliveTheme.textSecondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if sentPromptExpanded {
+                    ScrollView {
+                        Text(sent)
+                            .font(SliveTheme.mono(10.5))
+                            .foregroundStyle(SliveTheme.textMid)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                    .frame(maxHeight: 170)
+                    .innerWell()
+                }
             }
         }
     }

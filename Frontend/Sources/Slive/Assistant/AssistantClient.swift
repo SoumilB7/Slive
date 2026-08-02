@@ -1,5 +1,20 @@
 import Foundation
 
+/// The exact system prompt the most recent assistant ask was sent with —
+/// inspectable from the Assistant page, same idea as the ground-truth card's
+/// "Last prompt sent": what went in is a look, not a guess.
+@MainActor
+final class AssistantPromptLog: ObservableObject {
+    static let shared = AssistantPromptLog()
+    @Published private(set) var lastSystemPrompt: String?
+    @Published private(set) var lastMeta: String?
+
+    func record(prompt: String?, provider: String, model: String) {
+        lastSystemPrompt = prompt
+        lastMeta = "\(provider) · \(model)"
+    }
+}
+
 /// Talks to the local backend's `/assistant` endpoint: sends the transcribed
 /// prompt plus the chosen provider/model/key and returns the LLM's answer.
 ///
@@ -113,13 +128,19 @@ struct AssistantClient {
                           images: [ImageInput]?, history: [HistoryItem]?) -> RequestBody {
         let provider = config.provider
         let localOpts = provider.isLocal ? Settings.localInferenceOptions() : nil
+        let systemPrompt = PromptLibrary.resolvedSystemPrompt(for: config)
+        let model = config.model(for: provider)
+        Task { @MainActor in
+            AssistantPromptLog.shared.record(
+                prompt: systemPrompt, provider: provider.displayName, model: model)
+        }
         return RequestBody(
             text: text,
             provider: provider.wire,
-            model: config.model(for: provider),
+            model: model,
             api_key: apiKey,
             base_url: provider.needsBaseURL ? config.baseURL : nil,
-            system_prompt: PromptLibrary.resolvedSystemPrompt(for: config),
+            system_prompt: systemPrompt,
             max_tokens: 1024,
             images: (images?.isEmpty ?? true) ? nil : images,
             history: (history?.isEmpty ?? true) ? nil : history,
