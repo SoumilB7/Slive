@@ -227,6 +227,45 @@ enum SelfTest {
         check(m.handle(type: .keyUp, event: tUp), "chord toggle key-up swallowed")
         check(started.isEmpty && stopped.isEmpty, "chord toggle never engages a hold")
 
+        // Double-tap binds: the same physical key can hold-dictate AND
+        // double-tap-toggle. The ×2 toggle fires only on the second quick
+        // down edge; the hold still sees the gesture (its arm is cancelled
+        // app-side when the double fires).
+        started = []; stopped = []; toggled = []
+        m = makeMonitor(started: { started.append($0) }, stopped: { stopped.append($0) })
+        m.streamHotkey = nil
+        m.streamToggleHotkey = Hotkey(modifiers: fn, keyCode: nil, label: "fn ×2", taps: 2)
+        m.onToggle = { toggled.append($0) }
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(fn))    // tap 1 down
+        check(toggled.isEmpty, "first tap of a ×2 bind does not toggle")
+        equal(started, [.dictate], "…but the hold bind still sees the gesture")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(0))     // tap 1 up
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(fn))    // tap 2 down (fast)
+        equal(toggled, [.stream], "second quick tap fires the ×2 toggle")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(0))
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(fn))    // tap 3 (pair consumed)
+        equal(toggled, [.stream], "the pair is consumed — a third tap starts fresh")
+        _ = m.handle(type: .flagsChanged, event: flagsEvent(0))
+
+        // Pure double-tap timing rule.
+        let now = Date()
+        check(HotkeyMonitor.isDoubleTap(previousMods: fn, previousAt: now.addingTimeInterval(-0.2),
+                                        mods: fn, now: now),
+              "two taps 0.2s apart are a double")
+        check(!HotkeyMonitor.isDoubleTap(previousMods: fn, previousAt: now.addingTimeInterval(-1.0),
+                                         mods: fn, now: now),
+              "a slow second tap is not a double")
+        check(!HotkeyMonitor.isDoubleTap(previousMods: ctrl, previousAt: now.addingTimeInterval(-0.2),
+                                         mods: fn, now: now),
+              "different gestures never pair into a double")
+        // Old saved binds (no taps field) decode as single-tap.
+        if let data = "{\"modifiers\":\(fn),\"label\":\"fn\"}".data(using: .utf8),
+           let legacy = try? JSONDecoder().decode(Hotkey.self, from: data) {
+            equal(legacy.taps, 1, "legacy binds decode as single-tap")
+        } else {
+            check(false, "legacy binds decode as single-tap", "decode failed")
+        }
+
         // macOS synthesizes arrow/Home/End/Page keys as fn+key: their keyDown
         // and keyUp events CARRY maskSecondaryFn without fn ever being
         // touched. They must never read as the fn hotkey (this was the

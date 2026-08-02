@@ -70,6 +70,16 @@ final class HotkeyMonitor {
     private var toggleSwallowKeycode: UInt16?
     /// Last seen flags state — the down-edge detector for modifier toggles.
     private var previousFlags: UInt64 = 0
+    /// Previous down-edge (modifiers + when) — the double-tap detector.
+    private var lastTapMods: UInt64 = 0
+    private var lastTapAt: Date = .distantPast
+
+    /// Pure double-tap rule, self-tested: same gesture, two down-edges inside
+    /// the interval.
+    static func isDoubleTap(previousMods: UInt64, previousAt: Date,
+                            mods: UInt64, now: Date) -> Bool {
+        previousMods == mods && now.timeIntervalSince(previousAt) <= Hotkey.doubleTapInterval
+    }
 
     // MARK: - Targets
 
@@ -293,12 +303,33 @@ final class HotkeyMonitor {
                 return true        // swallow the toggle chord's key-up too
             }
         case .flagsChanged:
-            if engagedKeyCode == nil,
-               let t = modifierOnlyToggles.first(where: { $0.hotkey.modifiers == flags }),
-               previousFlags != flags {
+            if engagedKeyCode == nil, previousFlags != flags, flags != 0,
+               let t = modifierOnlyToggles.first(where: { $0.hotkey.modifiers == flags }) {
+                let now = Date()
+                let doubled = Self.isDoubleTap(previousMods: lastTapMods,
+                                               previousAt: lastTapAt,
+                                               mods: flags, now: now)
+                lastTapMods = flags
+                lastTapAt = now
                 previousFlags = flags
-                onToggle?(t.action)
-                return false       // modifiers are never consumed
+                if t.hotkey.taps <= 1 {
+                    onToggle?(t.action)          // single-tap toggle: every down edge
+                    return false                 // gesture belongs to the toggle
+                }
+                if doubled {
+                    lastTapAt = .distantPast     // consume the pair — a 3rd tap starts fresh
+                    onToggle?(t.action)          // double-tap toggle: second edge only
+                    return false
+                }
+                // ×2 bind, FIRST tap: fall through — a hold sharing this
+                // gesture owns the edge (its arm dies if the double lands).
+            }
+            // Any down edge feeds the double-tap detector, even when no
+            // toggle matches (so tap–tap of a gesture bound elsewhere can't
+            // smear across unrelated flag states).
+            if previousFlags != flags, flags != 0 {
+                lastTapMods = flags
+                lastTapAt = Date()
             }
         default:
             break
@@ -351,9 +382,14 @@ final class HotkeyMonitor {
         //    dictate → assist → stream, so plain (all-at-once) dictation
         //    dominates over the continuous and assistant keys.
         if engagedKeyCode == nil, type == .flagsChanged,
-           // A flags state that exactly matches a toggle bind belongs to the
-           // toggle — the hold matcher must not read it as a held gesture.
-           !modifierOnlyToggles.contains(where: { $0.hotkey.modifiers == flags }) {
+           // A flags state that exactly matches a SINGLE-tap toggle bind
+           // belongs to the toggle — the hold matcher must not read it as a
+           // held gesture. Double-tap binds share their gesture with holds
+           // (fn hold dictates, fn-fn toggles): the hold arm from a tap is
+           // cancelled by the receiver when the double fires.
+           !modifierOnlyToggles.contains(where: {
+               $0.hotkey.modifiers == flags && $0.hotkey.taps <= 1
+           }) {
             let mods = modifierOnlyTargets   // cached; no per-event filter
             let matched: HotkeyAction? =
                 mods.first { $0.hotkey.modifiers == flags }?.action

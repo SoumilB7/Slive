@@ -18,6 +18,15 @@ struct HotkeyRecorderView: View {
     @State private var recording = false
     @State private var monitor: Any?
     @State private var maxModifiers: UInt64 = 0
+    /// Double-tap capture (toggle targets only): after the first full
+    /// release we wait a beat for a second tap before committing ×1.
+    @State private var pendingTapMods: UInt64 = 0
+    @State private var commitWork: DispatchWorkItem?
+
+    /// Toggle binds may be a double-tap; hold binds are always a single hold.
+    private var supportsDoubleTap: Bool {
+        target == .dictationToggle || target == .streamToggle
+    }
 
     /// Current shortcut for this target (assistant may be unset).
     private var current: Hotkey? {
@@ -45,7 +54,9 @@ struct HotkeyRecorderView: View {
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.92))
                 Text(recording
-                     ? "Press it now — a modifier alone, or a modifier + key (⌥ /). Esc cancels."
+                     ? (supportsDoubleTap
+                        ? "Press it now — tap a modifier once, or DOUBLE-tap it to bind the ×2 gesture. Esc cancels."
+                        : "Press it now — a modifier alone, or a modifier + key (⌥ /). Esc cancels.")
                      : subtitle)
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.5))
@@ -92,6 +103,8 @@ struct HotkeyRecorderView: View {
 
     private func cancel() {
         recording = false
+        commitWork?.cancel(); commitWork = nil
+        pendingTapMods = 0
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
     }
 
@@ -124,8 +137,32 @@ struct HotkeyRecorderView: View {
             maxModifiers |= mods
             // All modifiers released with no key pressed → a modifier-only shortcut.
             if mods == 0 && maxModifiers != 0 {
-                let label = Hotkey.makeLabel(modifiers: maxModifiers, keyChar: nil)
-                commit(Hotkey(modifiers: maxModifiers, keyCode: nil, label: label))
+                let released = maxModifiers
+                maxModifiers = 0
+                guard supportsDoubleTap else {
+                    let label = Hotkey.makeLabel(modifiers: released, keyChar: nil)
+                    commit(Hotkey(modifiers: released, keyCode: nil, label: label))
+                    return
+                }
+                // Second tap of the same gesture inside the window → ×2.
+                if pendingTapMods == released {
+                    commitWork?.cancel(); commitWork = nil
+                    pendingTapMods = 0
+                    let label = Hotkey.makeLabel(modifiers: released, keyChar: nil) + " ×2"
+                    commit(Hotkey(modifiers: released, keyCode: nil, label: label, taps: 2))
+                    return
+                }
+                // First tap: hold the commit briefly — tap again for ×2.
+                pendingTapMods = released
+                let work = DispatchWorkItem {
+                    pendingTapMods = 0
+                    commitWork = nil
+                    let label = Hotkey.makeLabel(modifiers: released, keyChar: nil)
+                    commit(Hotkey(modifiers: released, keyCode: nil, label: label))
+                }
+                commitWork = work
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + Hotkey.doubleTapInterval, execute: work)
             }
 
         case .keyDown:

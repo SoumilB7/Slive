@@ -18,8 +18,34 @@ struct Hotkey: Codable, Equatable {
     var modifiers: UInt64
     /// The main non-modifier key's virtual keycode, or nil for modifier-only.
     var keyCode: UInt16?
-    /// Readable label built when recorded, e.g. "⌥ /" or "fn".
+    /// Readable label built when recorded, e.g. "⌥ /" or "fn ×2".
     var label: String
+    /// How many quick taps trigger this bind (toggle binds only): 1 = a
+    /// single press, 2 = double-tap within `Hotkey.doubleTapInterval`. Lets
+    /// one physical key carry two meanings (fn hold ≠ fn-fn) — the cure for
+    /// running out of rememberable combos.
+    var taps: Int = 1
+
+    /// Two down-edges of the same gesture within this window = a double-tap.
+    static let doubleTapInterval: TimeInterval = 0.45
+
+    private enum CodingKeys: String, CodingKey { case modifiers, keyCode, label, taps }
+
+    init(modifiers: UInt64, keyCode: UInt16?, label: String, taps: Int = 1) {
+        self.modifiers = modifiers
+        self.keyCode = keyCode
+        self.label = label
+        self.taps = taps
+    }
+
+    /// Tolerant decode: binds saved before `taps` existed load as single-tap.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        modifiers = try c.decode(UInt64.self, forKey: .modifiers)
+        keyCode = try c.decodeIfPresent(UInt16.self, forKey: .keyCode)
+        label = try c.decode(String.self, forKey: .label)
+        taps = try c.decodeIfPresent(Int.self, forKey: .taps) ?? 1
+    }
 
     static let modifierMask: UInt64 =
         CGEventFlags.maskCommand.rawValue

@@ -206,6 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toggleActive: HotkeyAction?
 
     private func toggleTapped(_ action: HotkeyAction) {
+        // A double-tap bind shares its gesture with a hold bind (fn hold vs
+        // fn-fn): the second press also armed a pending hold — kill it, the
+        // double-tap owns this press.
+        armWorkItem?.cancel()
+        armWorkItem = nil
         // Second tap of the live toggle session → the release.
         if toggleActive == action {
             toggleActive = nil
