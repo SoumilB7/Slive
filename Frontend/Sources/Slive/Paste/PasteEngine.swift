@@ -245,21 +245,17 @@ enum PasteEngine {
              kAXMenuItemRole,
              kAXImageRole,
              kAXStaticTextRole,
-             // Containers focus actually rests on when no field is selected —
-             // Finder list/column views, icon grids, sidebars, toolbars. A
-             // focused CONTAINER is not a caret; keystrokes there only
-             // trigger type-select. (Deliberately NOT AXGroup: half-built
-             // Electron trees report groups while a real field has focus.)
+             // Only roles where typing NEVER enters text. Deliberately NOT:
+             // AXGroup (half-built Electron trees report groups while a real
+             // field has focus) and NOT cell/row/table/outline/list/browser —
+             // spreadsheet-pattern apps (Numbers, Excel) begin CELL EDITING
+             // on a keystroke to a focused cell, so refusing those would box
+             // legitimate dictation. Scroll areas (desktop icon view),
+             // toolbars, popups and links only ever type-select.
              kAXScrollAreaRole,
-             kAXOutlineRole,
-             kAXTableRole,
-             kAXListRole,
-             kAXBrowserRole,
              kAXToolbarRole,
              kAXPopUpButtonRole,
              "AXLink",
-             kAXRowRole,
-             kAXCellRole,
              "AXWebArea":
             return false
         default:

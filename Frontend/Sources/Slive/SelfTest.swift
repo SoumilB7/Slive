@@ -417,12 +417,18 @@ enum SelfTest {
               "static text focus falls back to copy box")
         check(!PasteEngine.shouldDispatch(role: "AXWebArea"),
               "ordinary web page focus falls back to copy box")
-        // The containers focus rests on when NO field is selected — Finder
-        // lists, icon grids, sidebars, toolbars — are all copy-box.
-        for role in [kAXScrollAreaRole, kAXOutlineRole, kAXTableRole, kAXListRole,
-                     kAXBrowserRole, kAXToolbarRole, kAXRowRole] {
+        // Never-text containers (desktop icon view, toolbars, popups) are
+        // copy-box…
+        for role in [kAXScrollAreaRole, kAXToolbarRole, kAXPopUpButtonRole] {
             check(!PasteEngine.shouldDispatch(role: role as String),
-                  "container focus (\(role)) falls back to copy box")
+                  "never-text container (\(role)) falls back to copy box")
+        }
+        // …but cell/table/outline focus TYPES: spreadsheet apps begin cell
+        // editing on a keystroke — boxing those broke real dictation.
+        for role in [kAXCellRole, kAXRowRole, kAXTableRole, kAXOutlineRole,
+                     kAXListRole, kAXBrowserRole] {
+            check(PasteEngine.shouldDispatch(role: role as String),
+                  "cell/list focus (\(role)) still types (cell-edit-on-keystroke)")
         }
         // AX's answers about focus map to distinct verdicts — and a claimed
         // "nothing focused" (.noValue) is only a CLAIM: sleeping Electron
