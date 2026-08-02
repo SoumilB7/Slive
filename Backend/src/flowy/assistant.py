@@ -626,6 +626,19 @@ _META_REPLY_MARKERS = (
 )
 
 
+def _with_vocab_hint(prompt: str, hint: str | None, limit: int = 500) -> str:
+    """Append the user's vocabulary context to a transcription prompt.
+
+    Purely additive — the base prompt (Soumil's fidelity decision) is never
+    altered; the hint only tells the model which spellings the speaker's
+    names/terms use. Clipped so the dedicated endpoint's tight prompt budget
+    (whisper-1 ≈224 tokens) still fits the instruction that matters.
+    """
+    if not hint or not hint.strip():
+        return prompt
+    return f"{prompt}\n\n{hint.strip()[:limit]}"
+
+
 def _validate_audio_payload(audio_b64: str) -> int:
     """Decoded byte count, or ValueError when the payload can't be real audio.
 
@@ -681,6 +694,7 @@ async def _transcriptions_endpoint(
     chosen_model: str,
     audio_b64: str,
     audio_format: str,
+    vocab_hint: str | None = None,
 ) -> str | None:
     """POST /audio/transcriptions — the endpoint that can only transcribe.
 
@@ -701,7 +715,10 @@ async def _transcriptions_endpoint(
                 headers={"Authorization": f"Bearer {api_key}"},
                 files={"file": (f"audio.{audio_format}", audio_bytes, mime)},
                 data={"model": candidate,
-                      "prompt": _ENDPOINT_TRANSCRIBE_PROMPT,
+                      # Tighter clip here: whisper-1's prompt budget is small
+                      # and the vocabulary is the part that matters most.
+                      "prompt": _with_vocab_hint(_ENDPOINT_TRANSCRIBE_PROMPT,
+                                                 vocab_hint, limit=300),
                       "response_format": "text"},
             )
         except httpx.HTTPError:
@@ -743,6 +760,7 @@ async def transcribe_audio(
     base_url: str | None = None,
     local_quantized: bool = True,
     local_mem_gb: float | None = None,
+    vocab_hint: str | None = None,
 ) -> str:
     """Ask an audio-capable multimodal model for a verbatim transcription.
 
@@ -764,6 +782,7 @@ async def transcribe_audio(
         return _guard_transcription(await run_in_threadpool(
             local_infer.transcribe, model, api_key or None, audio_b64, media_type,
             448, local_quantized, local_mem_gb or local_infer.DEFAULT_MEM_GB,
+            _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint),
         ))
     if not api_key:
         raise ValueError("Missing api_key")
@@ -777,7 +796,7 @@ async def transcribe_audio(
             body = {
                 "contents": [{
                     "parts": [
-                        {"text": TRANSCRIBE_PROMPT},
+                        {"text": _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)},
                         {"inline_data": {"mime_type": media_type, "data": audio_b64}},
                     ],
                 }],
@@ -808,7 +827,8 @@ async def transcribe_audio(
             # audio AND answering it conversationally; no prompt or marker
             # list fixes a chat API, so transcription simply doesn't use one.
             direct = await _transcriptions_endpoint(
-                client, root, api_key, model, audio_b64, audio_format)
+                client, root, api_key, model, audio_b64, audio_format,
+                vocab_hint=vocab_hint)
             if direct is not None:
                 return direct
 
@@ -819,7 +839,7 @@ async def transcribe_audio(
                 "model": model,
                 "modalities": ["text"],
                 "messages": [
-                    {"role": "system", "content": TRANSCRIBE_PROMPT},
+                    {"role": "system", "content": _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)},
                     {"role": "user", "content": [
                         {"type": "input_audio",
                          "input_audio": {"data": audio_b64, "format": audio_format}},

@@ -21,6 +21,7 @@ enum SelfTest {
         hotkeyMatchingChecks()
         providerChecks()
         speedTierChecks()
+        vocabHintChecks()
         silenceTrimChecks()
         textHygieneChecks()
         pasteFocusChecks()
@@ -329,6 +330,24 @@ enum SelfTest {
         check(MachineProfile.ramGB > 0, "machine checker reads physical RAM")
         check(MachineProfile.summary.contains("GB") && !MachineProfile.chip.isEmpty,
               "machine summary names the chip and RAM")
+    }
+
+    // MARK: - Ground-truth vocabulary hint
+
+    private static func vocabHintChecks() {
+        print("[Vocab hint]")
+        check(GroundTruthClient.vocabHint(hotwords: "", context: "") == nil
+                && GroundTruthClient.vocabHint(hotwords: "  \n", context: " ") == nil,
+              "no vocabulary configured → no hint sent")
+        let wordsOnly = GroundTruthClient.vocabHint(hotwords: "Slive, Yara Jinkia", context: "")
+        check(wordsOnly?.contains("Yara Jinkia") == true
+                && wordsOnly?.contains("exact spellings") == true,
+              "hotwords compose into a spelling hint")
+        let both = GroundTruthClient.vocabHint(hotwords: "Slive", context: "software dictation")
+        check(both?.contains("Slive") == true && both?.contains("software dictation") == true,
+              "hotwords and context both ride along")
+        check(GroundTruthClient.vocabHint(hotwords: "", context: "only context") != nil,
+              "context alone still produces a hint")
     }
 
     // MARK: - Silence trim (pre-decode)

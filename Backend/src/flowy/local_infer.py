@@ -362,9 +362,12 @@ def transcribe(
     max_tokens: int = 448,
     quantized: bool = True,
     mem_gb: float = DEFAULT_MEM_GB,
+    prompt: str | None = None,
 ) -> str:
     """Verbatim transcription from a local audio-capable model, following the
-    same English-only / disfluency rules as the cloud ground-truth path."""
+    same English-only / disfluency rules as the cloud ground-truth path.
+    ``prompt`` lets the caller supply the composed instruction (e.g. with the
+    user's vocabulary hint appended); default is the shared contract."""
     loaded = _load(repo_id, token, quantized, mem_gb)
     if not loaded.supports_audio:
         raise LocalInferenceError(
@@ -379,7 +382,7 @@ def transcribe(
                 "role": "user",
                 "content": [
                     {"type": "audio", "path": path},
-                    {"type": "text", "text": TRANSCRIBE_PROMPT},
+                    {"type": "text", "text": prompt or TRANSCRIBE_PROMPT},
                 ],
             }
         ]

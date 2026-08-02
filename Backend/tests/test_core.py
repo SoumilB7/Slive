@@ -132,3 +132,18 @@ def test_audio_payload_validation() -> None:
 
     with pytest.raises(ValueError, match="not valid base64"):
         _validate_audio_payload("!!!not-base64!!!")
+
+
+def test_vocab_hint_composition() -> None:
+    from flowy.assistant import _with_vocab_hint
+
+    base = "Transcribe verbatim."
+    assert _with_vocab_hint(base, None) == base
+    assert _with_vocab_hint(base, "   ") == base
+    hinted = _with_vocab_hint(base, "Names: Yara Jinkia, Slive.")
+    assert hinted.startswith(base) and "Yara Jinkia" in hinted
+    # The base prompt is never altered — the hint is purely appended.
+    assert hinted[: len(base)] == base
+    # Endpoint budget: long hints are clipped, the base survives whole.
+    long = _with_vocab_hint(base, "x" * 2000, limit=300)
+    assert long.startswith(base) and len(long) <= len(base) + 2 + 300

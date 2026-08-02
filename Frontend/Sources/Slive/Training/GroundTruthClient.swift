@@ -34,6 +34,27 @@ struct GroundTruthClient {
         // Local-provider knobs; nil (omitted) for cloud providers.
         let local_quantized: Bool?
         let local_mem_gb: Double?
+        // The user's Vocabulary (hotwords + context) so the judge spells
+        // names and terms the way the main model was told to.
+        let vocab_hint: String?
+    }
+
+    /// The vocabulary context that rides with every ground-truth request —
+    /// the SAME "possible words" the user gave the main dictation model
+    /// (Settings → Vocabulary), so the judge gets their spellings right
+    /// without endless hand-fixes. nil when nothing is configured.
+    static func vocabHint(hotwords: String, context: String) -> String? {
+        let words = hotwords.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ctx = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty || !ctx.isEmpty else { return nil }
+        var parts: [String] = []
+        if !words.isEmpty {
+            parts.append("Words and names this speaker likely uses — prefer these exact spellings when the audio matches: \(words).")
+        }
+        if !ctx.isEmpty {
+            parts.append("Speaker context: \(ctx)")
+        }
+        return parts.joined(separator: " ")
     }
 
     private struct ResponseBody: Decodable {
@@ -46,7 +67,8 @@ struct GroundTruthClient {
                     provider: AssistantProvider,
                     model: String,
                     apiKey: String,
-                    baseURL: String?) async throws -> String {
+                    baseURL: String?,
+                    vocabHint: String? = nil) async throws -> String {
         guard !apiKey.isEmpty || !provider.needsAPIKey else {
             throw GroundTruthError.missingKey(provider.displayName)
         }
@@ -68,7 +90,8 @@ struct GroundTruthClient {
             media_type: "audio/wav",
             base_url: (baseURL?.isEmpty ?? true) ? nil : baseURL,
             local_quantized: localOpts?.quantized,
-            local_mem_gb: localOpts?.memGB)
+            local_mem_gb: localOpts?.memGB,
+            vocab_hint: vocabHint)
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"

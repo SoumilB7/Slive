@@ -204,6 +204,10 @@ class TranscribeLLMRequest(BaseModel):
     base_url: str | None = None
     local_quantized: bool = True
     local_mem_gb: float | None = None
+    #: The user's Vocabulary (hotwords + context) — appended to the
+    #: transcription prompt so the judge spells the speaker's names/terms
+    #: the way the main dictation model was told to.
+    vocab_hint: str | None = None
 
     _clean_key = field_validator("api_key")(_clean_api_key)
 
@@ -220,6 +224,7 @@ async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
             base_url=req.base_url,
             local_quantized=req.local_quantized,
             local_mem_gb=req.local_mem_gb,
+            vocab_hint=req.vocab_hint,
         )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})

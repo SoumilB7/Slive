@@ -396,10 +396,17 @@ struct DataSettingsView: View {
             }
             return text
         }
+        // The user's Vocabulary rides along so the judge spells their names
+        // and terms the way the main model was told to — no endless
+        // hand-fixes for the same words. (The on-device Whisper judge can't
+        // take a text hint yet — WhisperKit wants promptTokens; standing
+        // regression noted in z-docs.)
         return try await GroundTruthClient().transcribe(
             audioURL: url, provider: provider, model: model,
             apiKey: providers.apiKey(for: provider),
-            baseURL: providers.baseURL(for: provider))
+            baseURL: providers.baseURL(for: provider),
+            vocabHint: GroundTruthClient.vocabHint(
+                hotwords: settings.hotwords, context: settings.contextPrompt))
     }
 
     /// Fetch ground truth for one sample.
