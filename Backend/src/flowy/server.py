@@ -215,7 +215,7 @@ class TranscribeLLMRequest(BaseModel):
 @app.post("/transcribe_llm")
 async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
     try:
-        text = await assistant_transcribe_audio(
+        text, prompt_used = await assistant_transcribe_audio(
             provider=req.provider,
             model=req.model,
             api_key=req.api_key,
@@ -231,7 +231,9 @@ async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
         logger.exception("LLM transcription failed")
         return JSONResponse(status_code=502, content={"error": str(exc)})
-    return JSONResponse(status_code=200, content={"text": text})
+    # The exact instruction the model saw rides back — the UI shows it so
+    # "what went in" is inspectable, vocabulary hint included.
+    return JSONResponse(status_code=200, content={"text": text, "prompt": prompt_used})
 
 
 class ModelsRequest(BaseModel):

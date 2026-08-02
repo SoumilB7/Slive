@@ -695,11 +695,12 @@ async def _transcriptions_endpoint(
     audio_b64: str,
     audio_format: str,
     vocab_hint: str | None = None,
-) -> str | None:
+) -> tuple[str, str] | None:
     """POST /audio/transcriptions — the endpoint that can only transcribe.
 
-    Tries the mapped model, then whisper-1; returns None only if every
-    candidate fails (caller then surfaces the original guard error).
+    Tries the mapped model, then whisper-1; returns (text, prompt_used), or
+    None only if every candidate fails (caller then surfaces the original
+    guard error).
     """
     import base64 as _b64
 
@@ -708,6 +709,7 @@ async def _transcriptions_endpoint(
     except Exception:  # noqa: BLE001 - fall back to the guard error
         return None
     mime = "audio/mpeg" if audio_format == "mp3" else "audio/wav"
+    endpoint_prompt = _with_vocab_hint(_ENDPOINT_TRANSCRIBE_PROMPT, vocab_hint, limit=300)
     for candidate in _transcribe_fallback_models(chosen_model):
         try:
             resp = await client.post(
@@ -717,8 +719,7 @@ async def _transcriptions_endpoint(
                 data={"model": candidate,
                       # Tighter clip here: whisper-1's prompt budget is small
                       # and the vocabulary is the part that matters most.
-                      "prompt": _with_vocab_hint(_ENDPOINT_TRANSCRIBE_PROMPT,
-                                                 vocab_hint, limit=300),
+                      "prompt": endpoint_prompt,
                       "response_format": "text"},
             )
         except httpx.HTTPError:
@@ -728,7 +729,7 @@ async def _transcriptions_endpoint(
         text = resp.text.strip()
         if text:
             logger.info("transcriptions-endpoint fallback served by %s", candidate)
-            return text
+            return text, endpoint_prompt
     return None
 
 
@@ -761,8 +762,12 @@ async def transcribe_audio(
     local_quantized: bool = True,
     local_mem_gb: float | None = None,
     vocab_hint: str | None = None,
-) -> str:
+) -> tuple[str, str | None]:
     """Ask an audio-capable multimodal model for a verbatim transcription.
+
+    Returns ``(text, prompt_used)`` — the exact instruction that went to the
+    model rides back so the UI can show what the generation was seeded with
+    (including the user's vocabulary hint).
 
     Same proxy pattern as ``answer``: the caller supplies provider/model/key per
     request; nothing is stored server-side. Only providers whose models accept
@@ -779,11 +784,13 @@ async def transcribe_audio(
                 audio_bytes_len / 1024, provider, model)
     if provider == "local":
         from flowy import local_infer
-        return _guard_transcription(await run_in_threadpool(
+        local_prompt = _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)
+        text = _guard_transcription(await run_in_threadpool(
             local_infer.transcribe, model, api_key or None, audio_b64, media_type,
             448, local_quantized, local_mem_gb or local_infer.DEFAULT_MEM_GB,
-            _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint),
+            local_prompt,
         ))
+        return text, local_prompt
     if not api_key:
         raise ValueError("Missing api_key")
 
@@ -793,10 +800,11 @@ async def transcribe_audio(
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model}:generateContent?key={api_key}"
             )
+            gemini_prompt = _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)
             body = {
                 "contents": [{
                     "parts": [
-                        {"text": _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)},
+                        {"text": gemini_prompt},
                         {"inline_data": {"mime_type": media_type, "data": audio_b64}},
                     ],
                 }],
@@ -809,7 +817,7 @@ async def transcribe_audio(
                 text = "".join(p.get("text", "") for p in parts).strip()
             except (KeyError, IndexError) as exc:
                 raise ValueError(f"Unexpected Gemini response shape: {data}") from exc
-            return _guard_transcription(text)
+            return _guard_transcription(text), gemini_prompt
 
         if provider in ("openai", "openai_compatible"):
             if provider == "openai_compatible" and not base_url:
@@ -835,11 +843,12 @@ async def transcribe_audio(
             # Fallback only for OpenAI-compatible gateways that don't serve
             # /audio/transcriptions: a guarded chat attempt (instructions in
             # the system turn, the user turn is audio only).
+            chat_prompt = _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)
             body = {
                 "model": model,
                 "modalities": ["text"],
                 "messages": [
-                    {"role": "system", "content": _with_vocab_hint(TRANSCRIBE_PROMPT, vocab_hint)},
+                    {"role": "system", "content": chat_prompt},
                     {"role": "user", "content": [
                         {"type": "input_audio",
                          "input_audio": {"data": audio_b64, "format": audio_format}},
@@ -856,7 +865,7 @@ async def transcribe_audio(
                 text = (data["choices"][0]["message"]["content"] or "").strip()
             except (KeyError, IndexError) as exc:
                 raise ValueError(f"Unexpected OpenAI response shape: {data}") from exc
-            return _guard_transcription(text)
+            return _guard_transcription(text), chat_prompt
 
         if provider == "anthropic":
             raise ValueError(

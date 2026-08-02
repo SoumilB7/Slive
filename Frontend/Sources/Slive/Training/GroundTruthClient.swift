@@ -60,15 +60,18 @@ struct GroundTruthClient {
     private struct ResponseBody: Decodable {
         let text: String?
         let error: String?
+        let prompt: String?
     }
 
     /// Transcribe one audio file. Brings the backend up if needed (it's lazy).
+    /// Returns the transcript AND the exact prompt the model was seeded with
+    /// (vocabulary hint included) so the UI can show what went in.
     func transcribe(audioURL: URL,
                     provider: AssistantProvider,
                     model: String,
                     apiKey: String,
                     baseURL: String?,
-                    vocabHint: String? = nil) async throws -> String {
+                    vocabHint: String? = nil) async throws -> (text: String, prompt: String?) {
         guard !apiKey.isEmpty || !provider.needsAPIKey else {
             throw GroundTruthError.missingKey(provider.displayName)
         }
@@ -104,6 +107,7 @@ struct GroundTruthClient {
         let (data, _) = try await URLSession.shared.data(for: request)
         let decoded = try JSONDecoder().decode(ResponseBody.self, from: data)
         if let error = decoded.error { throw GroundTruthError.server(error) }
-        return (decoded.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return ((decoded.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                decoded.prompt)
     }
 }

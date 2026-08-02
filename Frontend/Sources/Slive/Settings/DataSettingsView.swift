@@ -31,6 +31,11 @@ struct DataSettingsView: View {
     /// Sample ids a bulk run didn't reach (it stops on the first error) — lets
     /// "Run left" resume exactly where it stopped instead of redoing the rest.
     @State private var remaining: [String] = []
+    /// The exact instruction the most recent Should-be generation was seeded
+    /// with (vocabulary hint included) — inspectable below the buttons.
+    @State private var lastPrompt: String?
+    @State private var lastPromptMeta: String?
+    @State private var promptExpanded = false
 
     /// Keep the table bounded: the audio player's 10 Hz progress updates should
     /// never make SwiftUI reconsider hundreds of transcript/diff rows.
@@ -361,6 +366,46 @@ struct DataSettingsView: View {
                     .foregroundStyle(.orange.opacity(0.95))
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            // What actually went in: the exact instruction the most recent
+            // generation was seeded with — vocabulary hint visible at its
+            // tail, so "are my words in there?" is a look, not a guess.
+            if let lastPrompt {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { promptExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .rotationEffect(.degrees(promptExpanded ? 90 : 0))
+                        Text("Last prompt sent")
+                            .font(SliveTheme.font(11, .semibold))
+                        if let lastPromptMeta {
+                            Text(lastPromptMeta)
+                                .font(SliveTheme.mono(10))
+                                .foregroundStyle(SliveTheme.textTertiary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(SliveTheme.textSecondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if promptExpanded {
+                    ScrollView {
+                        Text(lastPrompt)
+                            .font(SliveTheme.mono(10.5))
+                            .foregroundStyle(SliveTheme.textMid)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                    .frame(maxHeight: 170)
+                    .innerWell()
+                    Text("Your Vocabulary words ride at the end — edit them in Dictation → Vocabulary.")
+                        .sliveCaption()
+                }
+            }
         }
     }
 
@@ -389,6 +434,8 @@ struct DataSettingsView: View {
                                  model: String) async throws -> String {
         _ = try validatedAudioSeconds(url)
         if provider == .whisper {
+            lastPrompt = "(none — the on-device Whisper judge takes no text prompt, so the vocabulary can't steer it yet; use the pencil for name fixes)"
+            lastPromptMeta = "Whisper · \(model)"
             guard let text = await TranscriptionModel.shared.transcribe(url, model: model),
                   !text.isEmpty else {
                 throw GroundTruthClient.GroundTruthError.server(
@@ -401,12 +448,15 @@ struct DataSettingsView: View {
         // hand-fixes for the same words. (The on-device Whisper judge can't
         // take a text hint yet — WhisperKit wants promptTokens; standing
         // regression noted in z-docs.)
-        return try await GroundTruthClient().transcribe(
+        let result = try await GroundTruthClient().transcribe(
             audioURL: url, provider: provider, model: model,
             apiKey: providers.apiKey(for: provider),
             baseURL: providers.baseURL(for: provider),
             vocabHint: GroundTruthClient.vocabHint(
                 hotwords: settings.hotwords, context: settings.contextPrompt))
+        lastPrompt = result.prompt
+        lastPromptMeta = "\(provider.displayName) · \(model)"
+        return result.text
     }
 
     /// Fetch ground truth for one sample.
