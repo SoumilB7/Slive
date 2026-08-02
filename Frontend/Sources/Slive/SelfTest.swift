@@ -417,6 +417,22 @@ enum SelfTest {
               "static text focus falls back to copy box")
         check(!PasteEngine.shouldDispatch(role: "AXWebArea"),
               "ordinary web page focus falls back to copy box")
+        // The containers focus rests on when NO field is selected — Finder
+        // lists, icon grids, sidebars, toolbars — are all copy-box.
+        for role in [kAXScrollAreaRole, kAXOutlineRole, kAXTableRole, kAXListRole,
+                     kAXBrowserRole, kAXToolbarRole, kAXRowRole] {
+            check(!PasteEngine.shouldDispatch(role: role as String),
+                  "container focus (\(role)) falls back to copy box")
+        }
+        // AX's three answers about focus are three different verdicts:
+        // an authoritative "nothing focused" shows the box; an unreadable
+        // tree types anyway (Electron); success judges the role.
+        check(PasteEngine.axSaysNothingFocused(.noValue),
+              "AX .noValue = really nothing focused → copy box")
+        check(!PasteEngine.axSaysNothingFocused(.cannotComplete)
+                && !PasteEngine.axSaysNothingFocused(.apiDisabled)
+                && !PasteEngine.axSaysNothingFocused(.notImplemented),
+              "AX can't-answer errors still fail open and type")
     }
 
     // MARK: - Typing pacing

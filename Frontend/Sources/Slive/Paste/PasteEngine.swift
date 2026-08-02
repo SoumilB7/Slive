@@ -35,7 +35,8 @@ enum PasteEngine {
     static func canStreamType() -> Bool {
         func check() -> Bool {
             guard AXIsProcessTrusted() else { return false }
-            if let element = focusedElement() {
+            switch probeFocus() {
+            case .element(let element):
                 if isSecure(element) {
                     Log.paste("stream refused — secure field")
                     return false
@@ -45,8 +46,13 @@ enum PasteEngine {
                     Log.paste("stream refused — non-text focus (\(role ?? "unknown"))")
                     return false
                 }
+                return true
+            case .none:
+                Log.paste("stream refused — nothing has keyboard focus")
+                return false
+            case .unknown:
+                return true   // AX can't tell — stream anyway (Electron safety)
             }
-            return true
         }
         return Thread.isMainThread ? check() : DispatchQueue.main.sync(execute: check)
     }
@@ -114,9 +120,12 @@ enum PasteEngine {
         // No Accessibility permission → posted events would be dropped.
         guard AXIsProcessTrusted() else { return false }
 
-        // Never type into a password field. Fail-open by design: refuse only on
-        // a positive identification, so a broken AX tree can't block typing.
-        if let element = focusedElement() {
+        // Never type into a password field, a positively non-text target, or
+        // THE VOID. Fail-open only where AX genuinely couldn't answer — an
+        // authoritative "nothing is focused" means the keystrokes would land
+        // nowhere, which is exactly what the copy box is for.
+        switch probeFocus() {
+        case .element(let element):
             if isSecure(element) {
                 Log.paste("insert refused — secure field")
                 return false
@@ -126,6 +135,11 @@ enum PasteEngine {
                 Log.paste("insert refused — non-text focus (\(role ?? "unknown"))")
                 return false
             }
+        case .none:
+            Log.paste("insert refused — nothing has keyboard focus")
+            return false
+        case .unknown:
+            break   // AX can't tell — type anyway (Electron safety)
         }
 
         // Type it out with synthetic key events. We deliberately do NOT use the
@@ -140,15 +154,45 @@ enum PasteEngine {
 
     // MARK: - Focus
 
-    static func focusedElement() -> AXUIElement? {
+    /// What the focus probe actually learned — the three answers mean three
+    /// different things and must not be conflated:
+    /// - `.element`: something has focus; judge it by role.
+    /// - `.none`: AX answered AUTHORITATIVELY that nothing has keyboard focus
+    ///   (`.noValue`). Typing would land nowhere — show the copy box.
+    /// - `.unknown`: AX couldn't answer (broken/asleep tree, Electron after
+    ///   relaunch). Fail open and type; a wrong refusal here is the old bug
+    ///   we removed detection over.
+    enum FocusProbe {
+        case element(AXUIElement)
+        case none
+        case unknown
+    }
+
+    static func probeFocus() -> FocusProbe {
         let systemWide = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
             systemWide, kAXFocusedUIElementAttribute as CFString, &value)
-        guard err == .success, let value else { return nil }
-        // Confirm we actually got an AXUIElement before force-casting.
-        guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
+        switch err {
+        case .success:
+            guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                return .none   // answered, but with nothing usable focused
+            }
+            return .element((value as! AXUIElement))
+        default:
+            return Self.axSaysNothingFocused(err) ? .none : .unknown
+        }
+    }
+
+    /// Pure decision, self-tested: which AX errors mean "really nothing is
+    /// focused" (copy box) vs "couldn't tell" (fail open and type)?
+    static func axSaysNothingFocused(_ error: AXError) -> Bool {
+        error == .noValue
+    }
+
+    static func focusedElement() -> AXUIElement? {
+        if case .element(let element) = probeFocus() { return element }
+        return nil
     }
 
     private static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
@@ -178,6 +222,21 @@ enum PasteEngine {
              kAXMenuItemRole,
              kAXImageRole,
              kAXStaticTextRole,
+             // Containers focus actually rests on when no field is selected —
+             // Finder list/column views, icon grids, sidebars, toolbars. A
+             // focused CONTAINER is not a caret; keystrokes there only
+             // trigger type-select. (Deliberately NOT AXGroup: half-built
+             // Electron trees report groups while a real field has focus.)
+             kAXScrollAreaRole,
+             kAXOutlineRole,
+             kAXTableRole,
+             kAXListRole,
+             kAXBrowserRole,
+             kAXToolbarRole,
+             kAXPopUpButtonRole,
+             "AXLink",
+             kAXRowRole,
+             kAXCellRole,
              "AXWebArea":
             return false
         default:
