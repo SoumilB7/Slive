@@ -168,7 +168,14 @@ enum PasteEngine {
         case unknown
     }
 
+    enum FocusKind: Equatable {
+        case text
+        case nonText
+        case ambiguous
+    }
+
     static func probeFocus() -> FocusProbe {
+        let frontmost = NSWorkspace.shared.frontmostApplication
         let systemWide = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
@@ -176,11 +183,12 @@ enum PasteEngine {
         switch err {
         case .success:
             guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
-                return corroboratedNone()
+                return corroboratedNone(frontmost: frontmost)
             }
-            return .element((value as! AXUIElement))
+            return resolveFocus((value as! AXUIElement), frontmost: frontmost)
         default:
-            return Self.axSaysNothingFocused(err) ? corroboratedNone() : .unknown
+            return Self.axSaysNothingFocused(err)
+                ? corroboratedNone(frontmost: frontmost) : .unknown
         }
     }
 
@@ -198,8 +206,8 @@ enum PasteEngine {
     /// window itself is the positive focused target after checking its
     /// descendants for a real field. An unreadable/asleep window remains
     /// `.unknown` and fails open for Electron.
-    private static func corroboratedNone() -> FocusProbe {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return .none }
+    private static func corroboratedNone(frontmost app: NSRunningApplication?) -> FocusProbe {
+        guard let app else { return .none }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
 
         // The app-scoped query sometimes succeeds when the system-wide query
@@ -208,7 +216,7 @@ enum PasteEngine {
         let appFocusError = AXUIElementCopyAttributeValue(
             appElement, kAXFocusedUIElementAttribute as CFString, &appFocus)
         if appFocusError == .success, let element = axElement(appFocus) {
-            return .element(element)
+            return resolveFocus(element, frontmost: app)
         }
 
         var window: CFTypeRef?
@@ -222,10 +230,12 @@ enum PasteEngine {
         // Some apps expose focus only below the window. Search a bounded slice
         // of the live tree and prefer that target over the focused window — a
         // selected text field must never be mistaken for an empty window.
-        if let descendant = focusedDescendant(in: windowElement) {
-            return .element(descendant)
+        if let descendant = bestFocusedDescendant(in: windowElement) {
+            return resolveCandidate(descendant, frontmost: app)
         }
-        if isFocused(windowElement) { return .element(windowElement) }
+        if isFocused(windowElement) {
+            return resolveCandidate(windowElement, frontmost: app)
+        }
         return .unknown
     }
 
@@ -234,6 +244,78 @@ enum PasteEngine {
     /// inspection because it may contain the selected text field.
     static func confirmsNoFocus(windowError: AXError) -> Bool {
         windowError == .noValue
+    }
+
+    /// Role-only part of focus resolution, kept pure for regression tests.
+    /// Containers are not text merely because they are focused; their
+    /// descendants must produce a real text/cell target first.
+    static func focusKind(role: String?) -> FocusKind {
+        switch role {
+        case kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole,
+             kAXCellRole, kAXRowRole, kAXTableRole, kAXOutlineRole,
+             kAXListRole, kAXBrowserRole:
+            return .text
+        case kAXWindowRole, kAXApplicationRole, kAXGroupRole,
+             kAXButtonRole, kAXCheckBoxRole, kAXRadioButtonRole,
+             kAXSliderRole, kAXMenuItemRole, kAXImageRole,
+             kAXStaticTextRole, kAXScrollAreaRole, kAXToolbarRole,
+             kAXPopUpButtonRole, "AXLink", "AXWebArea":
+            return .nonText
+        default:
+            return .ambiguous
+        }
+    }
+
+    /// Electron/Chromium may expose only a focused group while its real text
+    /// field is absent from the lazy AX tree. Preserve fail-open only for that
+    /// known class instead of treating every native focused group as typable.
+    static func isLazyAXBundle(identifier: String?, hasElectronFramework: Bool) -> Bool {
+        if hasElectronFramework { return true }
+        let id = (identifier ?? "").lowercased()
+        return id.contains("chrome") || id.contains("chromium")
+            || id.contains("brave") || id.contains("edgemac")
+            || id.contains("arc")
+    }
+
+    private static func appHasLazyAX(_ app: NSRunningApplication?) -> Bool {
+        let electron = app?.bundleURL.map {
+            FileManager.default.fileExists(
+                atPath: $0.appendingPathComponent(
+                    "Contents/Frameworks/Electron Framework.framework").path)
+        } ?? false
+        return isLazyAXBundle(identifier: app?.bundleIdentifier,
+                              hasElectronFramework: electron)
+    }
+
+    private static func resolveFocus(_ element: AXUIElement,
+                                     frontmost app: NSRunningApplication?) -> FocusProbe {
+        // A container may be reported as focused even when a field deeper in
+        // its tree is the actual keyboard destination. Rank the whole focused
+        // slice before deciding; never let the first parent win by accident.
+        if focusKind(role: stringAttribute(element, kAXRoleAttribute as String)) == .nonText,
+           let descendant = bestFocusedDescendant(in: element) {
+            return resolveCandidate(descendant, frontmost: app)
+        }
+        return resolveCandidate(element, frontmost: app)
+    }
+
+    private static func resolveCandidate(_ element: AXUIElement,
+                                         frontmost app: NSRunningApplication?) -> FocusProbe {
+        let role = stringAttribute(element, kAXRoleAttribute as String)
+        switch focusKind(role: role) {
+        case .text:
+            return .element(element)
+        case .nonText:
+            // Known controls can use shouldDispatch for the final refusal.
+            // Groups are special: native groups mean no text target, while a
+            // lazy Electron group is genuinely ambiguous and must fail open.
+            if role == (kAXGroupRole as String) {
+                return appHasLazyAX(app) ? .unknown : .none
+            }
+            return .element(element)
+        case .ambiguous:
+            return appHasLazyAX(app) ? .unknown : .none
+        }
     }
 
     private static func axElement(_ value: CFTypeRef?) -> AXUIElement? {
@@ -251,22 +333,33 @@ enum PasteEngine {
         return CFBooleanGetValue((value as! CFBoolean))
     }
 
-    /// Bounded breadth-first search used only after the system-wide focus
-    /// query failed. Descendants are checked before the window so a focused
-    /// text field wins over its also-focused containing window.
-    private static func focusedDescendant(in root: AXUIElement) -> AXUIElement? {
+    /// Bounded breadth-first search used only for focused containers. It scans
+    /// the whole bounded slice and ranks candidates, so a parent group cannot
+    /// beat a deeper text field merely because it appeared first.
+    private static func bestFocusedDescendant(in root: AXUIElement) -> AXUIElement? {
         var queue: [AXUIElement] = children(of: root)
         var index = 0
         let limit = 256
+        var best: AXUIElement?
+        var bestRank = 0
         while index < queue.count && index < limit {
             let element = queue[index]
             index += 1
-            if isFocused(element) { return element }
+            if isFocused(element) {
+                let role = stringAttribute(element, kAXRoleAttribute as String)
+                let rank: Int
+                switch focusKind(role: role) {
+                case .text: rank = 3
+                case .nonText: rank = 2
+                case .ambiguous: rank = 1
+                }
+                if rank > bestRank { best = element; bestRank = rank }
+            }
             if queue.count < limit {
                 queue.append(contentsOf: children(of: element).prefix(limit - queue.count))
             }
         }
-        return nil
+        return best
     }
 
     private static func children(of element: AXUIElement) -> [AXUIElement] {

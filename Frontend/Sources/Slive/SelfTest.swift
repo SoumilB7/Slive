@@ -405,6 +405,21 @@ enum SelfTest {
               "text field receives dictation")
         check(PasteEngine.shouldDispatch(role: kAXTextAreaRole as String),
               "text area receives dictation")
+        check(PasteEngine.focusKind(role: kAXTextFieldRole as String) == .text
+                && PasteEngine.focusKind(role: kAXCellRole as String) == .text,
+              "focus resolver ranks fields and editable cells as text")
+        check(PasteEngine.focusKind(role: kAXWindowRole as String) == .nonText
+                && PasteEngine.focusKind(role: kAXGroupRole as String) == .nonText,
+              "focus resolver never mistakes native containers for text")
+        check(PasteEngine.focusKind(role: "AXUnknownElectronRole") == .ambiguous,
+              "unknown focus remains explicitly ambiguous")
+        check(PasteEngine.isLazyAXBundle(identifier: "com.google.Chrome",
+                                         hasElectronFramework: false)
+                && PasteEngine.isLazyAXBundle(identifier: "anything",
+                                              hasElectronFramework: true)
+                && !PasteEngine.isLazyAXBundle(identifier: "com.apple.TextEdit",
+                                               hasElectronFramework: false),
+              "only Chromium/Electron gets ambiguous-focus fail-open")
         check(PasteEngine.shouldDispatch(role: "AXUnknownElectronRole"),
               "unknown Electron role fails open")
         check(PasteEngine.shouldDispatch(role: kAXGroupRole as String),
