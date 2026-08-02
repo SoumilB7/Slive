@@ -420,6 +420,14 @@ enum SelfTest {
                 && !PasteEngine.isLazyAXBundle(identifier: "com.apple.TextEdit",
                                                hasElectronFramework: false),
               "only Chromium/Electron gets ambiguous-focus fail-open")
+        let start = CFRange(location: 4, length: 0)
+        check(PasteEngine.deliveryChanged(beforeValue: "hello", beforeRange: start,
+                                          afterValue: "hello world",
+                                          afterRange: CFRange(location: 11, length: 0)),
+              "changed text/caret confirms synthetic delivery")
+        check(!PasteEngine.deliveryChanged(beforeValue: "hello", beforeRange: start,
+                                           afterValue: "hello", afterRange: start),
+              "unchanged verifiable target triggers copy-box fallback")
         check(PasteEngine.shouldDispatch(role: "AXUnknownElectronRole"),
               "unknown Electron role fails open")
         check(PasteEngine.shouldDispatch(role: kAXGroupRole as String),

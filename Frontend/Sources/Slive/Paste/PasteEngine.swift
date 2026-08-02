@@ -104,19 +104,23 @@ enum PasteEngine {
     ///   missing Accessibility permission, a positively-identified password
     ///   field, or a positively-identified non-text target. Unknown/broken AX
     ///   trees still fail open so Electron fields are never falsely refused.
-    static func insertIfPossible(_ text: String) -> Bool {
+    static func insertIfPossible(_ text: String,
+                                 onDeliveryFailure: @escaping () -> Void = {}) -> Bool {
         guard !text.isEmpty else { return false }
 
         // The AX read and event posting belong on the main thread.
         if Thread.isMainThread {
-            return performInsert(text)
+            return performInsert(text, onDeliveryFailure: onDeliveryFailure)
         }
-        return DispatchQueue.main.sync { performInsert(text) }
+        return DispatchQueue.main.sync {
+            performInsert(text, onDeliveryFailure: onDeliveryFailure)
+        }
     }
 
     // MARK: - Core
 
-    private static func performInsert(_ text: String) -> Bool {
+    private static func performInsert(_ text: String,
+                                      onDeliveryFailure: @escaping () -> Void) -> Bool {
         // No Accessibility permission → posted events would be dropped.
         guard AXIsProcessTrusted() else { return false }
 
@@ -124,6 +128,7 @@ enum PasteEngine {
         // THE VOID. Fail-open only where AX genuinely couldn't answer — a
         // corroborated "nothing is focused" means the keystrokes would land
         // nowhere, which is exactly what the copy box is for.
+        var deliverySnapshot: DeliverySnapshot?
         switch probeFocus() {
         case .element(let element):
             if isSecure(element) {
@@ -134,6 +139,9 @@ enum PasteEngine {
             if !shouldDispatch(role: role) {
                 Log.paste("insert refused — non-text focus (\(role ?? "unknown"))")
                 return false
+            }
+            if focusKind(role: role) == .text {
+                deliverySnapshot = snapshot(of: element)
             }
         case .none:
             Log.paste("insert refused — nothing has keyboard focus")
@@ -148,8 +156,76 @@ enum PasteEngine {
         // Synthetic typing IS keyboard input, so it lands reliably everywhere —
         // native fields, browsers, Electron, terminals. Async so pacing never
         // blocks the UI.
-        DispatchQueue.global(qos: .userInitiated).async { typeOut(text) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            typeOut(text)
+            guard let deliverySnapshot else { return }
+            verifyDelivery(deliverySnapshot, attempt: 0,
+                           onFailure: onDeliveryFailure)
+        }
         return true
+    }
+
+    // MARK: - Delivery verification
+
+    /// AX-verifiable text targets get an after-the-fact receipt. CGEvent posting
+    /// itself has no acknowledgement; without this, "events were queued" was
+    /// incorrectly treated as "text landed" and the transcript could vanish.
+    private struct DeliverySnapshot {
+        let element: AXUIElement
+        let value: String?
+        let range: CFRange?
+    }
+
+    private static func snapshot(of element: AXUIElement) -> DeliverySnapshot? {
+        let value = stringAttribute(element, kAXValueAttribute as String)
+        let range = rangeAttribute(element, kAXSelectedTextRangeAttribute as String)
+        guard value != nil || range != nil else { return nil }
+        return DeliverySnapshot(element: element, value: value, range: range)
+    }
+
+    private static func verifyDelivery(_ before: DeliverySnapshot, attempt: Int,
+                                       onFailure: @escaping () -> Void) {
+        let delays: [TimeInterval] = [0.08, 0.20]
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) {
+            let afterValue = stringAttribute(before.element, kAXValueAttribute as String)
+            let afterRange = rangeAttribute(
+                before.element, kAXSelectedTextRangeAttribute as String)
+            if deliveryChanged(beforeValue: before.value, beforeRange: before.range,
+                               afterValue: afterValue, afterRange: afterRange) {
+                return
+            }
+            if attempt + 1 < delays.count {
+                verifyDelivery(before, attempt: attempt + 1, onFailure: onFailure)
+            } else {
+                Log.paste("insert delivery unconfirmed — showing copy box")
+                onFailure()
+            }
+        }
+    }
+
+    /// Pure receipt rule, self-tested. Either the text value or caret/selection
+    /// moving proves that the target consumed the synthetic keystrokes.
+    static func deliveryChanged(beforeValue: String?, beforeRange: CFRange?,
+                                afterValue: String?, afterRange: CFRange?) -> Bool {
+        if let beforeValue, let afterValue, beforeValue != afterValue { return true }
+        if let beforeRange, let afterRange {
+            return beforeRange.location != afterRange.location
+                || beforeRange.length != afterRange.length
+        }
+        return false
+    }
+
+    private static func rangeAttribute(_ element: AXUIElement,
+                                       _ attribute: String) -> CFRange? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        guard error == .success, let value,
+              CFGetTypeID(value) == AXValueGetTypeID(),
+              AXValueGetType(value as! AXValue) == .cfRange
+        else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+        return range
     }
 
     // MARK: - Focus

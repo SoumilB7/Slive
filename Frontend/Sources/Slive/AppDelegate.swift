@@ -625,7 +625,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // before any bookkeeping below, so nothing — history, the training
         // save, stats — can ever sit in front of the typeout. This ordering is
         // the guarantee; saving happens strictly after the text is on its way.
-        let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed)
+        let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.model.phase == .idle else { return }
+                self.showDictationCopyBox(trimmed)
+            }
+        }
         endDictationActivity()
         if let releasedAt {
             NSLog("Slive: release→typed %.2fs (tail+decode+dispatch)",
@@ -636,11 +641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.finishListening()
             hideOverlaySoon()
         } else {
-            // Auto-insert off (or blocked by a password field) → the copy box.
-            model.showResult(trimmed)
-            overlay.resize(to: OverlayMetrics.panelSize(for: trimmed))
-            overlay.setInteractive(true)          // let the copy button be clicked
-            scheduleCollapse(after: resultDisplayDuration)
+            showDictationCopyBox(trimmed)
         }
 
         // ---- Bookkeeping, strictly after the typeout dispatch ----
@@ -651,6 +652,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             TrainingStore.shared.addRecording(transcript: trimmed, audioURL: audioURL)
         }
         SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)
+    }
+
+    @MainActor private func showDictationCopyBox(_ text: String) {
+        model.showResult(text)
+        overlay.resize(to: OverlayMetrics.panelSize(for: text))
+        overlay.setInteractive(true)
+        scheduleCollapse(after: resultDisplayDuration)
     }
 
     private func scheduleCollapse(after seconds: TimeInterval) {
@@ -668,7 +676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func hideOverlaySoon() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self else { return }
-            if self.model.phase == .listening { return }   // a new hold began
+            guard self.model.phase == .idle else { return }
             self.overlay.hide()   // hide() resets the model
         }
     }
