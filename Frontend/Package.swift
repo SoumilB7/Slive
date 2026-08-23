@@ -13,9 +13,17 @@ let package = Package(
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.9.0"))
     ],
     targets: [
+        // Tiny Objective-C shim: the only way to catch the NSExceptions
+        // AVAudioEngine raises (Swift can't), so a refused mic can't abort
+        // the process.
+        .target(
+            name: "SliveObjC",
+            path: "Sources/SliveObjC"
+        ),
         .executableTarget(
             name: "Slive",
             dependencies: [
+                "SliveObjC",
                 .product(name: "WhisperKit", package: "WhisperKit")
             ],
             path: "Sources/Slive",

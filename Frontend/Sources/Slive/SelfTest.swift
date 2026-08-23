@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import SliveObjC
 
 /// Built-in check suite, run with `Slive --self-test` (or
 /// `swift run Slive --self-test`). Prints one line per check and exits 0 only
@@ -464,6 +465,15 @@ enum SelfTest {
 
         check(TranscriptionModel.trimSilence([Float](repeating: 0, count: 100)).isEmpty,
               "sub-frame input trims to empty")
+
+        // The Objective-C exception shim the mic path relies on: an
+        // AVAudioEngine assertion must come back as a reason, not a SIGABRT.
+        let raised = SliveCatchObjCException {
+            NSException(name: .genericException, reason: "probe raise", userInfo: nil).raise()
+        }
+        check(raised?.contains("probe raise") == true,
+              "ObjC raise is caught and reported", "got \(raised ?? "nil")")
+        check(SliveCatchObjCException({}) == nil, "no raise → nil")
     }
 
     // MARK: - Text hygiene

@@ -1,6 +1,7 @@
 import Accelerate
 import AVFoundation
 import Foundation
+import SliveObjC
 
 /// Captures microphone audio into a temporary WAV file while emitting
 /// real-time spectral levels for the visualiser. One instance per app;
@@ -103,12 +104,35 @@ final class AudioRecorder {
             return
         }
         converter = AVAudioConverter(from: format, to: fileFormat ?? targetFormat)
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.handle(buffer: buffer)
+        if let reason = installCaptureTap(on: input) {
+            NSLog("Slive: could not re-tap after device change — recording will end at release: \(reason)")
+            return
         }
         if !engine.isRunning {
             engine.prepare()
             try? engine.start()
+        }
+    }
+
+    /// Install the capture tap so that AVFAudio's assertions can't abort the
+    /// process. Returns nil on success, otherwise the reason it was refused.
+    ///
+    /// The tap format is deliberately `nil` (= the node's own output format).
+    /// Handing AVAudioEngine an explicit format makes it assert
+    /// `format.sampleRate == inputHWFormat.sampleRate` — and the node's
+    /// reported output format and the hardware rate DO diverge (the voice-
+    /// processing chain, a Bluetooth mic, a post-wake device switch), which
+    /// used to SIGABRT the app on key-down. With nil the engine uses whatever
+    /// the node really produces; `handle(buffer:)` canonicalizes from the
+    /// buffer's own format, so nothing downstream depends on the tap format.
+    /// Any raise that still slips through (a tap left on the bus, an invalid
+    /// device format) is caught by the Objective-C shim and returned.
+    private func installCaptureTap(on input: AVAudioInputNode) -> String? {
+        input.removeTap(onBus: 0)   // harmless when none is installed
+        return SliveCatchObjCException {
+            input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+                self?.handle(buffer: buffer)
+            }
         }
     }
 
@@ -193,17 +217,25 @@ final class AudioRecorder {
             return false
         }
 
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.handle(buffer: buffer)
+        if let reason = installCaptureTap(on: input) {
+            NSLog("Slive: mic tap refused: \(reason) — node \(format), hardware \(input.inputFormat(forBus: 0))")
+            file = nil
+            tempURL = nil
+            return false
         }
 
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            NSLog("Slive: engine start failed: \(error)")
+        // Starting the engine can also raise (not just throw) when the
+        // device state is inconsistent — same shim, same graceful failure.
+        var startError: Error?
+        let startRaise = SliveCatchObjCException {
+            engine.prepare()
+            do { try engine.start() } catch { startError = error }
+        }
+        if startRaise != nil || startError != nil {
+            NSLog("Slive: engine start failed: \(startRaise ?? "\(startError!)")")
             input.removeTap(onBus: 0)
             file = nil
+            tempURL = nil
             return false
         }
 

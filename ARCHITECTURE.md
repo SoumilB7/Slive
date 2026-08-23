@@ -42,6 +42,12 @@ Root files: `AppDelegate` (wiring), `Settings` (persisted state; Keychain for
 secrets), `SelfTest` (the suite behind `Slive --self-test` — extend it with
 every pure-logic change; CI is a green 79+).
 
+`Sources/SliveObjC/` is a one-function Objective-C target:
+`SliveCatchObjCException` wraps a block in `@try` so AVAudioEngine's
+assertions (which raise NSExceptions Swift cannot catch) become a returned
+reason instead of a process abort. Route any AVFAudio call that can assert
+through it.
+
 ## Backend — `Backend/src/flowy/`
 
 | Module | Owns |
