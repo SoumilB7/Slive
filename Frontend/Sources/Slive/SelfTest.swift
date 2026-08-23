@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import CoreGraphics
 import SliveObjC
 
@@ -474,6 +475,21 @@ enum SelfTest {
         check(raised?.contains("probe raise") == true,
               "ObjC raise is caught and reported", "got \(raised ?? "nil")")
         check(SliveCatchObjCException({}) == nil, "no raise → nil")
+
+        // Microphone picker plumbing.
+        check(DeviceRoutedAudioProcessor.effectiveDevice(requested: nil, preferred: 7) == 7,
+              "continuous stream takes the chosen mic when the caller names none")
+        check(DeviceRoutedAudioProcessor.effectiveDevice(requested: 3, preferred: 7) == 3,
+              "an explicit device request beats the chosen mic")
+        check(DeviceRoutedAudioProcessor.effectiveDevice(requested: nil, preferred: nil) == nil,
+              "no pick → system default (nil)")
+        check(InputDevices.resolve(uid: "") == nil, "empty UID resolves to system default")
+        check(InputDevices.resolve(uid: "slive-self-test-no-such-device") == nil,
+              "unknown UID falls back to system default")
+        equal(InputDevices.Device.rateLabel(16_000), "16 kHz", "rate label whole kHz")
+        equal(InputDevices.Device.rateLabel(44_100), "44.1 kHz", "rate label fractional kHz")
+        equal(InputDevices.transportLabel(kAudioDeviceTransportTypeBluetooth), "Bluetooth", "transport label")
+        check(InputDevices.transportLabel(0xDEAD_BEEF) == nil, "unknown transport omitted")
     }
 
     // MARK: - Text hygiene

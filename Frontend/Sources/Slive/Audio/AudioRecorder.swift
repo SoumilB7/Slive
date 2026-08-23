@@ -164,6 +164,34 @@ final class AudioRecorder {
         }
     }
 
+    /// Route the input node to the microphone chosen in Settings (the Meet-
+    /// style picker). "" = system default: we then pin the node to whatever
+    /// the default is right now, which also undoes an earlier explicit pick.
+    /// Set only on change — re-setting the same device makes the engine
+    /// tear down and rebuild its render graph for nothing. Must run while
+    /// the engine is stopped (we're between recordings).
+    private func applyInputDevice(_ input: AVAudioInputNode) {
+        guard let unit = input.audioUnit else { return }
+        let uid = Settings.shared.inputDeviceUID
+        guard let wanted = InputDevices.resolve(uid: uid) ?? InputDevices.defaultInputID() else { return }
+
+        var current = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                             kAudioUnitScope_Global, 0, &current, &size)
+        guard current != wanted else { return }
+
+        var device = wanted
+        let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                          kAudioUnitScope_Global, 0, &device,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size))
+        if status == noErr {
+            Log.app("microphone → device \(wanted)\(uid.isEmpty ? " (system default)" : "")")
+        } else {
+            NSLog("Slive: could not select microphone (\(status)) — recording on the current device")
+        }
+    }
+
     /// Begin recording. Returns false if the engine failed to start.
     @discardableResult
     func start() -> Bool {
@@ -176,6 +204,9 @@ final class AudioRecorder {
         // Attach AEC BEFORE reading the format — voice processing changes the
         // node's output format, and the tap + WAV must match what it produces.
         applyVoiceProcessing(input)
+        // Then point the node at the chosen microphone (VP may have swapped
+        // the underlying audio unit, so the device goes on AFTER it).
+        applyInputDevice(input)
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             NSLog("Slive: invalid input format (mic not ready)")

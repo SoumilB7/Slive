@@ -12,6 +12,7 @@ struct SettingsView: View {
     @ObservedObject private var history = HistoryStore.shared
     @ObservedObject private var transcription = TranscriptionModel.shared
     @ObservedObject private var stats = SpeakingStats.shared
+    @ObservedObject private var inputDevices = InputDevices.shared
     var onRelaunch: () -> Void
 
     @StateObject private var scrollKeeper = SettingsScrollKeeper()
@@ -215,7 +216,10 @@ struct SettingsView: View {
                 VStack(spacing: SliveTheme.cardGap) {
                     HStack(alignment: .top, spacing: SliveTheme.gridGap) {
                         keyCard
-                        modelCard
+                        VStack(spacing: SliveTheme.cardGap) {
+                            modelCard
+                            micCard
+                        }
                     }
                     HStack(alignment: .top, spacing: SliveTheme.gridGap) {
                         behaviorCard
@@ -229,6 +233,7 @@ struct SettingsView: View {
                 VStack(spacing: SliveTheme.cardGap) {
                     keyCard
                     modelCard
+                    micCard
                     behaviorCard
                     speedCard
                     speakingPaceCard
@@ -378,6 +383,60 @@ struct SettingsView: View {
             model: $settings.whisperModel,
             footnote: "Runs right on the Neural Engine — fast, and nothing ever leaves your Mac. A fresh model takes a moment to warm up the first time."
         )
+    }
+
+    // MARK: Microphone
+
+    /// The chosen mic, if it's connected right now.
+    private var chosenMic: InputDevices.Device? {
+        inputDevices.device(forUID: settings.inputDeviceUID)
+    }
+
+    /// Meet-style mic menu: system default first (named, so you know what
+    /// "default" means today), then every connected input. Applies to hold
+    /// AND continuous dictation from the next recording.
+    private var micCard: some View {
+        SettingsCard("MICROPHONE") {
+            HStack(spacing: 10) {
+                Picker("", selection: $settings.inputDeviceUID) {
+                    Text("System default" + (inputDevices.systemDefault.map { " · \($0.name)" } ?? ""))
+                        .tag("")
+                    if !inputDevices.devices.isEmpty { Divider() }
+                    ForEach(inputDevices.devices) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                    // A saved pick that isn't plugged in stays selectable so
+                    // it takes effect again the moment it returns.
+                    if !settings.inputDeviceUID.isEmpty && chosenMic == nil {
+                        Text("\(settings.inputDeviceName.isEmpty ? "Chosen mic" : settings.inputDeviceName) (not connected)")
+                            .tag(settings.inputDeviceUID)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(SliveTheme.accent)
+                .fixedSize()
+                .onChange(of: settings.inputDeviceUID) { _, uid in
+                    settings.inputDeviceName = inputDevices.device(forUID: uid)?.name ?? ""
+                }
+                micDetail
+                Spacer(minLength: 0)
+            }
+            Text("Pick the mic Slive listens on — hold and continuous alike. System default follows whatever macOS is using, so a headset that connects takes over the way it does everywhere else.")
+                .sliveCaption()
+        }
+    }
+
+    @ViewBuilder private var micDetail: some View {
+        if let mic = chosenMic ?? (settings.inputDeviceUID.isEmpty ? inputDevices.systemDefault : nil) {
+            Text(mic.detail)
+                .font(SliveTheme.captionFont)
+                .foregroundStyle(.white.opacity(0.55))
+        } else if !settings.inputDeviceUID.isEmpty {
+            Text("Not connected — using \(inputDevices.systemDefault?.name ?? "the system default") until it's back")
+                .font(SliveTheme.captionFont)
+                .foregroundStyle(Color.orange)
+        }
     }
 
     // MARK: Behavior

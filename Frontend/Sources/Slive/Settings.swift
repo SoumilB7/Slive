@@ -31,6 +31,8 @@ final class Settings: ObservableObject {
         static let captureEdits = "captureEdits"
         static let captureMaxGB = "captureMaxGB"
         static let echoCancellation = "echoCancellation"
+        static let inputDeviceUID = "inputDeviceUID"
+        static let inputDeviceName = "inputDeviceName"
         static let groundTruthProvider = "groundTruthProvider"
         static let groundTruthModel = "groundTruthModel"
         static let groundTruthBaseURL = "groundTruthBaseURL"
@@ -240,6 +242,19 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(echoCancellation, forKey: Keys.echoCancellation) }
     }
 
+    /// Core Audio UID of the microphone Slive listens on ("" = follow the
+    /// system default input, the pre-picker behavior). Resolved to a live
+    /// device at every recording start; an unplugged pick falls back to the
+    /// default. Applies to one-shot AND continuous dictation.
+    @Published var inputDeviceUID: String {
+        didSet { UserDefaults.standard.set(inputDeviceUID, forKey: Keys.inputDeviceUID) }
+    }
+    /// Display name captured at pick time, so an unplugged mic is still
+    /// named in the menu instead of showing a bare UID.
+    @Published var inputDeviceName: String {
+        didSet { UserDefaults.standard.set(inputDeviceName, forKey: Keys.inputDeviceName) }
+    }
+
     /// Which provider the Training section's ground-truth transcription uses.
     /// Only audio-capable providers are offered (Anthropic takes no audio).
     /// API keys come from the same Keychain slots the assistant uses.
@@ -389,6 +404,8 @@ final class Settings: ObservableObject {
         // some Macs when the device flips into voice-chat mode at recording
         // start. Worth it when dictating over speaker audio; not as a default.
         echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
+        inputDeviceUID = UserDefaults.standard.string(forKey: Keys.inputDeviceUID) ?? ""
+        inputDeviceName = UserDefaults.standard.string(forKey: Keys.inputDeviceName) ?? ""
         groundTruthProvider = UserDefaults.standard.string(forKey: Keys.groundTruthProvider)
             .flatMap(AssistantProvider.init(rawValue:)) ?? .gemini
         var gtModel = UserDefaults.standard.string(forKey: Keys.groundTruthModel) ?? "gemini-2.5-flash"

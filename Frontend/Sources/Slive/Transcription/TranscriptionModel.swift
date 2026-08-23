@@ -192,13 +192,21 @@ final class TranscriptionModel: ObservableObject {
         var lastBeat = Date()
         Log.live("START model=\(model)")
 
+        // The chosen microphone rides in through a routing wrapper — the
+        // transcriber opens the mic itself and would otherwise always take
+        // the system default. Resolved here (main) so the stream task never
+        // touches Settings.
+        let routed = DeviceRoutedAudioProcessor(
+            base: pipe.audioProcessor,
+            preferredDevice: InputDevices.resolve(uid: Settings.shared.inputDeviceUID))
+
         let transcriber = AudioStreamTranscriber(
             audioEncoder: pipe.audioEncoder,
             featureExtractor: pipe.featureExtractor,
             segmentSeeker: pipe.segmentSeeker,
             textDecoder: pipe.textDecoder,
             tokenizer: tokenizer,
-            audioProcessor: pipe.audioProcessor,
+            audioProcessor: routed,
             decodingOptions: decodeOptions(),
             // Confirm text after just one trailing segment (default is 2) so the
             // stable prefix grows sooner.
