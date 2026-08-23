@@ -490,6 +490,16 @@ enum SelfTest {
         equal(InputDevices.Device.rateLabel(44_100), "44.1 kHz", "rate label fractional kHz")
         equal(InputDevices.transportLabel(kAudioDeviceTransportTypeBluetooth), "Bluetooth", "transport label")
         check(InputDevices.transportLabel(0xDEAD_BEEF) == nil, "unknown transport omitted")
+
+        // Capture backend choice: the engine (and its default-device
+        // aggregate) only ever runs for echo cancellation.
+        check(!AudioRecorder.usesEngine(echoCancellation: false),
+              "AEC off → direct capture on the chosen mic only")
+        check(AudioRecorder.usesEngine(echoCancellation: true),
+              "AEC on → engine (system route)")
+        check(MicCapture.canonicalFormat.sampleRate == 16_000
+                && MicCapture.canonicalFormat.channelCount == 1,
+              "direct capture delivers 16 kHz mono")
     }
 
     // MARK: - Text hygiene

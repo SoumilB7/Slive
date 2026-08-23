@@ -422,8 +422,14 @@ struct SettingsView: View {
                 micDetail
                 Spacer(minLength: 0)
             }
-            Text("Pick the mic Slive listens on — hold and continuous alike. System default follows whatever macOS is using, so a headset that connects takes over the way it does everywhere else.")
+            Text("Pick the mic Slive listens on — hold and continuous alike. Only that mic is opened: choose the built-in mic and your Bluetooth headphones stay in music quality while you dictate. System default follows whatever macOS is using.")
                 .sliveCaption()
+            if settings.echoCancellation {
+                Text("Echo cancellation is on, so Slive follows the system default route (the canceller needs the speaker signal) — the pick above is ignored until it's off.")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

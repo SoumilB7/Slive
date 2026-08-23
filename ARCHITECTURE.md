@@ -26,7 +26,7 @@ that owns its *domain*, not near its caller.
 | Folder | Owns | Plug in here when… |
 |---|---|---|
 | `Hotkey/` | the global event tap, chord matching, health polling | new shortcuts, key behaviors |
-| `Audio/` | mic capture → canonical 16 kHz mono, levels, preview playback, input-device list (`InputDevices`) | anything that touches the tap, buffers, or which mic is open |
+| `Audio/` | mic capture (`MicCapture`: raw HAL unit on ONE explicit device → canonical 16 kHz mono), levels, preview playback, input-device list (`InputDevices`) | anything that touches capture, buffers, or which mic is open |
 | `Transcription/` | WhisperKit registry (stock + custom models), streaming | new STT engines, model management |
 | `Dictation/` | continuous-mode session logic, stitched release | dictation behavior |
 | `Paste/` | typing into the focused app, secure-field guard, paste box | how text lands |
