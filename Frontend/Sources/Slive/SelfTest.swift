@@ -452,12 +452,33 @@ enum SelfTest {
 
         let padded = quiet + voice + quiet
         let trimmed = TranscriptionModel.trimSilence(padded)
-        let padSamples = 2_400
+        let pads = TranscriptionModel.trimLeadPad + TranscriptionModel.trimTailPad
         check(!trimmed.isEmpty
                 && trimmed.count >= voice.count
-                && trimmed.count <= voice.count + 2 * padSamples + 320,
-              "silence-padded voice trims to the voiced span + ~150ms pads",
+                && trimmed.count <= voice.count + pads + 320,
+              "silence-padded voice trims to the voiced span + 150ms/300ms pads",
               "got \(trimmed.count) samples for \(voice.count) voiced")
+
+        // The Sep 2026 bug: a sentence trailing off to ~0.005 RMS (well above
+        // a quiet room's ~0.0005, below the old fixed 0.01 cut) lost its
+        // last words before Whisper ever saw them.
+        let room = [Float](repeating: 0.0005, count: rate)             // 1s quiet room
+        let softTail = [Float](repeating: 0.005, count: rate * 2 / 5)  // 0.4s trailing-off words
+        let trailing = room + voice + softTail + room
+        let keptTail = TranscriptionModel.trimSilence(trailing)
+        check(keptTail.count >= voice.count + softTail.count,
+              "quiet trailing speech survives the trim",
+              "got \(keptTail.count) samples, need ≥ \(voice.count + softTail.count)")
+        check(TranscriptionModel.trimSilence(room + softTail + room).isEmpty,
+              "soft noise with nothing above the speech gate is still silence")
+        check(TranscriptionModel.edgeThreshold(
+                frameRMS: [Float](repeating: 0.0005, count: 90) + [Float](repeating: 0.1, count: 10))
+                == TranscriptionModel.trimEdgeFloor,
+              "quiet room → edge threshold clamps to the 0.003 floor")
+        check(TranscriptionModel.edgeThreshold(
+                frameRMS: [Float](repeating: 0.004, count: 90) + [Float](repeating: 0.1, count: 10))
+                == TranscriptionModel.trimSpeechGate,
+              "noisy room → edge threshold never stricter than the old 0.01")
         // The voiced span itself must survive intact.
         check(trimmed.contains(0.1), "voiced samples survive the trim")
 

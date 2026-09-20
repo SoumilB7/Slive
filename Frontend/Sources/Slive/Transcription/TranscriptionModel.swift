@@ -283,30 +283,64 @@ final class TranscriptionModel: ObservableObject {
         return Array(pipe.audioProcessor.audioSamples)
     }
 
-    /// Trim leading and trailing silence from a canonical 16 kHz mono buffer,
-    /// keeping `pad` samples (default 150ms) around the voiced span. Dead air
-    /// costs decode windows and trips fallback thresholds for nothing — every
-    /// one-shot dictation runs through this first. Pure function, covered by
-    /// `--self-test`. Returns an empty slice when nothing crosses the
-    /// threshold (the hold was silence).
-    static func trimSilence(_ samples: [Float], threshold: Float = 0.01,
-                            pad: Int = 2_400) -> ArraySlice<Float> {
+    /// A hold counts as speech only if some 10ms frame is louder than this —
+    /// below it the whole clip is treated as silence and the decode skipped.
+    static let trimSpeechGate: Float = 0.01
+    /// Bounds for the per-clip edge threshold (see `trimSilence`).
+    static let trimEdgeFloor: Float = 0.003
+    /// Edge threshold = this × the clip's own noise floor, clamped to
+    /// [`trimEdgeFloor`, `trimSpeechGate`].
+    static let trimNoiseMultiple: Float = 4
+    /// Kept before the first voiced frame (150ms) and after the last (300ms).
+    static let trimLeadPad = 2_400
+    static let trimTailPad = 4_800
+
+    /// Trim leading and trailing silence from a canonical 16 kHz mono buffer
+    /// before decoding. Dead air costs decode windows and trips fallback
+    /// thresholds for nothing — every one-shot dictation runs through this
+    /// first. Pure function, covered by `--self-test`.
+    ///
+    /// Two thresholds, because one fixed level ate the ends of sentences:
+    /// - **Is there speech at all?** Some frame must exceed `trimSpeechGate`
+    ///   (0.01 RMS); otherwise the hold was silence → empty slice.
+    /// - **Where does it start and end?** Measured against the clip's OWN
+    ///   noise floor (10th-percentile frame RMS × 4, clamped 0.003…0.01).
+    ///   Voices trail off at the end of a sentence to ~0.003–0.009 RMS —
+    ///   still several times the room noise, but under the old fixed 0.01
+    ///   cut, so the last words were deleted before Whisper saw them (Sep
+    ///   2026 audit: ~85 of 1485 captured clips, confirmed by re-decoding).
+    static func trimSilence(_ samples: [Float]) -> ArraySlice<Float> {
         let frame = 160   // 10ms at 16k
-        guard samples.count >= frame else { return samples[0..<0] }
-        var first = -1
-        var last = -1
-        var i = 0
-        while i + frame <= samples.count {
+        let frames = samples.count / frame
+        guard frames > 0 else { return samples[0..<0] }
+
+        var rms = [Float](repeating: 0, count: frames)
+        var loudest: Float = 0
+        for f in 0..<frames {
             var sum: Float = 0
-            for j in i..<(i + frame) { sum += samples[j] * samples[j] }
-            if (sum / Float(frame)).squareRoot() > threshold {
-                if first < 0 { first = i }
-                last = i + frame
-            }
-            i += frame
+            for j in (f * frame)..<(f * frame + frame) { sum += samples[j] * samples[j] }
+            rms[f] = (sum / Float(frame)).squareRoot()
+            loudest = max(loudest, rms[f])
         }
-        guard first >= 0 else { return samples[0..<0] }
-        return samples[max(0, first - pad)..<min(samples.count, last + pad)]
+        guard loudest > trimSpeechGate else { return samples[0..<0] }
+
+        let threshold = edgeThreshold(frameRMS: rms)
+        guard let first = rms.firstIndex(where: { $0 > threshold }),
+              let last = rms.lastIndex(where: { $0 > threshold }) else { return samples[0..<0] }
+        let start = max(0, first * frame - trimLeadPad)
+        let end = min(samples.count, (last + 1) * frame + trimTailPad)
+        return samples[start..<end]
+    }
+
+    /// The per-clip edge threshold: `trimNoiseMultiple` × the 10th-percentile
+    /// frame RMS (the room's noise floor), clamped to
+    /// [`trimEdgeFloor`, `trimSpeechGate`]. A clip that is mostly speech
+    /// reads a high floor and clamps to the old 0.01 — never stricter.
+    static func edgeThreshold(frameRMS: [Float]) -> Float {
+        guard !frameRMS.isEmpty else { return trimSpeechGate }
+        let sorted = frameRMS.sorted()
+        let noiseFloor = sorted[min(sorted.count - 1, sorted.count / 10)]
+        return min(trimSpeechGate, max(trimEdgeFloor, trimNoiseMultiple * noiseFloor))
     }
 
     /// Transcribe a raw sample array in full on `model`'s pipe. Used on release to
