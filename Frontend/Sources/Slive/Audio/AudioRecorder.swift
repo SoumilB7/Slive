@@ -216,10 +216,7 @@ final class AudioRecorder {
 
         let started = usingEngine ? runEngine() : runDirect()
         guard started else {
-            // The WAV was opened before capture; a refused mic leaves only its
-            // header behind — delete it rather than litter the temp folder.
             file = nil
-            try? FileManager.default.removeItem(at: tmp)
             tempURL = nil
             return false
         }
