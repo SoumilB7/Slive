@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CoreAudio
 import CoreGraphics
 import SliveObjC
@@ -521,6 +522,28 @@ enum SelfTest {
         check(MicCapture.canonicalFormat.sampleRate == 16_000
                 && MicCapture.canonicalFormat.channelCount == 1,
               "direct capture delivers 16 kHz mono")
+
+        // A mic array presented raw (the built-in mic goes 3 ch / 48 kHz while
+        // another app runs a voice-processed call) must still open.
+        let channelCounts: [AVAudioChannelCount] = [1, 2, 3, 4, 7]
+        check(channelCounts.allSatisfy {
+                  MicCapture.clientFormat(sampleRate: 48_000, channels: $0)?.channelCount == $0 },
+              "capture format builds for 1, 2, 3, 4 and 7 channel mics")
+        if let three = MicCapture.clientFormat(sampleRate: 48_000, channels: 3),
+           let src = AVAudioPCMBuffer(pcmFormat: three, frameCapacity: 4),
+           let mono = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1),
+           let dst = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: 4),
+           let ch = src.floatChannelData {
+            src.frameLength = 4
+            for i in 0..<4 { ch[0][i] = 0.3; ch[1][i] = 0.6; ch[2][i] = Float(i) * 0.3 }
+            MicCapture.downmix(src, into: dst)
+            let out = (0..<4).map { dst.floatChannelData![0][$0] }
+            let want: [Float] = [0.3, 0.4, 0.5, 0.6]   // (0.3 + 0.6 + i·0.3) / 3
+            check(dst.frameLength == 4 && zip(out, want).allSatisfy { abs($0 - $1) < 1e-5 },
+                  "3-channel mic averages to mono", "got \(out)")
+        } else {
+            check(false, "3-channel mic averages to mono", "could not build buffers")
+        }
     }
 
     // MARK: - Text hygiene

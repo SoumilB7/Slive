@@ -1,3 +1,4 @@
+import Accelerate
 import AudioToolbox
 import AVFoundation
 import Foundation
@@ -16,6 +17,12 @@ import Foundation
 /// the default aggregate anyway (Aug 28, 2026 log). A raw AUHAL with output
 /// disabled and `kAudioOutputUnitProperty_CurrentDevice` set touches exactly
 /// the device asked for and nothing else.
+///
+/// Multichannel devices are averaged to mono here (Sep 2026: after macOS
+/// 26.6.2 the MacBook Air's built-in mic presents its raw 3-mic array —
+/// 3 ch / 48 kHz, channels equal-level and ~0.9 correlated — where it used to
+/// present 1 ch; the old `standardFormatWithSampleRate:channels:` returns nil
+/// above 2 channels, so every hold failed before audio flowed).
 ///
 /// Delivers buffers ALREADY canonical — 16 kHz mono Float32 — on the audio
 /// thread (`onBuffer`); the buffer is reused between callbacks, so consumers
@@ -39,6 +46,8 @@ final class MicCapture {
     private var boundDevice: AudioDeviceID = 0
     private(set) var deviceFormat: AVAudioFormat?
     private var renderBuffer: AVAudioPCMBuffer?
+    /// Mono mixdown of `renderBuffer` (multichannel devices only; nil = mono device).
+    private var monoBuffer: AVAudioPCMBuffer?
     private var converter: AVAudioConverter?
     private var outBuffer: AVAudioPCMBuffer?
     private(set) var isRunning = false
@@ -91,6 +100,7 @@ final class MicCapture {
         boundDevice = 0
         deviceFormat = nil
         renderBuffer = nil
+        monoBuffer = nil
         converter = nil
         outBuffer = nil
     }
@@ -131,9 +141,12 @@ final class MicCapture {
         try check(AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat,
                                        kAudioUnitScope_Input, 1, &hw, &size), "StreamFormat (hw)")
         guard hw.mSampleRate > 0, hw.mChannelsPerFrame > 0,
-              let client = AVAudioFormat(standardFormatWithSampleRate: hw.mSampleRate,
-                                         channels: hw.mChannelsPerFrame) else {
-            throw CaptureError(stage: "hardware format", status: -1)
+              let client = Self.clientFormat(sampleRate: hw.mSampleRate,
+                                             channels: hw.mChannelsPerFrame),
+              let mono = AVAudioFormat(standardFormatWithSampleRate: hw.mSampleRate, channels: 1) else {
+            dispose()
+            throw CaptureError(stage: "hardware format \(hw.mSampleRate) Hz/\(hw.mChannelsPerFrame) ch",
+                               status: -1)
         }
         var clientASBD = client.streamDescription.pointee
         try check(AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat,
@@ -148,7 +161,12 @@ final class MicCapture {
                              kAudioUnitScope_Global, 0, &frames, &frameSize)
         let capacity = max(frames * 4, 8192)
         renderBuffer = AVAudioPCMBuffer(pcmFormat: client, frameCapacity: capacity)
-        converter = AVAudioConverter(from: client, to: Self.canonicalFormat)
+        monoBuffer = client.channelCount > 1
+            ? AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: capacity) : nil
+        // The converter only ever resamples MONO → canonical; the channel
+        // mixdown is ours (no reliance on AVAudioConverter downmixing a
+        // discrete multichannel layout).
+        converter = AVAudioConverter(from: mono, to: Self.canonicalFormat)
         let ratio = Self.canonicalFormat.sampleRate / client.sampleRate
         outBuffer = AVAudioPCMBuffer(pcmFormat: Self.canonicalFormat,
                                      frameCapacity: AVAudioFrameCount(Double(capacity) * ratio) + 64)
@@ -161,6 +179,41 @@ final class MicCapture {
                                        UInt32(MemoryLayout<AURenderCallbackStruct>.size)), "SetInputCallback")
         try check(AudioUnitInitialize(unit), "AudioUnitInitialize")
         loggedRenderError = false
+    }
+
+    /// Float32 non-interleaved at the device's rate and channel count. Above
+    /// 2 channels AVAudioFormat needs an explicit layout (the standard
+    /// initializer returns nil), so those get a discrete in-order layout.
+    static func clientFormat(sampleRate: Double, channels: AVAudioChannelCount) -> AVAudioFormat? {
+        guard sampleRate > 0, channels > 0 else { return nil }
+        if channels <= 2 {
+            return AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels)
+        }
+        guard let layout = AVAudioChannelLayout(
+            layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channels)) else { return nil }
+        return AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate,
+                             interleaved: false, channelLayout: layout)
+    }
+
+    /// Average every channel of `source` into mono `dest` (vDSP, no
+    /// allocation — safe on the audio thread). Equal weights: an array's
+    /// mics carry the same voice, so speech keeps its level while
+    /// uncorrelated noise drops a little.
+    static func downmix(_ source: AVAudioPCMBuffer, into dest: AVAudioPCMBuffer) {
+        let frames = Int(source.frameLength)
+        let channels = Int(source.format.channelCount)
+        guard frames > 0, frames <= Int(dest.frameCapacity), channels > 0,
+              let src = source.floatChannelData, let dst = dest.floatChannelData?[0] else {
+            dest.frameLength = 0
+            return
+        }
+        dst.update(from: src[0], count: frames)
+        for ch in 1..<max(channels, 1) {
+            vDSP_vadd(dst, 1, src[ch], 1, dst, 1, vDSP_Length(frames))
+        }
+        var scale = 1 / Float(channels)
+        vDSP_vsmul(dst, 1, &scale, dst, 1, vDSP_Length(frames))
+        dest.frameLength = AVAudioFrameCount(frames)
     }
 
     private func check(_ status: OSStatus, _ stage: String) throws {
@@ -194,6 +247,15 @@ final class MicCapture {
             return
         }
 
+        // Multichannel → mono first; the converter only resamples.
+        let source: AVAudioPCMBuffer
+        if let monoBuffer {
+            Self.downmix(renderBuffer, into: monoBuffer)
+            source = monoBuffer
+        } else {
+            source = renderBuffer
+        }
+
         outBuffer.frameLength = 0
         var fed = false
         var error: NSError?
@@ -201,7 +263,7 @@ final class MicCapture {
             if fed { status.pointee = .noDataNow; return nil }
             fed = true
             status.pointee = .haveData
-            return renderBuffer
+            return source
         }
         if let error {
             if !loggedRenderError {
