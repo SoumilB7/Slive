@@ -123,7 +123,7 @@ final class BackendManager: ObservableObject {
             return
         }
 
-        // Run the interpreter under a "Slive Backend" name so Activity Monitor
+        // Run the interpreter under a "Slive Server" name so Activity Monitor
         // shows it as Slive's, not "python3.13". Best-effort — falls back to the
         // plain venv python if the rename can't be set up.
         let launch = namedInterpreter(dir: dir, venvPython: python)
@@ -163,7 +163,7 @@ final class BackendManager: ObservableObject {
         }
     }
 
-    /// Resolve the venv's real interpreter and expose it under a "Slive Backend"
+    /// Resolve the venv's real interpreter and expose it under a "Slive Server"
     /// hard link beside itself, so `execve` names the process after the link
     /// (macOS names a process after its real executable — a symlink won't do).
     /// The link lives next to the real python so its `@rpath` still resolves;
@@ -179,7 +179,8 @@ final class BackendManager: ObservableObject {
         guard real != venvPython, !real.path.contains("/.venv/"),
               fm.isExecutableFile(atPath: real.path) else { return fallback }
 
-        let link = real.deletingLastPathComponent().appendingPathComponent("Slive Backend")
+        let link = real.deletingLastPathComponent().appendingPathComponent("Slive Server")
+        removeLegacyLink(named: "Slive Backend", beside: real)
         if !fm.fileExists(atPath: link.path) {
             do { try fm.linkItem(at: real, to: link) }
             catch { NSLog("Slive: process rename skipped — \(error)"); return fallback }
@@ -194,6 +195,20 @@ final class BackendManager: ObservableObject {
 
         let src = dir.appendingPathComponent("src").path
         return (link, "\(site.path):\(src)")
+    }
+
+    /// Remove the interpreter hard link an older build created under its
+    /// previous process name. Only a link to the SAME file as the real
+    /// interpreter (same inode) is ever touched — removing a hard link leaves
+    /// the interpreter itself intact.
+    private func removeLegacyLink(named name: String, beside real: URL) {
+        let fm = FileManager.default
+        let legacy = real.deletingLastPathComponent().appendingPathComponent(name)
+        guard let a = try? fm.attributesOfItem(atPath: legacy.path),
+              let b = try? fm.attributesOfItem(atPath: real.path),
+              let ia = a[.systemFileNumber] as? Int, let ib = b[.systemFileNumber] as? Int,
+              ia == ib else { return }
+        try? fm.removeItem(at: legacy)
     }
 
     // MARK: - Health
