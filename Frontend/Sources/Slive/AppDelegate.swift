@@ -718,8 +718,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // before any bookkeeping below, so nothing — history, the training
         // save, stats — can ever sit in front of the typeout. This ordering is
         // the guarantee; saving happens strictly after the text is on its way.
-        let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed) {
-            DispatchQueue.main.async { [weak self] in
+        let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed) { [weak self] in
+            DispatchQueue.main.async {
                 guard let self, self.model.phase == .idle else { return }
                 self.showDictationCopyBox(trimmed)
             }

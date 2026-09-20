@@ -602,9 +602,9 @@ final class TranscriptionModel: ObservableObject {
         }
 
         do {
-            let p = try await withTimeout(seconds: 150) {
+            let p = try await withTimeout(seconds: 150) { [weak self] in
                 let kit = try await WhisperKit(config)           // setup only — fast
-                kit.modelStateCallback = { [weak self] _, new in
+                kit.modelStateCallback = { _, new in
                     Task { @MainActor in
                         guard let self, self.loadingModels.contains(model) else { return }
                         self.statuses[model] = .preparing(new.description)  // live stage

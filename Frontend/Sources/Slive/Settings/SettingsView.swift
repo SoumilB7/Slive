@@ -688,8 +688,8 @@ private final class SettingsScrollKeeper: ObservableObject {
 
         // First hop lets @State replace the page; the second lets SwiftUI lay
         // out rows whose wrapped text can give the new page a different height.
-        DispatchQueue.main.async {
-            DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {
                 guard let scrollView = self?.scrollView,
                       let documentView = scrollView.documentView else { return }
                 let newMaximum = max(
