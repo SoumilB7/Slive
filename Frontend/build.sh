@@ -10,6 +10,32 @@ FRONTEND_DIR="$(pwd)"
 REPO_DIR="$(cd .. && pwd)"
 CONFIG="release"
 
+# SDK pin (Command Line Tools only — no Xcode). From the macOS 27 SDK on,
+# SwiftUI's @State/@Observable are compiler MACROS whose plugin
+# (SwiftUIMacros) ships only with Xcode, so the default CLT SDK can't build
+# this app ("plugin for module 'SwiftUIMacros' not found"). When the plugin
+# is missing, build against the newest installed SDK older than 27.
+# Override with SLIVE_SDKROOT=/path/to/MacOSX…sdk.
+if [[ -n "${SLIVE_SDKROOT:-}" ]]; then
+    export SDKROOT="$SLIVE_SDKROOT"
+elif [[ -z "${SDKROOT:-}" ]]; then
+    TOOLCHAIN_PLUGINS="$(dirname "$(xcrun --find swift)")/../lib/swift/host/plugins"
+    SDK_MAJOR="$(xcrun --show-sdk-version | cut -d. -f1)"
+    if (( SDK_MAJOR >= 27 )) && ! ls "$TOOLCHAIN_PLUGINS" 2>/dev/null | grep -q SwiftUIMacros; then
+        SDK_DIR="$(dirname "$(xcrun --show-sdk-path)")"
+        PINNED="$(ls -d "$SDK_DIR"/MacOSX[0-9]*.[0-9]*.sdk 2>/dev/null \
+            | sed -E 's|.*/MacOSX([0-9]+)\.([0-9]+)\.sdk$|\1 \2 &|' \
+            | awk '$1 < 27' | sort -k1,1n -k2,2n | tail -1 | cut -d' ' -f3)"
+        if [[ -n "$PINNED" ]]; then
+            export SDKROOT="$PINNED"
+            echo "▸ SDK $SDK_MAJOR needs Xcode's SwiftUI macros — building against $(basename "$PINNED")"
+        else
+            echo "✗ No pre-27 macOS SDK found and SwiftUIMacros is missing — install Xcode or an older CLT SDK." >&2
+            exit 1
+        fi
+    fi
+fi
+
 echo "▸ Compiling (swift build -c $CONFIG)…"
 swift build -c "$CONFIG"
 
