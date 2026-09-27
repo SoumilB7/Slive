@@ -29,6 +29,9 @@ enum EngineCheck {
         if args.contains("--provision") {
             return await provision(models, audio: audio)
         }
+        if args.contains("--live") {
+            return await live(models, audio: audio)
+        }
         for model in models {
             do {
                 var t = Date()
@@ -68,6 +71,37 @@ enum EngineCheck {
             t = Date()
             let text = await registry.transcribeSamples(audio, model: id) ?? "(nil)"
             print(String(format: "  transcribe via registry: %.3fs «%@»", Date().timeIntervalSince(t), text))
+        }
+        return 0
+    }
+
+    /// Continuous mode on Parakeet, headless: feed the clip into a
+    /// ParakeetLiveSession in real time (100ms chunks every 100ms), print
+    /// every live update, then run the release-time final decode.
+    static func live(_ models: [ParakeetModel], audio: [Float]) async -> Int32 {
+        let basket = TranscriptionModel.shared.basket
+        for model in models {
+            guard let engine = try? await ParakeetEngine.load(model, basket: basket) else {
+                print("✗ \(model.displayName) not provisioned"); continue
+            }
+            _ = try? await engine.transcribe(audio)   // warm
+            print("\(model.displayName) — live updates while \"speaking\":")
+            let t0 = Date()
+            let session = ParakeetLiveSession(engine: engine) { text in
+                print(String(format: "  %5.2fs  «%@»", Date().timeIntervalSince(t0), text))
+            }
+            session.startDetached()
+            var i = 0
+            while i < audio.count {
+                session.buffer.append(Array(audio[i..<min(audio.count, i + 1_600)]))
+                i += 1_600
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            let released = Date()
+            session.stop()
+            let final = (try? await engine.transcribe(Array(TranscriptionModel.trimSilence(session.snapshot())))) ?? ""
+            print(String(format: "  release → final %.3fs  «%@»  (%d live passes)",
+                         Date().timeIntervalSince(released), final, session.passes))
         }
         return 0
     }

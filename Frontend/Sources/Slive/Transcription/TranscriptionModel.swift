@@ -80,6 +80,8 @@ final class TranscriptionModel: ObservableObject {
     // model name selects which resident pipe the streaming helpers operate on.
     private var liveModel: String?
     private var liveTranscriber: AudioStreamTranscriber?
+    /// The live session when the continuous model is a Parakeet model.
+    private var parakeetLive: ParakeetLiveSession?
 
     /// Status for a given model (defaults to not-downloaded if we've never touched it).
     func status(for model: String) -> Status { statuses[model] ?? .notDownloaded }
@@ -187,7 +189,7 @@ final class TranscriptionModel: ObservableObject {
             statuses.removeValue(forKey: key)
             loadingModels.remove(key)
         }
-        for key in parakeets.keys where !keep.contains(key) {
+        for key in parakeets.keys where !keep.contains(key) && key != liveModel {
             parakeets.removeValue(forKey: key)
             statuses.removeValue(forKey: key)
             loadingModels.remove(key)
@@ -218,6 +220,24 @@ final class TranscriptionModel: ObservableObject {
         model: String,
         onUpdate: @escaping @MainActor (_ transcript: String, _ energy: Float) -> Void
     ) -> Bool {
+        if let engine = parakeets[model] {
+            stopLiveDictation()   // never run two at once
+            guard let device = InputDevices.resolve(uid: Settings.shared.inputDeviceUID)
+                    ?? InputDevices.defaultInputID() else { return false }
+            let session = ParakeetLiveSession(engine: engine) { text in
+                onUpdate(Self.cleanStreamText(text), 0)
+            }
+            do { try session.start(device: device) } catch {
+                Log.live("parakeet START failed — \(error.localizedDescription)")
+                return false
+            }
+            liveModel = model
+            liveConfirmedText = ""
+            liveConfirmedEndSeconds = 0   // no stitched release: the final pass decodes all
+            parakeetLive = session
+            Log.live("START model=\(model) (parakeet live loop)")
+            return true
+        }
         guard let pipe = pipes[model], let tokenizer = pipe.tokenizer else { return false }
         stopLiveDictation()   // never run two at once
         liveModel = model
@@ -325,6 +345,7 @@ final class TranscriptionModel: ObservableObject {
     private(set) var liveConfirmedEndSeconds: Double = 0
 
     func liveSamplesSnapshot(model: String) -> [Float] {
+        if let session = parakeetLive, liveModel == model { return session.snapshot() }
         guard let pipe = pipes[model] else { return [] }
         return Array(pipe.audioProcessor.audioSamples)
     }
@@ -475,6 +496,13 @@ final class TranscriptionModel: ObservableObject {
 
     /// Stop the live stream (ends its mic capture + realtime loop).
     func stopLiveDictation() {
+        if let session = parakeetLive {
+            parakeetLive = nil
+            liveModel = nil
+            session.stop()
+            Log.live("parakeet stream stopped after \(session.passes) passes")
+            return
+        }
         guard let t = liveTranscriber else { return }
         let model = liveModel
         liveTranscriber = nil
@@ -622,7 +650,7 @@ final class TranscriptionModel: ObservableObject {
     private func unloadIfIdle() {
         guard let after = Settings.shared.resolvedSpeedTier.idleUnloadAfter,
               Date().timeIntervalSince(lastDecodeAt) > after,
-              liveTranscriber == nil,
+              liveTranscriber == nil, parakeetLive == nil,
               !pipes.isEmpty || !parakeets.isEmpty else { return }
         NSLog("Slive: Feather tier — released idle transcription model(s)")
         // Statuses stay .ready on purpose: the models are still downloaded and

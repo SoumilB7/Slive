@@ -14,7 +14,8 @@ struct ContinuousSettingsView: View {
             ModelPickerCard(
                 title: "MODEL",
                 model: $settings.continuousModel,
-                footnote: "Tiny or Fast keep up best as the words fly by. Match your Dictation model and only one copy sits in memory."
+                footnote: "Parakeet re-reads everything you've said many times a second, so it keeps up best; on Whisper, tiny.en or base.en stay quickest. Match your Dictation model and only one copy sits in memory.",
+                includeParakeet: true
             )
             typingSpeedCard
         }
