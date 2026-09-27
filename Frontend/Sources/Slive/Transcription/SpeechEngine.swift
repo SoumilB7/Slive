@@ -39,8 +39,8 @@ enum ParakeetModel: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .ultra: return "Parakeet Ultra"
-        case .v2: return "Parakeet v2 (English)"
+        case .ultra: return "Parakeet – Ultra"
+        case .v2: return "Parakeet – v2"
         }
     }
 }

@@ -377,20 +377,20 @@ struct WhisperModelChoice: Identifiable {
     var id: String { model }
 
     static let all: [WhisperModelChoice] = [
-        .init(label: "Tiny", model: "tiny.en", detail: "Fastest, basic accuracy · ~75 MB"),
-        .init(label: "Fast", model: "base.en", detail: "Quick, good accuracy · ~150 MB"),
-        .init(label: "Balanced", model: "large-v3-v20240930_626MB", detail: "Recommended — accurate & fast · ~600 MB"),
-        .init(label: "Accurate", model: "large-v3", detail: "Highest accuracy, a touch slower · ~1.5 GB"),
+        .init(label: "Whisper – tiny.en", model: "tiny.en", detail: "Fastest Whisper, basic accuracy · ~75 MB"),
+        .init(label: "Whisper – base.en", model: "base.en", detail: "Quick, good accuracy · ~150 MB"),
+        .init(label: "Whisper – large-v3 turbo", model: "large-v3-v20240930_626MB", detail: "Recommended — accurate & fast · ~600 MB"),
+        .init(label: "Whisper – large-v3", model: "large-v3", detail: "Highest accuracy, a touch slower · ~1.5 GB"),
     ]
 
     /// The Parakeet engine (FluidAudio, Neural Engine). Offered only where a
     /// caller opts in — hold-to-talk dictation. Continuous (WhisperKit's
     /// live streaming) and the ground-truth judge stay Whisper-only.
     static let parakeet: [WhisperModelChoice] = [
-        .init(label: "Instant", model: ParakeetModel.ultra.rawValue,
-              detail: "Parakeet Ultra — ~20× faster, a little weaker on names · ~610 MB"),
-        .init(label: "Instant · English", model: ParakeetModel.v2.rawValue,
-              detail: "Parakeet v2 — English only · ~450 MB"),
+        .init(label: ParakeetModel.ultra.displayName, model: ParakeetModel.ultra.rawValue,
+              detail: "~20× faster than Whisper, a little weaker on names · ~610 MB"),
+        .init(label: ParakeetModel.v2.displayName, model: ParakeetModel.v2.rawValue,
+              detail: "English only · ~450 MB"),
     ]
 }
 

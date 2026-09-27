@@ -381,7 +381,7 @@ struct SettingsView: View {
         ModelPickerCard(
             title: "TRANSCRIPTION MODEL",
             model: $settings.whisperModel,
-            footnote: "Runs right on the Neural Engine — fast, and nothing ever leaves your Mac. A fresh model takes a moment to warm up the first time; you keep dictating on your current model until it's ready.",
+            footnote: "Runs right on the Neural Engine — fast, and nothing ever leaves your Mac. A fresh model takes a moment to warm up the first time; you keep dictating on your current model until it's ready. Continuous dictation always uses Whisper.",
             includeParakeet: true
         )
     }
