@@ -453,6 +453,15 @@ enum SelfTest {
         check(TranscriptionModel.pickServing(wanted: "large", fallback: nil,
                                              isResident: resident.contains) == "large",
               "no previous model → wait for the pick (first launch)")
+        // Engine routing: every Whisper id keeps meaning Whisper.
+        check(["tiny.en", "large-v3-v20240930_626MB", "base.en", "my-finetune-2026"]
+                .allSatisfy { SpeechEngine.of($0) == .whisper },
+              "Whisper and custom model ids route to Whisper")
+        check(SpeechEngine.of("parakeet-ultra") == .parakeet(.ultra)
+                && SpeechEngine.of("parakeet-v2") == .parakeet(.v2),
+              "Parakeet ids route to the Parakeet engine")
+        check(ParakeetModel.allCases.allSatisfy { $0.rawValue.hasPrefix("parakeet-") },
+              "every Parakeet id carries the parakeet- prefix")
         check(AppDelegate.postReleaseCaptureSeconds >= 0.1,
               "post-release capture keeps at least 0.1s")
         let rate = 16_000

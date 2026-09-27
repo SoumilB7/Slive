@@ -43,6 +43,15 @@ if CommandLine.arguments.contains("--bench-dump") {
     dispatchMain()
 }
 
+// `Slive --engine-check` — prove the Parakeet engine loads and transcribes
+// through Slive's own code (see EngineCheck.swift).
+if CommandLine.arguments.contains("--engine-check") {
+    Task { @MainActor in
+        exit(await EngineCheck.run(CommandLine.arguments))
+    }
+    dispatchMain()
+}
+
 // `Slive --bench-compute …` — which chip (Neural Engine / GPU / CPU) should
 // run each Whisper stage on this Mac (see ComputeBench.swift).
 if CommandLine.arguments.contains("--bench-compute") {
