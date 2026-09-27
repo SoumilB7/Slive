@@ -35,6 +35,14 @@ if CommandLine.arguments.contains("--bench-coldstart") {
     dispatchMain()
 }
 
+// `Slive --bench-dump …` — Whisper's side of a model comparison (DumpBench.swift).
+if CommandLine.arguments.contains("--bench-dump") {
+    Task { @MainActor in
+        exit(await DumpBench.run(CommandLine.arguments))
+    }
+    dispatchMain()
+}
+
 // `Slive --bench-compute …` — which chip (Neural Engine / GPU / CPU) should
 // run each Whisper stage on this Mac (see ComputeBench.swift).
 if CommandLine.arguments.contains("--bench-compute") {
