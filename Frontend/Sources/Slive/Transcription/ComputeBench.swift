@@ -17,6 +17,7 @@ enum ComputeBench {
         let name: String
         let encoder: MLComputeUnits
         let decoder: MLComputeUnits
+        var mel: MLComputeUnits = .cpuAndGPU   // WhisperKit's default
     }
 
     static let layouts = [
@@ -24,6 +25,8 @@ enum ComputeBench {
         Layout(name: "ANE enc + GPU dec", encoder: .cpuAndNeuralEngine, decoder: .cpuAndGPU),
         Layout(name: "GPU enc + GPU dec", encoder: .cpuAndGPU, decoder: .cpuAndGPU),
         Layout(name: "ANE enc + CPU dec", encoder: .cpuAndNeuralEngine, decoder: .cpuOnly),
+        Layout(name: "ANE enc + ANE dec, mel on CPU", encoder: .cpuAndNeuralEngine,
+               decoder: .cpuAndNeuralEngine, mel: .cpuOnly),
     ]
 
     static func run(_ args: [String]) async -> Int32 {
@@ -35,7 +38,8 @@ enum ComputeBench {
         let limit = Int(value("--limit") ?? "") ?? 24
         let maxSeconds = Double(value("--max-seconds") ?? "") ?? 1e9
         let perClip = args.contains("--per-clip")
-        let chosen = args.contains("--ane-only") ? Array(layouts.prefix(1)) : layouts
+        let chosen = args.contains("--mel-only") ? [layouts[0], layouts[4]]
+            : args.contains("--ane-only") ? Array(layouts.prefix(1)) : layouts
         let clips = BenchSupport.loadClips(minSeconds: 1, limit: limit)
             .compactMap { BenchSupport.readWAV($0.url) }
             .map { Array(TranscriptionModel.trimSilence($0)) }
@@ -45,7 +49,8 @@ enum ComputeBench {
         let options = TranscriptionModel.shared.decodeOptions(chunking: true)
 
         for layout in chosen {
-            let compute = ModelComputeOptions(audioEncoderCompute: layout.encoder,
+            let compute = ModelComputeOptions(melCompute: layout.mel,
+                                              audioEncoderCompute: layout.encoder,
                                               textDecoderCompute: layout.decoder)
             let basket = TranscriptionModel.shared.basket
             let root = basket.appendingPathComponent("models/argmaxinc/whisperkit-coreml")
