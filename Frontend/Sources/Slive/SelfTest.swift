@@ -462,6 +462,13 @@ enum SelfTest {
               "Parakeet ids route to the Parakeet engine")
         check(ParakeetModel.allCases.allSatisfy { $0.rawValue.hasPrefix("parakeet-") },
               "every Parakeet id carries the parakeet- prefix")
+        let basket = URL(fileURLWithPath: "/tmp/basket")
+        check(ParakeetEngine.directory(for: .ultra, basket: basket).path == "/tmp/basket/parakeet/parakeet-ultra"
+                && ParakeetEngine.directory(for: .v2, basket: basket).path == "/tmp/basket/parakeet/parakeet-tdt-0.6b-v2",
+              "Parakeet models live in the basket under FluidAudio's folder names")
+        check(WhisperModelChoice.parakeet.map(\.model) == ParakeetModel.allCases.map(\.rawValue)
+                && Set(WhisperModelChoice.all.map(\.model)).isDisjoint(with: WhisperModelChoice.parakeet.map(\.model)),
+              "picker: Parakeet entries separate from the Whisper list (dictation-only opt-in)")
         check(AppDelegate.postReleaseCaptureSeconds >= 0.1,
               "post-release capture keeps at least 0.1s")
         let rate = 16_000

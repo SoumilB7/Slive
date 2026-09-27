@@ -382,6 +382,16 @@ struct WhisperModelChoice: Identifiable {
         .init(label: "Balanced", model: "large-v3-v20240930_626MB", detail: "Recommended — accurate & fast · ~600 MB"),
         .init(label: "Accurate", model: "large-v3", detail: "Highest accuracy, a touch slower · ~1.5 GB"),
     ]
+
+    /// The Parakeet engine (FluidAudio, Neural Engine). Offered only where a
+    /// caller opts in — hold-to-talk dictation. Continuous (WhisperKit's
+    /// live streaming) and the ground-truth judge stay Whisper-only.
+    static let parakeet: [WhisperModelChoice] = [
+        .init(label: "Instant", model: ParakeetModel.ultra.rawValue,
+              detail: "Parakeet Ultra — ~20× faster, a little weaker on names · ~610 MB"),
+        .init(label: "Instant · English", model: ParakeetModel.v2.rawValue,
+              detail: "Parakeet v2 — English only · ~450 MB"),
+    ]
 }
 
 /// Live download/prepare status + action for one model. minHeight keeps state
@@ -435,10 +445,11 @@ struct ModelPickerCard: View {
     let title: String
     @Binding var model: String
     let footnote: String
+    var includeParakeet = false
 
     var body: some View {
         SettingsCard(title) {
-            ModelPickerRows(model: $model)
+            ModelPickerRows(model: $model, includeParakeet: includeParakeet)
             Text(footnote).sliveCaption()
         }
     }
@@ -451,6 +462,12 @@ struct ModelPickerCard: View {
 struct ModelPickerRows: View {
     @ObservedObject private var transcription = TranscriptionModel.shared
     @Binding var model: String
+    /// Offer the Parakeet ("Instant") models — hold-to-talk dictation only.
+    var includeParakeet = false
+
+    private var choices: [WhisperModelChoice] {
+        WhisperModelChoice.all + (includeParakeet ? WhisperModelChoice.parakeet : [])
+    }
 
     var body: some View {
         Group {
@@ -459,6 +476,12 @@ struct ModelPickerRows: View {
                     ForEach(WhisperModelChoice.all) { c in
                         Text(c.label).tag(c.model)
                     }
+                    if includeParakeet {
+                        Divider()
+                        ForEach(WhisperModelChoice.parakeet) { c in
+                            Text(c.label).tag(c.model)
+                        }
+                    }
                     if !transcription.customModels.isEmpty {
                         Divider()
                         ForEach(transcription.customModels) { custom in
@@ -466,7 +489,7 @@ struct ModelPickerRows: View {
                         }
                     }
                     // Keep any custom/previously-saved model selectable.
-                    if !WhisperModelChoice.all.contains(where: { $0.model == model })
+                    if !choices.contains(where: { $0.model == model })
                         && !transcription.customModels.contains(where: { $0.id == model }) {
                         Text("Custom").tag(model)
                     }
@@ -475,7 +498,7 @@ struct ModelPickerRows: View {
                 .pickerStyle(.menu)
                 .tint(SliveTheme.accent)
                 .fixedSize()
-                Text(WhisperModelChoice.all.first { $0.model == model }?.detail
+                Text(choices.first { $0.model == model }?.detail
                      ?? transcription.customModels.first { $0.id == model }
                         .map { "Fine-tuned \($0.baseModel) · \($0.id)" }
                      ?? "Custom model · \(model)")

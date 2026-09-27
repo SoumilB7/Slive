@@ -60,6 +60,14 @@ final class TranscriptionModel: ObservableObject {
     /// Loaded WhisperKit instances, keyed by model name. One entry == one resident
     /// model in RAM.
     private var pipes: [String: WhisperKit] = [:]
+    /// Loaded Parakeet models, keyed by model id (`parakeet-…`). Same
+    /// lifecycle as `pipes`: one entry == one resident model.
+    private var parakeets: [String: ParakeetEngine] = [:]
+
+    /// Whether `model` is loaded in either engine.
+    private func isResident(_ model: String) -> Bool {
+        pipes[model] != nil || parakeets[model] != nil
+    }
     /// Models being prepared in the background right now.
     private var loadingModels: Set<String> = []
     /// The one in-flight load per model. Everything that needs a model
@@ -78,7 +86,7 @@ final class TranscriptionModel: ObservableObject {
 
     /// Whether `model` is loaded and ready to transcribe right now (streaming needs
     /// one already in memory — it can't wait on a first-time load).
-    func isReady(_ model: String) -> Bool { pipes[model] != nil }
+    func isReady(_ model: String) -> Bool { isResident(model) }
 
     /// Called on the main actor whenever a model finishes loading (download +
     /// Neural Engine compile + warm-up done) — AppDelegate switches over to it.
@@ -90,7 +98,7 @@ final class TranscriptionModel: ObservableObject {
     /// dictating — the download and the ~1–2 min Neural Engine compile
     /// happen behind the model already in use.
     func servingModel(wanted: String, fallback: String?) -> String {
-        Self.pickServing(wanted: wanted, fallback: fallback, isResident: { pipes[$0] != nil })
+        Self.pickServing(wanted: wanted, fallback: fallback, isResident: { isResident($0) })
     }
 
     nonisolated static func pickServing(wanted: String, fallback: String?,
@@ -144,6 +152,9 @@ final class TranscriptionModel: ObservableObject {
 
     /// Available without a download — bundled OR on disk.
     func isDownloaded(_ model: String) -> Bool {
+        if case .parakeet(let p) = SpeechEngine.of(model) {
+            return ParakeetEngine.isDownloaded(p, basket: basket)
+        }
         refreshCustomModels()
         if customModel(model) != nil { return true }
         if bundledModelFolder(model) != nil { return true }
@@ -156,6 +167,9 @@ final class TranscriptionModel: ObservableObject {
     }
 
     private func removeDownloaded(_ model: String) {
+        if case .parakeet(let p) = SpeechEngine.of(model) {
+            ParakeetEngine.remove(p, basket: basket); return
+        }
         guard customModel(model) == nil else { return }
         guard let subs = try? FileManager.default.contentsOfDirectory(
             at: modelsRoot, includingPropertiesForKeys: nil) else { return }
@@ -173,6 +187,11 @@ final class TranscriptionModel: ObservableObject {
             statuses.removeValue(forKey: key)
             loadingModels.remove(key)
         }
+        for key in parakeets.keys where !keep.contains(key) {
+            parakeets.removeValue(forKey: key)
+            statuses.removeValue(forKey: key)
+            loadingModels.remove(key)
+        }
     }
 
     /// Release ALL loaded models from memory. Called on quit: the OS reclaims the
@@ -182,6 +201,7 @@ final class TranscriptionModel: ObservableObject {
     func shutdown() {
         stopLiveDictation()
         pipes.removeAll()
+        parakeets.removeAll()
         loadingModels.removeAll()
         liveModel = nil
     }
@@ -374,6 +394,15 @@ final class TranscriptionModel: ObservableObject {
     /// the streaming loop never processed (it only runs on >1s of new buffer).
     /// `model` is explicit so this still works after `stopLiveDictation()`.
     func transcribeSamples(_ samples: [Float], model: String) async -> String? {
+        if let engine = parakeets[model] {
+            guard samples.count > 16_000 / 3 else { return nil }
+            lastDecodeAt = Date()
+            let t0 = Date()
+            guard let text = try? await engine.transcribe(samples) else { return nil }
+            Self.recordDecode(model: model, audioSeconds: Double(samples.count) / 16_000,
+                              decodeSeconds: Date().timeIntervalSince(t0))
+            return text
+        }
         guard let pipe = pipes[model], samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
         lastDecodeAt = Date()
         let t0 = Date()
@@ -393,8 +422,8 @@ final class TranscriptionModel: ObservableObject {
 
     /// Load `model` if it isn't resident and wait for it. True when ready.
     func ensureLoaded(_ model: String) async -> Bool {
-        if pipes[model] == nil, isDownloaded(model) { await loadShared(model) }
-        return pipes[model] != nil
+        if !isResident(model), isDownloaded(model) { await loadShared(model) }
+        return isResident(model)
     }
 
     /// Start `model`'s load, or join the one already running.
@@ -520,6 +549,17 @@ final class TranscriptionModel: ObservableObject {
     /// speech warm-up it's 1.18s). The bundled WarmUp.wav is 4.8s of macOS
     /// text-to-speech. Fire-and-forget; self-serialising.
     func warmUp(_ model: String) {
+        if let engine = parakeets[model], !warming {
+            guard let audio = Self.warmUpAudio else { return }
+            warming = true
+            Task {
+                let t0 = Date()
+                _ = try? await engine.transcribe(audio)
+                warming = false
+                Log.stt(String(format: "warmed %@ in %.2fs", model, Date().timeIntervalSince(t0)))
+            }
+            return
+        }
         guard let pipe = pipes[model], !warming else { return }
         warming = true
         let audio = Self.warmUpAudio ?? [Float](repeating: 0, count: 8_000)
@@ -550,7 +590,7 @@ final class TranscriptionModel: ObservableObject {
     /// decode), run a warmup in parallel with the hold so release pays
     /// inference only.
     func primeIfCold(_ model: String) {
-        if pipes[model] == nil {
+        if !isResident(model) {
             if isDownloaded(model) {
                 Task { await loadShared(model) }   // load() warms up on success
             }
@@ -583,12 +623,13 @@ final class TranscriptionModel: ObservableObject {
         guard let after = Settings.shared.resolvedSpeedTier.idleUnloadAfter,
               Date().timeIntervalSince(lastDecodeAt) > after,
               liveTranscriber == nil,
-              !pipes.isEmpty else { return }
+              !pipes.isEmpty || !parakeets.isEmpty else { return }
         NSLog("Slive: Feather tier — released idle transcription model(s)")
         // Statuses stay .ready on purpose: the models are still downloaded and
         // one hold away — every decode path load-on-demands through
         // `primeIfCold` / `transcribe(url:)`.
         pipes.removeAll()
+        parakeets.removeAll()
     }
 
     // MARK: - Selection / loading
@@ -598,7 +639,7 @@ final class TranscriptionModel: ObservableObject {
     /// keeps working until this one is ready.
     func select(_ model: String) {
         refreshCustomModels()
-        if pipes[model] != nil { statuses[model] = .ready; return }
+        if isResident(model) { statuses[model] = .ready; return }
         if loadingModels.contains(model) { return }        // already preparing
         if isDownloaded(model) {
             Task { await loadShared(model) }
@@ -611,8 +652,18 @@ final class TranscriptionModel: ObservableObject {
     func download(_ model: String) async {
         refreshCustomModels()
         if customModel(model) != nil { await loadShared(model); return }
-        if pipes[model] != nil { statuses[model] = .ready; return }
-        if !isDownloaded(model) {
+        if isResident(model) { statuses[model] = .ready; return }
+        if case .parakeet(let p) = SpeechEngine.of(model), !isDownloaded(model) {
+            statuses[model] = .downloading(0)
+            do {
+                try await ParakeetEngine.download(p, basket: basket) { [weak self] fraction in
+                    Task { @MainActor in self?.statuses[model] = .downloading(fraction) }
+                }
+            } catch {
+                statuses[model] = .failed("Download failed: \(error.localizedDescription)")
+                return
+            }
+        } else if !isDownloaded(model) {
             statuses[model] = .downloading(0)
             do {
                 _ = try await WhisperKit.download(variant: model, downloadBase: basket) { [weak self] p in
@@ -630,6 +681,7 @@ final class TranscriptionModel: ObservableObject {
     func redownload(_ model: String) async {
         if customModel(model) != nil { await loadShared(model); return }
         pipes.removeValue(forKey: model)
+        parakeets.removeValue(forKey: model)
         removeDownloaded(model)
         await download(model)
     }
@@ -638,6 +690,10 @@ final class TranscriptionModel: ObservableObject {
     /// stage + timeout). Swaps it in as a resident model only when it's fully ready,
     /// so anything already loaded keeps serving meanwhile.
     private func load(_ model: String) async {
+        if case .parakeet(let p) = SpeechEngine.of(model) {
+            await loadParakeet(p, id: model)
+            return
+        }
         loadingModels.insert(model)
         statuses[model] = .preparing("Loading")
         Log.stt("load begin \(model) (bundled=\(bundledModelFolder(model) != nil))")
@@ -705,13 +761,49 @@ final class TranscriptionModel: ObservableObject {
         }
     }
 
+    /// Parakeet's load: compile + load onto the Neural Engine from Slive's
+    /// basket, then the same ready/serving/warm-up path as Whisper.
+    private func loadParakeet(_ p: ParakeetModel, id model: String) async {
+        loadingModels.insert(model)
+        statuses[model] = .preparing("Compiling for the Neural Engine")
+        let t0 = Date()
+        do {
+            let engine = try await withTimeout(seconds: 300) { [basket] in
+                try await ParakeetEngine.load(p, basket: basket)
+            }
+            parakeets[model] = engine
+            loadingModels.remove(model)
+            statuses[model] = .ready
+            onModelReady?(model)
+            Log.stt(String(format: "READY %@ in %.1fs", model, Date().timeIntervalSince(t0)))
+            if Settings.shared.resolvedSpeedTier.warmsAfterLoad, !Self.benchSuppressesAutoWarm { warmUp(model) }
+        } catch is TimeoutError {
+            loadingModels.remove(model)
+            statuses[model] = .failed("Timed out preparing this model. Try Re-download.")
+        } catch {
+            loadingModels.remove(model)
+            statuses[model] = .failed(error.localizedDescription)
+            NSLog("Slive: Parakeet load failed — \(error)")
+        }
+    }
+
     /// Transcribe `url` strictly using `model`'s pipe. If it isn't loaded yet, load
     /// it when it's available; returns nil otherwise (and kicks off a select) so the
     /// caller can tell the user what to do.
     func transcribe(_ url: URL, model: String) async -> String? {
-        if pipes[model] == nil {
+        if !isResident(model) {
             guard isDownloaded(model) else { select(model); return nil }
             await loadShared(model)   // join an in-flight load; never start a duplicate
+        }
+        if parakeets[model] != nil {
+            guard let file = try? AVAudioFile(forReading: url),
+                  file.processingFormat.sampleRate == 16_000, file.processingFormat.channelCount == 1,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                                frameCapacity: AVAudioFrameCount(file.length)),
+                  (try? file.read(into: buffer)) != nil,
+                  let channel = buffer.floatChannelData else { return nil }
+            let samples = Array(UnsafeBufferPointer(start: channel[0], count: Int(buffer.frameLength)))
+            return await transcribeSamples(samples, model: model)
         }
         guard let pipe = pipes[model] else { return nil }
         lastDecodeAt = Date()

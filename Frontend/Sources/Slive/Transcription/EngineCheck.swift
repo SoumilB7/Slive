@@ -26,6 +26,9 @@ enum EngineCheck {
         guard let audio else { print("✗ no audio (pass --wav, or run from Frontend/)"); return 2 }
         let models = value("--model").flatMap(ParakeetModel.init(rawValue:)).map { [$0] } ?? ParakeetModel.allCases
         print("clip says: «\(warmUpWords)»")
+        if args.contains("--provision") {
+            return await provision(models, audio: audio)
+        }
         for model in models {
             do {
                 var t = Date()
@@ -41,6 +44,30 @@ enum EngineCheck {
             } catch {
                 print("✗ \(model.displayName): \(error)")
             }
+        }
+        return 0
+    }
+
+    /// Provisioning through the REAL registry — exactly what the Settings
+    /// download button and the dictation path call: isDownloaded →
+    /// download (clone from FluidAudio's shared cache when present) → load
+    /// (compile) → .ready → transcribeSamples.
+    static func provision(_ models: [ParakeetModel], audio: [Float]) async -> Int32 {
+        TranscriptionModel.benchSuppressesAutoWarm = true
+        let registry = TranscriptionModel.shared
+        for model in models {
+            let id = model.rawValue
+            let dir = ParakeetEngine.directory(for: model, basket: registry.basket)
+            print("\(model.displayName) → \(dir.path)")
+            print("  downloaded before: \(registry.isDownloaded(id))")
+            var t = Date()
+            await registry.download(id)
+            print(String(format: "  download+load: %.1fs · status: %@ · downloaded now: %@",
+                         Date().timeIntervalSince(t), "\(registry.status(for: id))",
+                         registry.isDownloaded(id) ? "yes" : "no"))
+            t = Date()
+            let text = await registry.transcribeSamples(audio, model: id) ?? "(nil)"
+            print(String(format: "  transcribe via registry: %.3fs «%@»", Date().timeIntervalSince(t), text))
         }
         return 0
     }
