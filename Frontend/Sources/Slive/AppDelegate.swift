@@ -39,9 +39,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chatActive = false
     private var pendingTurn: (question: String, answer: String)?
 
-    /// The mic stays open for 0.3 seconds AFTER release so quiet or slow
-    /// final syllables are not clipped before transcription begins.
-    static let postReleaseCaptureSeconds: TimeInterval = 0.30
+    /// The mic stays open this long AFTER release so a final syllable still
+    /// sounding at key-up isn't clipped. 0.1s since Sep 27, 2026 (was 0.3):
+    /// `--bench-tail` on 300 recent dictations — the extra 0.2s was true
+    /// silence in 42%, and cutting it changed an ending in 1 of 300 (0.3%,
+    /// an already-garbled final word); Soumil releases the instant he stops
+    /// speaking, so this is 0.2s off every dictation.
+    static let postReleaseCaptureSeconds: TimeInterval = 0.10
     /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
     private var pendingStop: DispatchWorkItem?
     /// When the hotkey lifted — anchor for the always-on release→typed log.
@@ -201,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Tap-to-toggle flow (click to start, click again to stop)
 
     /// Which toggle session is live, if any. Toggle sessions reuse the exact
-    /// hold machinery (begin/stop + the 0.3s post-release capture); only who
+    /// hold machinery (begin/stop + the post-release capture); only who
     /// decides "release" differs — the second tap instead of a key-up.
     private var toggleActive: HotkeyAction?
 
@@ -223,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Taps slower than holdActivationDelay make the FIRST tap of a double
         // mature into a real hold session — by the second tap it's recording
-        // (or already winding down / transcribing a 0.3s fragment). The
+        // (or already winding down / transcribing a short fragment). The
         // completed double outranks that false start: abort it, type nothing
         // from it, and give the mic to the toggle. Age-gated so a stray
         // double-tap can never kill a long-running real dictation.
@@ -312,7 +316,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             armWorkItem = nil
             return
         }
-        // Keep capturing for 0.3s so the final word cannot be clipped.
+        // Keep capturing briefly (postReleaseCaptureSeconds) so a final
+        // syllable still sounding at key-up isn't clipped.
         // The pill stays visible and naturally changes to its processing state
         // when the delayed stop begins transcription.
         pendingStop?.cancel()
