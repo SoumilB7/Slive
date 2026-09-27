@@ -64,6 +64,12 @@ fi
 
 # Bundle the default (tiny) transcription model + tokenizer so first launch needs
 # no download and works fully offline.
+# Speech clip for the post-load warm-up (a silent warm-up is a no-op: Whisper
+# skips it in ~10ms, leaving the first real dictation to pay the setup).
+if [[ -f Resources/WarmUp.wav ]]; then
+    cp Resources/WarmUp.wav "$CONTENTS/Resources/WarmUp.wav"
+fi
+
 if [[ -d Resources/BundledModels ]]; then
     cp -R Resources/BundledModels "$CONTENTS/Resources/BundledModels"
 fi
@@ -115,6 +121,18 @@ if [[ "${1:-}" == "install" ]]; then
     rm -rf "$APP"
     LAUNCH_TARGET="$DEST"
     echo "✓ Installed: $DEST (single copy — no duplicates)"
+fi
+
+# Compile the models for THIS binary before launch. macOS keys its compiled
+# Neural Engine programs to the exact binary, so the first launch of any new
+# build spends ~1–2 min compiling Whisper — and no dictation can run until it
+# finishes. Doing it here means the app opens ready. SLIVE_SKIP_PREPARE=1 skips.
+if [[ ( "${1:-}" == "run" || "${1:-}" == "install" ) && -z "${SLIVE_SKIP_PREPARE:-}" ]]; then
+    echo "▸ Preparing the speech model for this build (Neural Engine compile, ~1–2 min when the code changed)…"
+    pkill -x Slive 2>/dev/null || true
+    PREP_START=$(date +%s)
+    "$LAUNCH_TARGET/Contents/MacOS/Slive" --prepare-models 2>/dev/null | grep -E "^  " || true
+    echo "✓ Model ready in $(( $(date +%s) - PREP_START ))s — the first dictation will be instant."
 fi
 
 if [[ "${1:-}" == "run" || "${1:-}" == "install" ]]; then

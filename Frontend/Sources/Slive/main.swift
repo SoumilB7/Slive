@@ -17,6 +17,24 @@ if CommandLine.arguments.contains("--bench-tail") {
     dispatchMain()
 }
 
+// `Slive --prepare-models` — compile + warm the models for THIS binary, then
+// exit. Run by build.sh before launch (see ModelPreparer.swift).
+if CommandLine.arguments.contains("--prepare-models") {
+    Task { @MainActor in
+        exit(await ModelPreparer.run())
+    }
+    dispatchMain()
+}
+
+// `Slive --bench-coldstart …` — how slow are the first dictations after a
+// (re)install, and does a stronger warm-up fix it? (see ColdStartBench.swift)
+if CommandLine.arguments.contains("--bench-coldstart") {
+    Task { @MainActor in
+        exit(await ColdStartBench.run(CommandLine.arguments))
+    }
+    dispatchMain()
+}
+
 // `Slive --bench-compute …` — which chip (Neural Engine / GPU / CPU) should
 // run each Whisper stage on this Mac (see ComputeBench.swift).
 if CommandLine.arguments.contains("--bench-compute") {

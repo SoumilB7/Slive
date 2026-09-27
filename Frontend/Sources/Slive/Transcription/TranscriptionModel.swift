@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreML
 import Foundation
 import WhisperKit
@@ -61,6 +62,11 @@ final class TranscriptionModel: ObservableObject {
     private var pipes: [String: WhisperKit] = [:]
     /// Models being prepared in the background right now.
     private var loadingModels: Set<String> = []
+    /// The one in-flight load per model. Everything that needs a model
+    /// (selection, the hold-start prime, a dictation that arrives early)
+    /// awaits THIS instead of starting its own — a duplicate load used to
+    /// stall behind the first and lose the dictation.
+    private var loadTasks: [String: Task<Void, Never>] = [:]
 
     // Live streaming dictation (separate path from file transcription). The live
     // model name selects which resident pipe the streaming helpers operate on.
@@ -362,10 +368,22 @@ final class TranscriptionModel: ObservableObject {
         return Self.cleanStreamText(results.map { $0.text }.joined())
     }
 
+    /// Dev benchmarks set this to control warm-up themselves (never set by the app).
+    static var benchSuppressesAutoWarm = false
+
     /// Load `model` if it isn't resident and wait for it. True when ready.
     func ensureLoaded(_ model: String) async -> Bool {
-        if pipes[model] == nil, isDownloaded(model) { await load(model) }
+        if pipes[model] == nil, isDownloaded(model) { await loadShared(model) }
         return pipes[model] != nil
+    }
+
+    /// Start `model`'s load, or join the one already running.
+    private func loadShared(_ model: String) async {
+        if let running = loadTasks[model] { await running.value; return }
+        let task = Task { await self.load(model) }
+        loadTasks[model] = task
+        await task.value
+        loadTasks[model] = nil
     }
 
     /// Decode options shared by every transcription path (file dictation, the live
@@ -475,19 +493,36 @@ final class TranscriptionModel: ObservableObject {
     private var warming = false
     private var idleUnloadTimer: Timer?
 
-    /// One tiny decode (0.5s of silence) so the compiled ANE graph is resident
-    /// and kernels are hot. Fire-and-forget; self-serialising.
+    /// One real decode so the first dictation pays inference only. It must
+    /// be SPEECH: 0.5s of silence (the old warm-up) is skipped by Whisper in
+    /// ~10ms, leaving the first real dictation to pay ~1.3s of one-time setup
+    /// (`--bench-coldstart`: first dictation 2.46s vs 1.15s warm; with a
+    /// speech warm-up it's 1.18s). The bundled WarmUp.wav is 4.8s of macOS
+    /// text-to-speech. Fire-and-forget; self-serialising.
     func warmUp(_ model: String) {
         guard let pipe = pipes[model], !warming else { return }
         warming = true
+        let audio = Self.warmUpAudio ?? [Float](repeating: 0, count: 8_000)
         Task {
             let t0 = Date()
-            _ = try? await pipe.transcribe(audioArray: [Float](repeating: 0, count: 8_000),
-                                           decodeOptions: decodeOptions())
+            _ = try? await pipe.transcribe(audioArray: audio, decodeOptions: decodeOptions())
             warming = false
             Log.stt(String(format: "warmed %@ in %.2fs", model, Date().timeIntervalSince(t0)))
         }
     }
+
+    /// Bundled warm-up speech (Resources/WarmUp.wav, 16 kHz mono), or nil
+    /// outside the app bundle.
+    static let warmUpAudio: [Float]? = {
+        guard let url = Bundle.main.url(forResource: "WarmUp", withExtension: "wav"),
+              let file = try? AVAudioFile(forReading: url),
+              file.processingFormat.sampleRate == 16_000, file.processingFormat.channelCount == 1,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                            frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: buffer)) != nil,
+              let channel = buffer.floatChannelData else { return nil }
+        return Array(UnsafeBufferPointer(start: channel[0], count: Int(buffer.frameLength)))
+    }()
 
     /// Called at hold-start: if the model was unloaded (Feather tier) start
     /// loading NOW — overlapped with the user speaking — and, on tiers that
@@ -496,8 +531,8 @@ final class TranscriptionModel: ObservableObject {
     /// inference only.
     func primeIfCold(_ model: String) {
         if pipes[model] == nil {
-            if isDownloaded(model), !loadingModels.contains(model) {
-                Task { await load(model) }   // load() warms up on success
+            if isDownloaded(model) {
+                Task { await loadShared(model) }   // load() warms up on success
             }
             return
         }
@@ -546,7 +581,7 @@ final class TranscriptionModel: ObservableObject {
         if pipes[model] != nil { statuses[model] = .ready; return }
         if loadingModels.contains(model) { return }        // already preparing
         if isDownloaded(model) {
-            Task { await load(model) }
+            Task { await loadShared(model) }
         } else {
             statuses[model] = .notDownloaded
         }
@@ -555,7 +590,7 @@ final class TranscriptionModel: ObservableObject {
     /// Download (if needed) then load `model`, reporting progress.
     func download(_ model: String) async {
         refreshCustomModels()
-        if customModel(model) != nil { await load(model); return }
+        if customModel(model) != nil { await loadShared(model); return }
         if pipes[model] != nil { statuses[model] = .ready; return }
         if !isDownloaded(model) {
             statuses[model] = .downloading(0)
@@ -568,12 +603,12 @@ final class TranscriptionModel: ObservableObject {
                 return
             }
         }
-        await load(model)
+        await loadShared(model)
     }
 
     /// Delete the on-disk copy and fetch fresh (recovers a stale/partial download).
     func redownload(_ model: String) async {
-        if customModel(model) != nil { await load(model); return }
+        if customModel(model) != nil { await loadShared(model); return }
         pipes.removeValue(forKey: model)
         removeDownloaded(model)
         await download(model)
@@ -591,19 +626,27 @@ final class TranscriptionModel: ObservableObject {
         let bundled = bundledModelFolder(model)
         let custom = customModel(model)
         let tokenizerRoot = custom?.tokenizerFolder ?? (bundled != nil ? bundledTokenizerRoot : basket)
-        // Default compute = Neural Engine (fastest transcription).
+        // Encoder + decoder on the Neural Engine (fastest — `--bench-compute`:
+        // GPU/CPU are ~3× slower per token). The mel spectrogram on the CPU:
+        // WhisperKit's default puts it on the GPU, whose compiled MPSGraph
+        // cache entry stops loading whenever a different Slive binary has
+        // touched the shared cache ("Unable to load MPSGraphExecutable") —
+        // every rebuild/reinstall then recompiled it for ~1–2 minutes before
+        // ANY dictation could run. On CPU: load 100.6s → 10.8s on a fresh
+        // binary, and the stage itself is faster (4ms vs 16ms per clip).
+        let compute = ModelComputeOptions(melCompute: .cpuOnly)
         let config: WhisperKitConfig
         if let custom {
             config = WhisperKitConfig(model: model, modelFolder: custom.modelFolder.path,
-                                      tokenizerFolder: tokenizerRoot,
+                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
                                       prewarm: false, load: false, download: false)
         } else if let bundled {
             config = WhisperKitConfig(model: model, modelFolder: bundled.path,
-                                      tokenizerFolder: tokenizerRoot,
+                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
                                       prewarm: false, load: false, download: false)
         } else {
             config = WhisperKitConfig(model: model, downloadBase: basket,
-                                      tokenizerFolder: tokenizerRoot,
+                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
                                       prewarm: false, load: false, download: true)
         }
 
@@ -628,7 +671,7 @@ final class TranscriptionModel: ObservableObject {
             // Immediately push the compiled graph through one tiny decode so
             // the FIRST real dictation pays inference only, not residency
             // (skipped on the Feather tier — its ethos is no idle spend).
-            if Settings.shared.resolvedSpeedTier.warmsAfterLoad { warmUp(model) }
+            if Settings.shared.resolvedSpeedTier.warmsAfterLoad, !Self.benchSuppressesAutoWarm { warmUp(model) }
         } catch is TimeoutError {
             loadingModels.remove(model)
             statuses[model] = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
@@ -647,7 +690,7 @@ final class TranscriptionModel: ObservableObject {
     func transcribe(_ url: URL, model: String) async -> String? {
         if pipes[model] == nil {
             guard isDownloaded(model) else { select(model); return nil }
-            await load(model)
+            await loadShared(model)   // join an in-flight load; never start a duplicate
         }
         guard let pipe = pipes[model] else { return nil }
         lastDecodeAt = Date()
