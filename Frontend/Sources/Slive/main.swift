@@ -8,6 +8,24 @@ if CommandLine.arguments.contains("--self-test") {
     MainActor.assumeIsolated { SelfTest.runAndExit() }
 }
 
+// `Slive --bench-tail …` — would a shorter post-release capture lose words?
+// (see TailBench.swift)
+if CommandLine.arguments.contains("--bench-tail") {
+    Task { @MainActor in
+        exit(await TailBench.run(CommandLine.arguments))
+    }
+    dispatchMain()
+}
+
+// `Slive --bench-compute …` — which chip (Neural Engine / GPU / CPU) should
+// run each Whisper stage on this Mac (see ComputeBench.swift).
+if CommandLine.arguments.contains("--bench-compute") {
+    Task { @MainActor in
+        exit(await ComputeBench.run(CommandLine.arguments))
+    }
+    dispatchMain()
+}
+
 // Slive — a hold-to-talk mic overlay. A normal app: Dock icon, Cmd-Tab,
 // Cmd-Q, minimizable window; the hold-to-talk overlay still works everywhere.
 let app = NSApplication.shared

@@ -84,7 +84,7 @@ final class TranscriptionModel: ObservableObject {
 
     // MARK: - Storage (one basket in the app's data dir)
 
-    private var basket: URL {
+    var basket: URL {
         let dir = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Slive/Models", isDirectory: true)
@@ -285,15 +285,15 @@ final class TranscriptionModel: ObservableObject {
 
     /// A hold counts as speech only if some 10ms frame is louder than this —
     /// below it the whole clip is treated as silence and the decode skipped.
-    static let trimSpeechGate: Float = 0.01
+    nonisolated static let trimSpeechGate: Float = 0.01
     /// Bounds for the per-clip edge threshold (see `trimSilence`).
-    static let trimEdgeFloor: Float = 0.003
+    nonisolated static let trimEdgeFloor: Float = 0.003
     /// Edge threshold = this × the clip's own noise floor, clamped to
     /// [`trimEdgeFloor`, `trimSpeechGate`].
-    static let trimNoiseMultiple: Float = 4
+    nonisolated static let trimNoiseMultiple: Float = 4
     /// Kept before the first voiced frame (150ms) and after the last (300ms).
-    static let trimLeadPad = 2_400
-    static let trimTailPad = 4_800
+    nonisolated static let trimLeadPad = 2_400
+    nonisolated static let trimTailPad = 4_800
 
     /// Trim leading and trailing silence from a canonical 16 kHz mono buffer
     /// before decoding. Dead air costs decode windows and trips fallback
@@ -309,7 +309,7 @@ final class TranscriptionModel: ObservableObject {
     ///   still several times the room noise, but under the old fixed 0.01
     ///   cut, so the last words were deleted before Whisper saw them (Sep
     ///   2026 audit: ~85 of 1485 captured clips, confirmed by re-decoding).
-    static func trimSilence(_ samples: [Float]) -> ArraySlice<Float> {
+    nonisolated static func trimSilence(_ samples: [Float]) -> ArraySlice<Float> {
         let frame = 160   // 10ms at 16k
         let frames = samples.count / frame
         guard frames > 0 else { return samples[0..<0] }
@@ -336,7 +336,7 @@ final class TranscriptionModel: ObservableObject {
     /// frame RMS (the room's noise floor), clamped to
     /// [`trimEdgeFloor`, `trimSpeechGate`]. A clip that is mostly speech
     /// reads a high floor and clamps to the old 0.01 — never stricter.
-    static func edgeThreshold(frameRMS: [Float]) -> Float {
+    nonisolated static func edgeThreshold(frameRMS: [Float]) -> Float {
         guard !frameRMS.isEmpty else { return trimSpeechGate }
         let sorted = frameRMS.sorted()
         let noiseFloor = sorted[min(sorted.count - 1, sorted.count / 10)]
@@ -362,6 +362,12 @@ final class TranscriptionModel: ObservableObject {
         return Self.cleanStreamText(results.map { $0.text }.joined())
     }
 
+    /// Load `model` if it isn't resident and wait for it. True when ready.
+    func ensureLoaded(_ model: String) async -> Bool {
+        if pipes[model] == nil, isDownloaded(model) { await load(model) }
+        return pipes[model] != nil
+    }
+
     /// Decode options shared by every transcription path (file dictation, the live
     /// stream, and the final pass). `withoutTimestamps` matters for short clips:
     /// with timestamps on (WhisperKit's default) a <1s utterance often decodes to
@@ -378,7 +384,7 @@ final class TranscriptionModel: ObservableObject {
     ///   chunks CONCURRENTLY instead of serial 30s windows — long dictations
     ///   release in roughly constant time. The live stream keeps linear
     ///   decoding: its confirmation logic is tuned to unchunked segments.
-    private func decodeOptions(chunking: Bool = false) -> DecodingOptions {
+    func decodeOptions(chunking: Bool = false) -> DecodingOptions {
         var options = DecodingOptions(language: "en")
         options.skipSpecialTokens = true
         options.withoutTimestamps = true
