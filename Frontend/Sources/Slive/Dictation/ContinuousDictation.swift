@@ -42,11 +42,11 @@ final class ContinuousDictation {
 
     var isActive: Bool { active }
 
-    /// Start streaming with the configured continuous model + typing speed. Returns
-    /// false if that model isn't loaded (streaming can't wait on a first-time load —
-    /// the caller should surface that).
-    func start() -> Bool {
-        let model = Settings.shared.continuousModel
+    /// Start streaming with `model` (the serving continuous model — the
+    /// user's pick, or the previous one while the pick is still preparing)
+    /// at the configured typing speed. Returns false if `model` isn't loaded
+    /// (streaming can't wait on a first-time load — the caller surfaces that).
+    func start(model: String) -> Bool {
         guard whisper.isReady(model) else {
             Log.live("start SKIPPED — model \(model) not ready")
             return false

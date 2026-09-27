@@ -10,6 +10,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = HotkeyMonitor()
     private let settingsWindow = SettingsWindowController()
     private let whisper = TranscriptionModel.shared   // on-device STT (Neural Engine)
+    /// The last dictation / continuous model that was READY. Kept resident
+    /// while a newly picked model downloads + compiles, so dictation keeps
+    /// working on it; replaced (and evicted) the moment the new one is ready.
+    private var servingDictationModel: String?
+    private var servingContinuousModel: String?
     private let assistant = AssistantClient()
     private let backend = BackendManager.shared
 
@@ -114,6 +119,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // kept in memory while a continuous shortcut is actually set — no point
         // holding a second model (RAM + ANE) for a feature that's switched off.
         Settings.shared.onWhisperModelChange = { [weak self] _ in self?.refreshModelResidency() }
+        // A model finished loading: switch to it if it's the current pick,
+        // then drop whatever it replaced.
+        whisper.onModelReady = { [weak self] model in
+            guard let self else { return }
+            if model == Settings.shared.whisperModel { self.servingDictationModel = model }
+            if model == Settings.shared.continuousModel { self.servingContinuousModel = model }
+            self.refreshModelResidency()
+        }
         Settings.shared.onContinuousModelChange = { [weak self] _ in self?.refreshModelResidency() }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
         refreshModelResidency()
@@ -165,13 +178,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// continuous's only while its shortcut is set (same name = one shared
     /// instance). Everything else is evicted from RAM/ANE.
     private func refreshModelResidency() {
-        var keep: Set<String> = [Settings.shared.whisperModel]
-        if (Settings.shared.streamHoldOn && Settings.shared.streamHotkey != nil)
-            || (Settings.shared.streamToggleOn && Settings.shared.streamToggleHotkey != nil) {
-            keep.insert(Settings.shared.continuousModel)
-        }
+        let dictation = Settings.shared.whisperModel
+        let continuousOn = (Settings.shared.streamHoldOn && Settings.shared.streamHotkey != nil)
+            || (Settings.shared.streamToggleOn && Settings.shared.streamToggleHotkey != nil)
+        var want: Set<String> = [dictation]
+        if continuousOn { want.insert(Settings.shared.continuousModel) }
+        // Keep the previous pick resident until its replacement is ready.
+        var keep = want
+        if let old = servingDictationModel, !whisper.isReady(dictation) { keep.insert(old) }
+        if continuousOn, let old = servingContinuousModel,
+           !whisper.isReady(Settings.shared.continuousModel) { keep.insert(old) }
         whisper.retainModels(keep)
-        for m in keep { whisper.select(m) }
+        for m in want { whisper.select(m) }
         whisper.applySpeedTier()   // arm (or disarm) the Feather-tier idle unload
     }
 
@@ -414,7 +432,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Which shortcut started this recording decides what we do with the text.
         let action = currentAction
-        let whisperModel = Settings.shared.whisperModel
+        let whisperModel = whisper.servingModel(wanted: Settings.shared.whisperModel,
+                                                fallback: servingDictationModel)
 
         transcribeTask?.cancel()
         // Strong `self` capture: the task always returns (breaking any cycle),
@@ -501,7 +520,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Streaming can't wait on a first-time model load — it needs one in
         // memory now. If none is ready, tell the user and kick off a load.
-        guard whisper.isReady(Settings.shared.continuousModel) else {
+        let streamModel = whisper.servingModel(wanted: Settings.shared.continuousModel,
+                                               fallback: servingContinuousModel)
+        guard whisper.isReady(streamModel) else {
             whisper.select(Settings.shared.continuousModel)
             let msg = "Preparing the transcription model — hold again in a moment."
             model.showResult(msg)
@@ -517,7 +538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         liveStart = Date()   // for the post-release WPM measurement
         DispatchQueue.main.async { FeedbackPlayer.shared.playActivation(for: .stream) }
 
-        if !continuous.start() {
+        if !continuous.start(model: streamModel) {
             model.finishListening()
             hideOverlaySoon()
         }
@@ -662,7 +683,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func handleNoTranscript() {
         endDictationActivity()
         let message: String?
-        switch whisper.status(for: Settings.shared.whisperModel) {
+        switch whisper.status(for: whisper.servingModel(wanted: Settings.shared.whisperModel,
+                                                        fallback: servingDictationModel)) {
         case .notDownloaded:
             message = "Transcription model isn't downloaded yet — open Settings → General to download it."
         case .downloading(let p):

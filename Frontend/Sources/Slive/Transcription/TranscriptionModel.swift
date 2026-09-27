@@ -80,6 +80,26 @@ final class TranscriptionModel: ObservableObject {
     /// one already in memory — it can't wait on a first-time load).
     func isReady(_ model: String) -> Bool { pipes[model] != nil }
 
+    /// Called on the main actor whenever a model finishes loading (download +
+    /// Neural Engine compile + warm-up done) — AppDelegate switches over to it.
+    var onModelReady: ((String) -> Void)?
+
+    /// The model a dictation actually runs on: the one the user picked once
+    /// it's resident; until then the previous pick (kept resident by
+    /// AppDelegate for exactly this). Switching models never blocks
+    /// dictating — the download and the ~1–2 min Neural Engine compile
+    /// happen behind the model already in use.
+    func servingModel(wanted: String, fallback: String?) -> String {
+        Self.pickServing(wanted: wanted, fallback: fallback, isResident: { pipes[$0] != nil })
+    }
+
+    nonisolated static func pickServing(wanted: String, fallback: String?,
+                                        isResident: (String) -> Bool) -> String {
+        if isResident(wanted) { return wanted }
+        if let fallback, isResident(fallback) { return fallback }
+        return wanted
+    }
+
     func refreshCustomModels() {
         customModels = CustomWhisperModelRegistry.load()
     }
@@ -666,6 +686,7 @@ final class TranscriptionModel: ObservableObject {
             pipes[model] = p
             loadingModels.remove(model)
             statuses[model] = .ready
+            onModelReady?(model)
             Log.stt(String(format: "READY \(model) in %.1fs (resident: \(pipes.keys.sorted()))", Date().timeIntervalSince(t0)))
             NSLog("Slive: WhisperKit ready (\(model)).")
             // Immediately push the compiled graph through one tiny decode so

@@ -441,6 +441,18 @@ enum SelfTest {
 
     private static func silenceTrimChecks() {
         print("[Silence trim]")
+        // Switching models never blocks dictation: the previous pick serves
+        // until the new one is resident.
+        let resident: Set<String> = ["tiny.en"]
+        check(TranscriptionModel.pickServing(wanted: "large", fallback: "tiny.en",
+                                             isResident: resident.contains) == "tiny.en",
+              "new model still preparing → dictation keeps using the previous one")
+        check(TranscriptionModel.pickServing(wanted: "tiny.en", fallback: "base.en",
+                                             isResident: resident.contains) == "tiny.en",
+              "the picked model wins once it's resident")
+        check(TranscriptionModel.pickServing(wanted: "large", fallback: nil,
+                                             isResident: resident.contains) == "large",
+              "no previous model → wait for the pick (first launch)")
         check(AppDelegate.postReleaseCaptureSeconds >= 0.1,
               "post-release capture keeps at least 0.1s")
         let rate = 16_000
