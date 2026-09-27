@@ -189,7 +189,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if continuousOn, let old = servingContinuousModel,
            !whisper.isReady(Settings.shared.continuousModel) { keep.insert(old) }
         whisper.retainModels(keep)
-        for m in want { whisper.select(m) }
+        // Dictation first. macOS compiles one model at a time for the Neural
+        // Engine, and after its compile cache is purged (low disk space, OS
+        // update) a cold compile takes minutes — the continuous model must
+        // not make the dictation model wait in line (Sep 29: Parakeet's 18s
+        // compile ran first, dictation was ready 2m25s after launch).
+        // `onModelReady` re-runs this, so continuous loads right after.
+        whisper.select(dictation)
+        if continuousOn, Settings.shared.continuousModel != dictation {
+            switch whisper.status(for: dictation) {
+            case .preparing, .downloading: break   // wait for dictation
+            default: whisper.select(Settings.shared.continuousModel)
+            }
+        }
         whisper.applySpeedTier()   // arm (or disarm) the Feather-tier idle unload
     }
 
@@ -434,6 +446,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let action = currentAction
         let whisperModel = whisper.servingModel(wanted: Settings.shared.whisperModel,
                                                 fallback: servingDictationModel)
+        // Released while the model is still being prepared (first launch, or
+        // macOS purged its compiled-model cache — a minute or two): say so
+        // instead of silent "processing" dots. The dictation is kept and
+        // types the moment the model is ready, replacing this box.
+        if !whisper.isReady(whisperModel) {
+            let msg = "Preparing the speech model — your words will type as soon as it's ready."
+            model.showResult(msg)
+            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
+        }
 
         transcribeTask?.cancel()
         // Strong `self` capture: the task always returns (breaking any cycle),
