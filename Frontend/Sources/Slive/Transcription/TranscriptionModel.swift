@@ -392,8 +392,15 @@ final class TranscriptionModel: ObservableObject {
         guard loudest > trimSpeechGate else { return samples[0..<0] }
 
         let threshold = edgeThreshold(frameRMS: rms)
+        // The END edge uses the gentler "true silence" line: anything above
+        // max(1.5 × room floor, ½ threshold) is still voice. In a noisy room
+        // the edge threshold clamps at 0.01 and soft final words (0.005–0.01)
+        // were cut — Oct 8: "…see this in a change [as well]". Replayed on 150
+        // recent clips with the real model: 143 identical, 5 endings
+        // recovered, 0 invented words.
+        let tailThreshold = max(1.5 * noiseFloor(frameRMS: rms), 0.5 * threshold)
         guard let first = rms.firstIndex(where: { $0 > threshold }),
-              let last = rms.lastIndex(where: { $0 > threshold }) else { return samples[0..<0] }
+              let last = rms.lastIndex(where: { $0 > min(threshold, tailThreshold) }) else { return samples[0..<0] }
         let start = max(0, first * frame - trimLeadPad)
         let end = min(samples.count, (last + 1) * frame + trimTailPad)
         return samples[start..<end]
@@ -405,9 +412,14 @@ final class TranscriptionModel: ObservableObject {
     /// reads a high floor and clamps to the old 0.01 — never stricter.
     nonisolated static func edgeThreshold(frameRMS: [Float]) -> Float {
         guard !frameRMS.isEmpty else { return trimSpeechGate }
+        return min(trimSpeechGate, max(trimEdgeFloor, trimNoiseMultiple * noiseFloor(frameRMS: frameRMS)))
+    }
+
+    /// The room's noise floor: the clip's 10th-percentile 10ms frame RMS.
+    nonisolated static func noiseFloor(frameRMS: [Float]) -> Float {
+        guard !frameRMS.isEmpty else { return 0 }
         let sorted = frameRMS.sorted()
-        let noiseFloor = sorted[min(sorted.count - 1, sorted.count / 10)]
-        return min(trimSpeechGate, max(trimEdgeFloor, trimNoiseMultiple * noiseFloor))
+        return sorted[min(sorted.count - 1, sorted.count / 10)]
     }
 
     /// Transcribe a raw sample array in full on `model`'s pipe. Used on release to

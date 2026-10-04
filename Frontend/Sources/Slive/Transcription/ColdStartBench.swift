@@ -22,6 +22,12 @@ enum ColdStartBench {
         if let from = value("--redecode-since"), let to = value("--until") {
             return await redecode(from: from, to: to, model: model)
         }
+        if let n = Int(value("--trim-diff") ?? "") {
+            return await trimDiff(recent: n, model: model)
+        }
+        if let id = value("--decode-clip") {
+            return await decodeClip(idPrefix: id, model: model)
+        }
         if args.contains("--waiting-dictation") {
             return await waitingDictation(model: model)
         }
@@ -139,6 +145,64 @@ enum ColdStartBench {
         let viaSamples = !wasReady
         print(String(format: "waiting dictation → %.2fs  waited=%@  «%@»", Date().timeIntervalSince(t0),
                      viaSamples ? "yes" : "no", (text ?? "(nil)").isEmpty ? "(EMPTY)" : String((text ?? "(nil)").prefix(70))))
+        return 0
+    }
+
+    /// One captured clip, decoded several ways on the real model: the app's
+    /// path (silence-trimmed), the untrimmed clip, and its pieces — to see
+    /// which words exist in the audio but not in what was typed.
+    /// Old end edge (= start threshold) vs the soft tail: decode every recent
+    /// clip whose trim differs, printing both texts verbatim (case + punctuation).
+    static func trimDiff(recent n: Int, model: String) async -> Int32 {
+        let whisper = TranscriptionModel.shared
+        guard await whisper.ensureLoaded(model) else { print("✗ model"); return 2 }
+        let clips = BenchSupport.loadClips(minSeconds: 0, limit: n, since: "2000-01-01")
+        var changed = 0, styleChanged = 0
+        for clip in clips {
+            guard let samples = BenchSupport.readWAV(clip.url) else { continue }
+            let new = TranscriptionModel.trimSilence(samples)
+            let frames = samples.count / 160
+            guard frames > 0 else { continue }
+            let rms = (0..<frames).map { f -> Float in
+                var sum: Float = 0
+                for j in (f * 160)..<(f * 160 + 160) { sum += samples[j] * samples[j] }
+                return (sum / 160).squareRoot()
+            }
+            let threshold = TranscriptionModel.edgeThreshold(frameRMS: rms)
+            guard let last = rms.lastIndex(where: { $0 > threshold }) else { continue }
+            let oldEnd = min(samples.count, (last + 1) * 160 + TranscriptionModel.trimTailPad)
+            guard oldEnd != new.endIndex else { continue }
+            changed += 1
+            let old = Array(samples[new.startIndex..<oldEnd])
+            let a = await whisper.transcribeSamples(old, model: model) ?? ""
+            let b = await whisper.transcribeSamples(Array(new), model: model) ?? ""
+            let style = (a.first?.isUppercase ?? false) != (b.first?.isUppercase ?? false)
+                || a.filter { ".,?!".contains($0) }.count != b.filter { ".,?!".contains($0) }.count
+            if style { styleChanged += 1 }
+            print("== \(clip.id.prefix(8)) +\(String(format: "%.2f", Double(new.endIndex - oldEnd) / 16_000))s\(style ? "  STYLE" : "")")
+            print("  old: «\(a)»\n  new: «\(b)»")
+        }
+        print("changed \(changed) of \(clips.count), style changed \(styleChanged)")
+        return 0
+    }
+
+    static func decodeClip(idPrefix: String, model: String) async -> Int32 {
+        let whisper = TranscriptionModel.shared
+        guard await whisper.ensureLoaded(model) else { print("✗ model"); return 2 }
+        guard let clip = BenchSupport.loadClips(minSeconds: 0, limit: 100_000).first(where: { $0.id.hasPrefix(idPrefix) }),
+              let samples = BenchSupport.readWAV(clip.url) else { print("✗ clip"); return 2 }
+        _ = await whisper.transcribeSamples(Array(samples.prefix(48_000)), model: model)   // warm
+        let trimmed = TranscriptionModel.trimSilence(samples)
+        func show(_ label: String, _ audio: [Float]) async {
+            let t = await whisper.transcribeSamples(audio, model: model) ?? "(nil)"
+            print(String(format: "%@ (%.1fs): «%@»", label, Double(audio.count) / 16_000, t))
+        }
+        await show("APP PATH, trimmed ", Array(trimmed))
+        await show("full, untrimmed   ", samples)
+        let n = samples.count
+        await show("first half        ", Array(samples[0..<n / 2]))
+        await show("second half       ", Array(samples[n / 2..<n]))
+        await show("last 6s           ", Array(samples[max(0, n - 96_000)..<n]))
         return 0
     }
 }

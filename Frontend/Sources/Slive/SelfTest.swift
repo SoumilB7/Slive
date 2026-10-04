@@ -499,6 +499,17 @@ enum SelfTest {
               "got \(keptTail.count) samples, need ≥ \(voice.count + softTail.count)")
         check(TranscriptionModel.trimSilence(room + softTail + room).isEmpty,
               "soft noise with nothing above the speech gate is still silence")
+        // Oct 8: a NOISY room (floor 0.003 → edge threshold clamps at 0.01)
+        // with final words at 0.007 — the end edge must still keep them.
+        let noisy = [Float](repeating: 0.003, count: rate)
+        let softEnding = [Float](repeating: 0.007, count: rate * 2 / 5)
+        let noisyClip = noisy + [Float](repeating: 0.05, count: rate) + softEnding + noisy
+        let keptNoisy = TranscriptionModel.trimSilence(noisyClip)
+        check(keptNoisy.endIndex >= noisy.count + rate + softEnding.count,
+              "noisy room: soft final words survive the trim",
+              "trim ended at \(keptNoisy.endIndex), soft words end at \(noisy.count + rate + softEnding.count)")
+        check(keptNoisy.endIndex <= noisyClip.count - noisy.count / 2,
+              "noisy room: plain room noise after the words is still trimmed")
         check(TranscriptionModel.edgeThreshold(
                 frameRMS: [Float](repeating: 0.0005, count: 90) + [Float](repeating: 0.1, count: 10))
                 == TranscriptionModel.trimEdgeFloor,
