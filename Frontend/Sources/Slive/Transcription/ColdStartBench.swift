@@ -22,6 +22,12 @@ enum ColdStartBench {
         if let from = value("--redecode-since"), let to = value("--until") {
             return await redecode(from: from, to: to, model: model)
         }
+        if args.contains("--waiting-dictation") {
+            return await waitingDictation(model: model)
+        }
+        if args.contains("--concurrent") {
+            return await concurrentWithWarmUp(model: model, rounds: Int(value("--rounds") ?? "") ?? 4)
+        }
         let warmup = value("--warmup") ?? "silence"
         let count = Int(value("--clips") ?? "") ?? 6
         TranscriptionModel.benchSuppressesAutoWarm = true
@@ -88,6 +94,51 @@ enum ColdStartBench {
             print("   typed then: \((o["transcript"] as? String) ?? "")")
             print("   warm now  : \(now)")
         }
+        return 0
+    }
+
+    /// Reproduce the "first dictation after launch comes back empty" bug: a
+    /// dictation waiting on the load resumes at the same instant the
+    /// post-load warm-up starts — two decodes on ONE WhisperKit instance.
+    /// Each round reloads nothing; it fires the warm-up decode and a real
+    /// clip's file-path decode (the app's fallback path) concurrently, then
+    /// the clip alone, and compares.
+    static func concurrentWithWarmUp(model: String, rounds: Int) async -> Int32 {
+        TranscriptionModel.benchSuppressesAutoWarm = true
+        let whisper = TranscriptionModel.shared
+        guard await whisper.ensureLoaded(model) else { print("✗ model"); return 2 }
+        guard let warm = TranscriptionModel.warmUpAudio ?? EngineCheck.readInt16WAV(URL(fileURLWithPath: "Resources/WarmUp.wav")),
+              let clip = BenchSupport.loadClips(minSeconds: 3, limit: 12).first else { print("✗ audio"); return 2 }
+        let alone = await whisper.transcribe(clip.url, model: model) ?? "(nil)"
+        print("clip alone: «\(alone.prefix(80))»")
+        for round in 1...rounds {
+            async let w = whisper.transcribeSamples(warm, model: model)
+            async let d = whisper.transcribe(clip.url, model: model)
+            let (warmText, clipText) = await (w, d)
+            print("round \(round): clip «\((clipText ?? "(nil)").prefix(80))»  ·  warm-up «\((warmText ?? "(nil)").prefix(40))»")
+        }
+        return 0
+    }
+
+    /// The exact launch sequence: the app selects the model (background load,
+    /// auto warm-up ON as in the app), and a dictation released immediately
+    /// takes the app's path — transcribeSamples (nil: not resident) → file
+    /// fallback, which joins the load and decodes when it's ready.
+    static func waitingDictation(model: String) async -> Int32 {
+        let whisper = TranscriptionModel.shared
+        guard let clip = BenchSupport.loadClips(minSeconds: 3, limit: 12).first,
+              let samples = BenchSupport.readWAV(clip.url) else { print("✗ audio"); return 2 }
+        let t0 = Date()
+        whisper.select(model)                         // app launch: background load
+        let voiced = Array(TranscriptionModel.trimSilence(samples))
+        // The app's path since Oct 7: wait for the model (no racing warm-up),
+        // then the normal in-memory decode.
+        let wasReady = whisper.isReady(model)
+        _ = await whisper.awaitReady(model)
+        let text = await whisper.transcribeSamples(voiced, model: model)
+        let viaSamples = !wasReady
+        print(String(format: "waiting dictation → %.2fs  waited=%@  «%@»", Date().timeIntervalSince(t0),
+                     viaSamples ? "yes" : "no", (text ?? "(nil)").isEmpty ? "(EMPTY)" : String((text ?? "(nil)").prefix(70))))
         return 0
     }
 }

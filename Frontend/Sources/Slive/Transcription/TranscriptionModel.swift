@@ -447,6 +447,20 @@ final class TranscriptionModel: ObservableObject {
         return isResident(model)
     }
 
+    /// A dictation is waiting for `model` — join its load (or start it) and
+    /// suppress the post-load warm-up: the waiting dictation IS the first
+    /// decode, and a warm-up racing it on the same freshly compiled model is
+    /// exactly what we don't want. True when ready.
+    func awaitReady(_ model: String) async -> Bool {
+        if isResident(model) { return true }
+        guard isDownloaded(model) else { select(model); return false }
+        dictationsWaiting[model, default: 0] += 1
+        defer { dictationsWaiting[model, default: 1] -= 1 }
+        await loadShared(model)
+        return isResident(model)
+    }
+    private var dictationsWaiting: [String: Int] = [:]
+
     /// Start `model`'s load, or join the one already running.
     private func loadShared(_ model: String) async {
         if let running = loadTasks[model] { await running.value; return }
@@ -670,6 +684,10 @@ final class TranscriptionModel: ObservableObject {
         if isResident(model) { statuses[model] = .ready; return }
         if loadingModels.contains(model) { return }        // already preparing
         if isDownloaded(model) {
+            // Mark it preparing NOW, not when the Task gets to run: callers
+            // (AppDelegate's dictation-first ordering) read the status right
+            // after this returns.
+            statuses[model] = .preparing("Loading")
             Task { await loadShared(model) }
         } else {
             statuses[model] = .notDownloaded
@@ -755,7 +773,10 @@ final class TranscriptionModel: ObservableObject {
         }
 
         do {
-            let p = try await withTimeout(seconds: 150) { [weak self] in
+            // 600s: a cold Neural Engine compile after a macOS update or a
+            // purged cache measured ~145s twice (Sep 29, Oct 7) — 150s was a
+            // coin flip, and a timeout leaves the model failed.
+            let p = try await withTimeout(seconds: 600) { [weak self] in
                 let kit = try await WhisperKit(config)           // setup only — fast
                 kit.modelStateCallback = { _, new in
                     Task { @MainActor in
@@ -772,13 +793,16 @@ final class TranscriptionModel: ObservableObject {
             statuses[model] = .ready
             onModelReady?(model)
             Log.stt(String(format: "READY \(model) in %.1fs (resident: \(pipes.keys.sorted()))", Date().timeIntervalSince(t0)))
-            NSLog("Slive: WhisperKit ready (\(model)).")
+            Log.event(String(format: "model ready: %@ in %.1fs%@", model, Date().timeIntervalSince(t0),
+                             dictationsWaiting[model, default: 0] > 0 ? " (a dictation is waiting)" : ""))
             // Immediately push the compiled graph through one tiny decode so
             // the FIRST real dictation pays inference only, not residency
             // (skipped on the Feather tier — its ethos is no idle spend).
-            if Settings.shared.resolvedSpeedTier.warmsAfterLoad, !Self.benchSuppressesAutoWarm { warmUp(model) }
+            if Settings.shared.resolvedSpeedTier.warmsAfterLoad, !Self.benchSuppressesAutoWarm,
+               dictationsWaiting[model, default: 0] == 0 { warmUp(model) }
         } catch is TimeoutError {
             loadingModels.remove(model)
+            Log.event("model load TIMED OUT: \(model)")
             statuses[model] = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
             Log.stt("TIMEOUT loading \(model)")
         } catch {
@@ -796,15 +820,16 @@ final class TranscriptionModel: ObservableObject {
         statuses[model] = .preparing("Compiling for the Neural Engine")
         let t0 = Date()
         do {
-            let engine = try await withTimeout(seconds: 300) { [basket] in
+            let engine = try await withTimeout(seconds: 600) { [basket] in
                 try await ParakeetEngine.load(p, basket: basket)
             }
             parakeets[model] = engine
             loadingModels.remove(model)
             statuses[model] = .ready
             onModelReady?(model)
-            Log.stt(String(format: "READY %@ in %.1fs", model, Date().timeIntervalSince(t0)))
-            if Settings.shared.resolvedSpeedTier.warmsAfterLoad, !Self.benchSuppressesAutoWarm { warmUp(model) }
+            Log.event(String(format: "model ready: %@ in %.1fs", model, Date().timeIntervalSince(t0)))
+            if Settings.shared.resolvedSpeedTier.warmsAfterLoad, !Self.benchSuppressesAutoWarm,
+               dictationsWaiting[model, default: 0] == 0 { warmUp(model) }
         } catch is TimeoutError {
             loadingModels.remove(model)
             statuses[model] = .failed("Timed out preparing this model. Try Re-download.")

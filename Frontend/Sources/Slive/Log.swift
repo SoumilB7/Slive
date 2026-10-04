@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Lightweight, runtime-gated diagnostic logging.
 ///
@@ -23,6 +24,17 @@ enum Log {
     static func app(_ message: @autoclosure () -> String)     { emit("app", message) }
     static func training(_ message: @autoclosure () -> String) { emit("training", message) }
     static func paste(_ message: @autoclosure () -> String)   { emit("paste", message) }
+
+    /// Always-on dictation event line (captured / waiting / decoded / typed /
+    /// dropped), PUBLIC in the unified log — NSLog'd strings show up as
+    /// `<private>`, which made the Oct 7 "first dictation never typed" bug
+    /// unreadable after the fact. Timings, models and states only — never
+    /// transcript text. Read with:
+    ///   /usr/bin/log show --last 1h --predicate 'subsystem == "com.slive.app"'
+    static func event(_ message: String) {
+        eventLogger.notice("\(message, privacy: .public)")
+    }
+    private static let eventLogger = Logger(subsystem: "com.slive.app", category: "events")
 
     private static func emit(_ category: String, _ message: () -> String) {
         guard enabled else { return }

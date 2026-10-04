@@ -392,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.show()
         recordStart = Date()
         if !recorder.start() {
-            NSLog("Slive: mic unavailable")
+            Log.event("mic unavailable — hold aborted")
             model.finishListening()
             hideOverlaySoon()
             return
@@ -461,7 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // and a new recording cancels it so a stale UI update never lands.
         transcribeTask = Task {
             defer { try? FileManager.default.removeItem(at: wavURL) }   // never persisted
-            NSLog("Slive: captured \(String(format: "%.1f", duration))s of audio")
+            Log.event(String(format: "captured %.1fs of audio (%@)", duration, action == .assist ? "assistant" : "dictation"))
             if Task.isCancelled { return }
 
             // Assistant: capture the screenshot IN PARALLEL with transcription —
@@ -483,8 +483,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // cost decode windows and trip fallback thresholds for nothing.
             let voiced = TranscriptionModel.trimSilence(samples)
             var transcript: String?
+            var waitedForModel = false
             if voiced.count > 16_000 / 3 {
+                // Released while the model is still being prepared (launch,
+                // purged compile cache, macOS update): wait for it, then take
+                // the NORMAL in-memory path. (Oct 7: the old path decoded the
+                // WAV on a just-compiled model, racing the post-load warm-up,
+                // came back empty and the dictation was silently dropped.)
+                if !whisper.isReady(whisperModel) {
+                    waitedForModel = true
+                    Log.event("dictation waiting for model \(whisperModel)")
+                    _ = await whisper.awaitReady(whisperModel)
+                    Log.event(String(format: "model ready after %.1fs of waiting", Date().timeIntervalSince(tTranscribe)))
+                }
                 transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
+                // The first decode on a freshly compiled model gets one retry.
+                if waitedForModel, (transcript ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+                    Log.event("decode after waiting came back empty — retrying once")
+                    transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
+                }
             }
             // File fallback: native-format recordings have no canonical
             // samples, and a failed samples decode (model still loading) also
@@ -496,16 +513,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Unconditional: one line per dictation, and THE number to check
             // whenever "dictation feels slow" comes up again.
             let decodeSeconds = Date().timeIntervalSince(tTranscribe)
-            NSLog("Slive: decoded %.1fs audio in %.2fs (%@)%@",
+            Log.event(String(format: "decoded %.1fs audio in %.2fs (%@) → %@%@",
                   duration, decodeSeconds, whisperModel,
+                  transcript == nil ? "nil" : ((transcript ?? "").isEmpty ? "EMPTY" : "\((transcript ?? "").count) chars"),
                   ProcessInfo.processInfo.isLowPowerModeEnabled
-                      ? " [LOW POWER MODE — decode throttled]" : "")
+                      ? " [LOW POWER MODE — decode throttled]" : ""))
             // (Speed-graph calibration happens inside transcribeSamples, where
             // the pipe is guaranteed resident — timing here can include a
             // model load, which once poisoned the graph into "~15s".)
-            if Task.isCancelled { return }
+            if Task.isCancelled { Log.event("dictation cancelled after decode (a newer hold or ✕)"); return }
             guard let text = transcript, !text.isEmpty else {
-                await MainActor.run { self.handleNoTranscript() }
+                let hadSpeech = voiced.count > 16_000 / 3
+                await MainActor.run { self.handleNoTranscript(afterWaiting: waitedForModel && hadSpeech) }
                 return
             }
 
@@ -582,8 +601,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let outcome = await continuous.stop()
             endDictationActivity()
             if let releasedAt {
-                NSLog("Slive: stream release→final %.2fs (tail+final pass)",
-                      Date().timeIntervalSince(releasedAt))
+                Log.event(String(format: "stream release→final %.2fs (tail+final pass)",
+                      Date().timeIntervalSince(releasedAt)))
                 self.releasedAt = nil
             }
             let text = outcome.text
@@ -701,8 +720,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Empty/failed transcript. If the model isn't ready, say so (with what to
     /// do); otherwise just fade the overlay (silence / a mis-hit key).
-    @MainActor private func handleNoTranscript() {
+    @MainActor private func handleNoTranscript(afterWaiting: Bool = false) {
         endDictationActivity()
+        Log.event("no transcript\(afterWaiting ? " after waiting for the model" : "")")
+        if afterWaiting {
+            // Never drop a real dictation silently: it had speech, it waited
+            // for the model, and still came back empty.
+            let msg = "Sorry — that one didn't come through while the model was getting ready. Please say it again."
+            model.showResult(msg)
+            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
+            overlay.setInteractive(true)
+            scheduleCollapse(after: 6.0)
+            return
+        }
         let message: String?
         switch whisper.status(for: whisper.servingModel(wanted: Settings.shared.whisperModel,
                                                         fallback: servingDictationModel)) {
@@ -774,8 +804,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         endDictationActivity()
         if let releasedAt {
-            NSLog("Slive: release→typed %.2fs (tail+decode+dispatch)",
-                  Date().timeIntervalSince(releasedAt))
+            Log.event(String(format: "release→%@ %.2fs (tail+decode+dispatch)", typed ? "typed" : "copy box",
+                  Date().timeIntervalSince(releasedAt)))
             self.releasedAt = nil
         }
         if typed {
