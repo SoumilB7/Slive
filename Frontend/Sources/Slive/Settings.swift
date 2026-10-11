@@ -161,8 +161,9 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(autoInsert, forKey: Keys.autoInsert) }
     }
 
-    /// Custom vocabulary — names, jargon, acronyms — sent with each request so
-    /// the model spells them the way the user expects.
+    /// Custom vocabulary — names, jargon, acronyms. Every dictation is
+    /// spelling-corrected against it (`VocabularyCorrector`) and the
+    /// ground-truth labeler is told to prefer these spellings.
     @Published var hotwords: String {
         didSet { UserDefaults.standard.set(hotwords, forKey: Keys.hotwords) }
     }

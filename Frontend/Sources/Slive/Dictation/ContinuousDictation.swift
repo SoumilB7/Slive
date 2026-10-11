@@ -36,6 +36,10 @@ final class ContinuousDictation {
     private var typing = false
     /// Latest normalized transcript — the fallback text if the final pass fails.
     private var lastTranscript = ""
+    /// The user's Vocabulary, captured at start: every streamed pass and the
+    /// final text are spelling-corrected against it, so the field never shows
+    /// one spelling live and swaps to another on release.
+    private var vocabulary = ""
 
     /// Live mic energy (0…~1) forwarded for the waveform pill.
     var onEnergy: ((Float) -> Void)?
@@ -54,6 +58,7 @@ final class ContinuousDictation {
         self.model = model
         active = true
         lastTranscript = ""
+        vocabulary = Settings.shared.hotwords
         let canType = PasteEngine.canStreamType()
         typing = canType
         Log.live("start — model=\(model) cps=\(Int(Settings.shared.continuousTypeCPS)) canType=\(canType)")
@@ -61,7 +66,8 @@ final class ContinuousDictation {
         let ok = whisper.startLiveDictation(model: model) { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
-            let text = Self.normalize(transcript)
+            let text = VocabularyCorrector.correct(Self.normalize(transcript),
+                                                   hotwords: self.vocabulary)
             self.lastTranscript = text
             // Just move the goal — the typist eases the field toward it smoothly.
             self.typist.setTarget(text)
@@ -110,8 +116,11 @@ final class ContinuousDictation {
         if final == nil {
             final = (await whisper.transcribeSamples(snapshot, model: model)).map(Self.normalize)
         }
-        // Fall back to the last streamed transcript if the final pass fails.
-        let finalText = final ?? lastTranscript
+        // Fall back to the last streamed transcript if the final pass fails
+        // (already corrected; the stitched/full text is corrected here, after
+        // the seam merge so a term split across the seam still matches).
+        let finalText = final.map { VocabularyCorrector.correct($0, hotwords: vocabulary) }
+            ?? lastTranscript
 
         let result: String
         if typing {

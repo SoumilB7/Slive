@@ -588,7 +588,7 @@ struct SettingsView: View {
                 HStack(alignment: .top, spacing: 16) {
                     VocabularyField(
                         label: "Custom words",
-                        hint: "Names, jargon, acronyms — comma or space between them. So Slive spells your world right.",
+                        hint: "Names, jargon, acronyms — comma or new line between them. Slive spells them exactly as you type them.",
                         height: 96, text: $settings.hotwords)
                     VocabularyField(
                         label: "Context prompt",
@@ -598,7 +598,7 @@ struct SettingsView: View {
             } else {
                 VocabularyField(
                     label: "Custom words",
-                    hint: "Names, jargon, acronyms — comma or space between them. So Slive spells your world right.",
+                    hint: "Names, jargon, acronyms — comma or new line between them. Slive spells them exactly as you type them.",
                     height: 96, text: $settings.hotwords)
                 VocabularyField(
                     label: "Context prompt",

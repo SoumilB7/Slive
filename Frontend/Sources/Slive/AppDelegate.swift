@@ -446,6 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let action = currentAction
         let whisperModel = whisper.servingModel(wanted: Settings.shared.whisperModel,
                                                 fallback: servingDictationModel)
+        let vocabulary = Settings.shared.hotwords
         // Released while the model is still being prepared (first launch, or
         // macOS purged its compiled-model cache — a minute or two): say so
         // instead of silent "processing" dots. The dictation is kept and
@@ -522,11 +523,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the pipe is guaranteed resident — timing here can include a
             // model load, which once poisoned the graph into "~15s".)
             if Task.isCancelled { Log.event("dictation cancelled after decode (a newer hold or ✕)"); return }
-            guard let text = transcript, !text.isEmpty else {
+            guard let decoded = transcript, !decoded.isEmpty else {
                 let hadSpeech = voiced.count > 16_000 / 3
                 await MainActor.run { self.handleNoTranscript(afterWaiting: waitedForModel && hadSpeech) }
                 return
             }
+            // Spell the user's Vocabulary terms the way they typed them
+            // (both engines; a no-op when the list is empty).
+            let text = VocabularyCorrector.correct(decoded, hotwords: vocabulary)
 
             // 2. Route the transcript: plain dictation types/shows it; the
             //    assistant shortcut needs the (always-on) Python backend to reach
