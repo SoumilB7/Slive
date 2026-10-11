@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import math
 import os
 import random
 import shutil
@@ -29,12 +30,13 @@ class PipelineConfig:
     output_root: Path | None = None
     source_model: str = DEFAULT_TRAINING_MODEL
     base_model: str = ""
-    method: str = "qlora"
+    method: str = "hybrid"
     max_ram_gb: float = 12.0
     epochs: int = 3
-    learning_rate: float = 1e-5
-    lora_rank: int = 4
-    batch_size: int = 1
+    learning_rate: float = 1e-4
+    lora_rank: int = 16
+    kl_weight: float = 0.3
+    # QLoRA (CUDA host) only — the local methods batch by METHOD_MICRO_BATCH.
     gradient_accumulation_steps: int = 8
     kl_every: int = 4
 
@@ -47,10 +49,72 @@ class PipelineConfig:
             base_model=profile.hf_model,
             learning_rate=profile.learning_rate,
             lora_rank=profile.lora_rank,
-            gradient_accumulation_steps=profile.gradient_accumulation_steps,
-            kl_every=profile.kl_every,
+            kl_weight=profile.kl_weight,
             **kwargs,
         )
+
+
+#: Local training methods (Apple silicon / CPU / CUDA alike). Measured Oct 12
+#: on an M4 Air 16GB with turbo + 394 clips: full-forward LoRA ran 100 s/clip
+#: (~11 h per epoch) and a torchao NF4 "QLoRA" 161 s/clip — the frozen 32-layer
+#: encoder dominates, so it runs ONCE per clip and its output is cached:
+#:   hybrid  — cache the hidden state entering the top quarter of the encoder;
+#:             LoRA on those layers (accent) + every decoder linear
+#:             (vocabulary). 3.1 s/clip/epoch, 6.2 GB Metal peak.
+#:   decoder — cache the encoder output; LoRA on the decoder only. 0.33
+#:             s/clip/epoch, 4.4 GB — quick, but it lowercased generic
+#:             sentences where hybrid did not.
+#: Caching costs ~2.7 s/clip once (turbo).
+LOCAL_METHODS = ("hybrid", "decoder")
+TRAINING_METHODS = (*LOCAL_METHODS, "qlora")
+METHOD_MICRO_BATCH = {"hybrid": 2, "decoder": 8}
+EFFECTIVE_BATCH = 8
+
+
+def encoder_cut(method: str, encoder_layers: int) -> int:
+    """Index of the first trainable encoder layer (== encoder_layers: frozen)."""
+    if method == "decoder":
+        return encoder_layers
+    return encoder_layers - max(1, encoder_layers // 4)
+
+
+def lora_target_pattern(cut: int, encoder_layers: int) -> str:
+    """PEFT full-match regex: every decoder attention/MLP linear, plus the
+    encoder layers from `cut` up."""
+    decoder = (r".*decoder\.layers\.\d+\."
+               r"((self_attn|encoder_attn)\.(q_proj|k_proj|v_proj|out_proj)|fc1|fc2)")
+    if cut >= encoder_layers:
+        return decoder
+    layers = "|".join(str(i) for i in range(cut, encoder_layers))
+    encoder = (rf".*encoder\.layers\.({layers})\."
+               r"(self_attn\.(q_proj|k_proj|v_proj|out_proj)|fc1|fc2)")
+    return f"({decoder})|({encoder})"
+
+
+def lr_factor(update: int, total: int) -> float:
+    """Linear warm-up over the first 10% of updates, then cosine to zero."""
+    warm = max(1, total // 10)
+    if update < warm:
+        return (update + 1) / warm
+    progress = min(1.0, (update - warm) / max(1, total - warm))
+    return 0.5 * (1 + math.cos(math.pi * progress))
+
+
+def pad_label_batch(
+    sequences: list[list[int]], pad_id: int, forced: int
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Teacher-forcing inputs + labels from full token sequences
+    (SOT, prefix…, text…, EOT). The first `forced` labels are the prefix tokens
+    WhisperKit forces at inference (language/task/notimestamps) — masked, so
+    the loss is spent on the words. Padding is masked with -100."""
+    width = max(len(seq) for seq in sequences) - 1
+    inputs, labels = [], []
+    for seq in sequences:
+        n = len(seq) - 1
+        inputs.append(seq[:-1] + [pad_id] * (width - n))
+        target = [-100] * min(forced, n) + seq[1 + forced:]
+        labels.append(target + [-100] * (width - len(target)))
+    return inputs, labels
 
 
 Progress = Callable[..., None]
@@ -94,7 +158,11 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     merged_dir = run_dir / "merged-hf"
     converted_dir = run_dir / "whisperkit"
 
-    _train_lora(config, report.eligible_samples, adapter_dir, progress, memory)
+    if config.method == "qlora":
+        _train_lora(config, report.eligible_samples, adapter_dir, progress, memory)
+    else:
+        _train_cached(config, report.eligible_samples, adapter_dir, run_dir / "encoder-cache",
+                      progress, memory)
     memory.check("adapter merge")
     progress(stage="merging", message="Merging LoRA into Balanced Whisper", value=0.76)
     _merge_adapter(config, adapter_dir, merged_dir)
@@ -133,23 +201,27 @@ def _training_imports():
 
 
 class MemoryGuard:
-    """Cooperative total-process RSS ceiling for the in-process trainer."""
+    """Cooperative ceiling on process RSS + Metal allocations for the
+    in-process trainer. On Apple silicon the model and activations live in
+    Metal buffers that RSS doesn't count (measured: 0.3 GB RSS at a 6.2 GB
+    Metal peak), so the trainer plugs in `extra_bytes`."""
 
     def __init__(self, limit_gb: float):
         self.limit_gb = limit_gb
         self.limit_bytes = int(limit_gb * 1024**3)
         self.process = psutil.Process()
+        self.extra_bytes: Callable[[], int] = lambda: 0
 
     def used_gb(self) -> float:
-        return self.process.memory_info().rss / 1024**3
+        return (self.process.memory_info().rss + self.extra_bytes()) / 1024**3
 
     def check(self, stage: str) -> None:
-        used = self.process.memory_info().rss
+        used = self.process.memory_info().rss + self.extra_bytes()
         if used > self.limit_bytes:
             raise RuntimeError(
                 f"SFT stopped during {stage}: RAM use reached {used / 1024**3:.2f} GB, "
-                f"above the {self.limit_gb:g} GB limit. Choose a smaller model, QLoRA "
-                "on CUDA, or raise the limit."
+                f"above the {self.limit_gb:g} GB limit. Choose a smaller model, the "
+                "Decoder method, or raise the limit."
             )
 
 
@@ -254,6 +326,161 @@ def _train_lora(
     model.save_pretrained(adapter_dir)
     processor.save_pretrained(adapter_dir)
     del model
+
+
+def _train_cached(
+    config: PipelineConfig,
+    samples,
+    adapter_dir: Path,
+    cache_dir: Path,
+    progress: Progress,
+    memory: MemoryGuard,
+) -> None:
+    """The local trainer (hybrid / decoder): encode every clip once through
+    the frozen encoder, then train LoRA on top of the cache with
+    CE + kl_weight x KL(base || fine-tuned) against the same weights with the
+    adapter disabled (no second model in memory)."""
+    import numpy as np
+
+    torch, LoraConfig, _, get_peft_model, _, Model, Processor = _training_imports()
+    device = _device(torch)
+    if device.type == "mps":
+        memory.extra_bytes = torch.mps.driver_allocated_memory
+    processor = Processor.from_pretrained(config.base_model)
+    model = Model.from_pretrained(config.base_model, dtype=torch.float32).to(device)
+    model.config.use_cache = False
+    model.eval()
+    memory.check("model loading")
+
+    tokenizer = processor.tokenizer
+    if getattr(model.generation_config, "is_multilingual", True):
+        tokenizer.set_prefix_tokens(language="en", task="transcribe", predict_timestamps=False)
+    else:
+        tokenizer.set_prefix_tokens(predict_timestamps=False)
+    forced = len(tokenizer.prefix_tokens) - 1
+    sequences = [tokenizer(sample.reference_text).input_ids for sample in samples]
+
+    # 1. Cache — the frozen encoder runs once per clip.
+    encoder_layers = model.config.encoder_layers
+    cut = encoder_cut(config.method, encoder_layers)
+    encoder = model.model.encoder
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / "encoder.npy"
+    cache = np.lib.format.open_memmap(
+        cache_path, mode="w+", dtype=np.float16,
+        shape=(len(samples), model.config.max_source_positions, model.config.d_model),
+    )
+    with torch.no_grad():
+        for start in range(0, len(samples), 4):
+            chunk = samples[start:start + 4]
+            audio = [_load_audio(sample.audio.path)[0][: 30 * 16_000] for sample in chunk]
+            features = processor.feature_extractor(
+                audio, sampling_rate=16_000, return_tensors="pt"
+            ).input_features.to(device)
+            out = encoder(features, output_hidden_states=cut < encoder_layers)
+            hidden = out.hidden_states[cut] if cut < encoder_layers else out.last_hidden_state
+            # Whole-batch .cpu() first: on MPS a one-shot device+dtype cast of
+            # a batch SLICE returned NaN for every row but the first.
+            cache[start:start + len(chunk)] = hidden.cpu().to(torch.float16).numpy()
+            memory.check("encoding clips")
+            done = start + len(chunk)
+            progress(stage="training", message=f"Encoding clips {done}/{len(samples)}",
+                     value=0.06 + 0.12 * done / len(samples))
+    cache.flush()
+
+    # 2. LoRA on top of the cache.
+    model = get_peft_model(model, LoraConfig(
+        r=config.lora_rank,
+        lora_alpha=config.lora_rank,
+        use_rslora=True,
+        lora_dropout=0.05,
+        bias="none",
+        target_modules=lora_target_pattern(cut, encoder_layers),
+    ))
+    core = model.base_model.model
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=config.learning_rate, weight_decay=0.0)
+    micro = METHOD_MICRO_BATCH[config.method]
+    accumulation = max(1, EFFECTIVE_BATCH // micro)
+    steps_per_epoch = math.ceil(len(samples) / micro)
+    updates_per_epoch = math.ceil(steps_per_epoch / accumulation)
+    total_updates = max(1, config.epochs * updates_per_epoch)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, lambda update: lr_factor(update, total_updates))
+
+    def top_encoder(hidden):
+        for layer in core.model.encoder.layers[cut:]:
+            if torch.is_grad_enabled():
+                # 1500-frame activations through the top layers OOM'd at
+                # batch 4 without checkpointing.
+                hidden = torch.utils.checkpoint.checkpoint(layer, hidden, None, use_reentrant=False)
+            else:
+                hidden = layer(hidden, None)
+            hidden = hidden[0] if isinstance(hidden, tuple) else hidden
+        return core.model.encoder.layer_norm(hidden)
+
+    def logits(encoded, inputs, mask):
+        hidden = core.model.decoder(input_ids=inputs, encoder_hidden_states=encoded).last_hidden_state
+        # Vocab projection on real label rows only: the 51,866-way proj_out
+        # over padding drove Metal to 11 GB at batch 8.
+        return core.proj_out(hidden[mask])
+
+    model.train()
+    update = 0
+    for epoch in range(config.epochs):
+        order = list(range(len(samples)))
+        random.Random(17 + epoch).shuffle(order)
+        batches = [order[i:i + micro] for i in range(0, len(order), micro)]
+        window_loss, window_kl = [], []
+        for index, batch in enumerate(batches):
+            memory.check(f"epoch {epoch + 1} step {index + 1}")
+            rows = sorted(batch)
+            cached = torch.from_numpy(np.ascontiguousarray(cache[rows])).to(device, torch.float32)
+            inputs, labels = pad_label_batch(
+                [sequences[i] for i in rows], tokenizer.eos_token_id, forced)
+            inputs = torch.tensor(inputs, device=device)
+            labels = torch.tensor(labels, device=device)
+            mask = labels != -100
+            encoded = top_encoder(cached) if cut < encoder_layers else cached
+            tuned = logits(encoded, inputs, mask)
+            with torch.no_grad(), model.disable_adapter():
+                base_encoded = top_encoder(cached) if cut < encoder_layers else cached
+                base = logits(base_encoded, inputs, mask)
+            ce = torch.nn.functional.cross_entropy(tuned, labels[mask])
+            log_p = torch.log_softmax(tuned, dim=-1)
+            log_q = torch.log_softmax(base, dim=-1)
+            kl = (log_q.exp() * (log_q - log_p)).sum(-1).mean()
+            loss = ce + config.kl_weight * kl
+            (loss / accumulation).backward()
+            window_loss.append(ce.item())
+            window_kl.append(kl.item())
+            del tuned, base, log_p, log_q, loss
+            if device.type == "mps":
+                torch.mps.empty_cache()
+            if (index + 1) % accumulation == 0 or index + 1 == len(batches):
+                torch.nn.utils.clip_grad_norm_(params, 1.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+                update += 1
+                progress(
+                    stage="training",
+                    message=f"Epoch {epoch + 1}/{config.epochs} · step {index + 1}/{len(batches)}",
+                    value=0.18 + 0.56 * (update / total_updates),
+                    total_updates=total_updates,
+                    metric={
+                        "update": update,
+                        "epoch": epoch + 1,
+                        "loss": round(sum(window_loss) / len(window_loss), 4),
+                        "kl": round(sum(window_kl) / len(window_kl), 5),
+                    },
+                )
+                window_loss, window_kl = [], []
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(adapter_dir)
+    processor.save_pretrained(adapter_dir)
+    del cache, model
+    shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) -> None:

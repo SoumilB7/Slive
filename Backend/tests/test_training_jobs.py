@@ -8,6 +8,7 @@ import pytest
 from flowy.training import jobs
 from flowy.training.pipeline import PipelineConfig
 from flowy.training.pipeline import MemoryGuard
+from flowy.training import pipeline
 from flowy.training.models import get_training_model, training_models_payload
 
 
@@ -24,22 +25,82 @@ def test_catalog_covers_pinned_whisperkit_variants_and_optimized_alias() -> None
         "medium", "medium.en", "large", "large-v2", "large-v3",
         "large-v3-v20240930_626MB",
     }
+    # Balanced is turbo (4 decoder layers) — training plain large-v3 made a
+    # different model.
     assert get_training_model("large-v3-v20240930_626MB").hf_model == (
-        "openai/whisper-large-v3"
+        "openai/whisper-large-v3-turbo"
     )
 
 
-def test_profiles_reduce_large_model_update_pressure() -> None:
+def test_profiles_move_large_models_slower() -> None:
     tiny = get_training_model("tiny.en")
     large = get_training_model("large-v3")
     assert large.learning_rate < tiny.learning_rate
-    assert large.lora_rank < tiny.lora_rank
-    assert large.gradient_accumulation_steps > tiny.gradient_accumulation_steps
+    assert get_training_model("large-v3-v20240930_626MB").learning_rate == 1e-4
 
 
 def test_start_job_rejects_ram_cap_below_selected_profile() -> None:
-    with pytest.raises(ValueError, match="needs about 14 GB RAM"):
-        jobs.start_job(source_model="large-v3", method="lora", max_ram_gb=8)
+    with pytest.raises(ValueError, match="needs about 10 GB RAM"):
+        jobs.start_job(source_model="large-v3", method="hybrid", max_ram_gb=8)
+
+
+def test_start_job_rejects_unknown_and_retired_methods() -> None:
+    for method in ("lora", "full"):
+        with pytest.raises(ValueError, match="Unsupported training method"):
+            jobs.start_job(source_model="tiny", method=method)
+
+
+def test_encoder_cut_trains_top_quarter_or_freezes() -> None:
+    assert pipeline.encoder_cut("hybrid", 32) == 24
+    assert pipeline.encoder_cut("hybrid", 4) == 3
+    assert pipeline.encoder_cut("decoder", 32) == 32
+
+
+def test_lora_targets_cover_decoder_and_top_encoder_only() -> None:
+    import re
+
+    pattern = pipeline.lora_target_pattern(24, 32)
+    hits = [
+        "model.decoder.layers.0.self_attn.q_proj",
+        "model.decoder.layers.3.encoder_attn.out_proj",
+        "model.decoder.layers.2.fc2",
+        "model.encoder.layers.24.self_attn.v_proj",
+        "model.encoder.layers.31.fc1",
+    ]
+    misses = [
+        "model.encoder.layers.23.self_attn.q_proj",
+        "model.encoder.layers.2.fc1",
+        "model.encoder.conv1",
+        "proj_out",
+    ]
+    assert all(re.fullmatch(pattern, name) for name in hits)
+    assert not any(re.fullmatch(pattern, name) for name in misses)
+    decoder_only = pipeline.lora_target_pattern(32, 32)
+    assert not re.fullmatch(decoder_only, "model.encoder.layers.31.fc1")
+    assert re.fullmatch(decoder_only, "model.decoder.layers.1.fc1")
+
+
+def test_lr_factor_warms_up_then_decays_to_zero() -> None:
+    assert pipeline.lr_factor(0, 100) == pytest.approx(0.1)
+    assert pipeline.lr_factor(9, 100) == pytest.approx(1.0)
+    assert pipeline.lr_factor(55, 100) == pytest.approx(0.5)
+    assert pipeline.lr_factor(100, 100) == pytest.approx(0.0)
+
+
+def test_pad_label_batch_masks_forced_prefix_and_padding() -> None:
+    # SOT en transcribe notimestamps w1 w2 EOT  /  SOT en transcribe notimestamps w1 EOT
+    inputs, labels = pipeline.pad_label_batch(
+        [[1, 2, 3, 4, 10, 11, 99], [1, 2, 3, 4, 10, 99]], pad_id=99, forced=3)
+    assert inputs == [[1, 2, 3, 4, 10, 11], [1, 2, 3, 4, 10, 99]]
+    assert labels == [[-100, -100, -100, 10, 11, 99], [-100, -100, -100, 10, 99, -100]]
+
+
+def test_memory_guard_counts_metal_allocations(monkeypatch) -> None:
+    guard = MemoryGuard(4)
+    monkeypatch.setattr(guard.process, "memory_info", lambda: type("M", (), {"rss": 1 * 1024**3})())
+    guard.extra_bytes = lambda: 4 * 1024**3
+    with pytest.raises(RuntimeError, match="above the 4 GB limit"):
+        guard.check("training")
 
 
 def test_memory_guard_stops_after_process_crosses_cap(monkeypatch) -> None:

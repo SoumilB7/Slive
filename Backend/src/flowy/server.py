@@ -329,7 +329,7 @@ async def local_delete_endpoint(req: LocalDeleteRequest) -> JSONResponse:
 
 class TrainingStartRequest(BaseModel):
     source_model: str
-    method: str = "qlora"
+    method: str = "hybrid"
     #: Optional user-chosen name for the finished model (sanitized server-side;
     #: empty → the timestamped default).
     name: str | None = None

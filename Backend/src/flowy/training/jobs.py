@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from flowy.training.pipeline import PipelineConfig, run_pipeline
+from flowy.training.pipeline import TRAINING_METHODS, PipelineConfig, run_pipeline
 from flowy.training.models import DEFAULT_TRAINING_MODEL, get_training_model
 from flowy.training.store import LabelPolicy, TrainingStore
 
@@ -93,7 +93,7 @@ def readiness(store_root: Path | str | None = None) -> dict:
 def start_job(
     *,
     source_model: str = DEFAULT_TRAINING_MODEL,
-    method: str = "qlora",
+    method: str = "hybrid",
     custom_name: str | None = None,
     max_ram_gb: float = 12.0,
     store_root: Path | str | None = None,
@@ -101,7 +101,7 @@ def start_job(
     runner: Callable[[PipelineConfig, Callable[..., None]], Path] = run_pipeline,
 ) -> TrainingJob:
     profile = get_training_model(source_model)
-    if method not in {"lora", "qlora"}:
+    if method not in TRAINING_METHODS:
         raise ValueError(f"Unsupported training method: {method}")
     if not math.isfinite(max_ram_gb) or not 2 <= max_ram_gb <= 128:
         raise ValueError("SFT RAM limit must be between 2 and 128 GB")

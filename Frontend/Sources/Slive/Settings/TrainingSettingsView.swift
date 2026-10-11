@@ -20,7 +20,7 @@ struct TrainingSettingsView: View {
     @State private var checking = false
     @State private var trainingModels: [WhisperTrainingModel] = []
     @State private var selectedModel = "large-v3-v20240930_626MB"
-    @State private var selectedMethod = "qlora"
+    @State private var selectedMethod = TrainingMethod.hybrid
     /// Optional user-chosen name for the finished model (fine-tunes only —
     /// stock models keep their names). Empty → the timestamped default.
     @State private var customName = ""
@@ -58,9 +58,9 @@ struct TrainingSettingsView: View {
     private var stages: [StageSpec] {
         let sft: String
         if let model = selectedTrainingModel, let profile = model.profileSummary {
-            sft = "\(selectedMethod.uppercased()) · \(profile)"
+            sft = "\(TrainingMethod.label(selectedMethod)) · \(profile)"
         } else {
-            sft = "LoRA / QLoRA · size-aware profile"
+            sft = "LoRA · size-aware profile"
         }
         return [
             .init(keys: ["preparing", "dataset"], icon: "waveform",
@@ -168,8 +168,9 @@ struct TrainingSettingsView: View {
                 .font(SliveTheme.font(11, .semibold))
                 .foregroundStyle(SliveTheme.textSecondary)
             Picker("", selection: $selectedMethod) {
-                Text("QLoRA (4-bit CUDA)").tag("qlora")
-                Text("LoRA (this Mac)").tag("lora")
+                Text("Hybrid (this Mac)").tag(TrainingMethod.hybrid)
+                Text("Decoder only (quick)").tag(TrainingMethod.decoder)
+                Text("QLoRA (4-bit CUDA)").tag(TrainingMethod.qlora)
             }
             .labelsHidden().pickerStyle(.menu).fixedSize()
             .disabled(job?.isActive == true)
@@ -236,7 +237,7 @@ struct TrainingSettingsView: View {
 
     /// The collapsed row still tells you the two values you'd most want to check.
     private var advancedSummary: String {
-        "\(selectedMethod.uppercased()) · \(Int(maxRamGB)) GB cap"
+        "\(TrainingMethod.label(selectedMethod)) · \(Int(maxRamGB)) GB cap"
     }
 
     private var advancedBody: some View {
@@ -252,10 +253,7 @@ struct TrainingSettingsView: View {
                     Text(model.detail).sliveCaption()
                 }
             }
-            if selectedMethod == "qlora" {
-                Text("QLoRA uses NF4 + double quantization during SFT and needs a CUDA/bitsandbytes host. Apple MPS isn't a supported NF4 backend — choose LoRA to train locally on this Mac.")
-                    .sliveCaption()
-            }
+            Text(methodCaption).sliveCaption()
 
             Divider().overlay(SliveTheme.divider)
 
@@ -273,7 +271,7 @@ struct TrainingSettingsView: View {
                         .foregroundStyle(SliveTheme.accent)
                         .frame(width: 42, alignment: .trailing)
                     if let model = selectedTrainingModel {
-                        let recommended = selectedMethod == "qlora"
+                        let recommended = selectedMethod == TrainingMethod.qlora
                             ? model.qloraRamGB : model.loraRamGB
                         Text("~\(Int(recommended)) GB recommended")
                             .font(SliveTheme.captionFont)
@@ -316,10 +314,10 @@ struct TrainingSettingsView: View {
         .innerWell()
     }
 
-    /// The est-time readout (LoRA on this Mac is estimable; QLoRA depends on the
+    /// The est-time readout (Hybrid/Decoder on this Mac are estimable; QLoRA depends on the
     /// CUDA host; both need eligible audio to know).
     @ViewBuilder private var estTimeValue: some View {
-        if selectedMethod == "qlora" {
+        if selectedMethod == TrainingMethod.qlora {
             Text("depends on your CUDA host")
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(SliveTheme.textTertiary)
@@ -338,26 +336,45 @@ struct TrainingSettingsView: View {
         }
     }
 
+    /// What the selected method trains, and what it costs — one caption.
+    private var methodCaption: String {
+        switch selectedMethod {
+        case TrainingMethod.hybrid:
+            return "Runs each recording through the frozen encoder once, then trains the top quarter of the encoder (your accent) and the decoder (your words). Best quality in testing; ~6 GB on this Mac."
+        case TrainingMethod.decoder:
+            return "Trains only the decoder (your words and formatting) on top of a one-time encoding pass — about 3× quicker than Hybrid overall, but it can't learn your accent and drifted on casing in testing."
+        default:
+            return "QLoRA uses NF4 + double quantization during SFT and needs a CUDA/bitsandbytes host. On Apple silicon 4-bit is slower than Hybrid with no memory win — choose Hybrid to train on this Mac."
+        }
+    }
+
     // MARK: - Time estimates
 
-    /// Rough SFT minutes per minute of eligible audio, per epoch, on Apple
-    /// silicon — measured order-of-magnitude by checkpoint family, not a
-    /// promise. The tail is merge + ANE conversion + install.
-    private static let sftMinutesPerAudioMinute: [String: Double] = [
-        "tiny": 0.4, "base": 0.8, "small": 2, "medium": 5, "large": 10,
+    /// Minutes per minute of eligible audio, measured Oct 2026 on an M4 Air
+    /// with turbo (large family): the one-off encoding pass, then each epoch
+    /// of the method. Other families scale by rough model size — rough, not
+    /// a promise. The tail is merge + ANE conversion + install.
+    private static let encodeMinutesPerAudioMinute = 0.21
+    private static let epochMinutesPerAudioMinute: [String: Double] = [
+        TrainingMethod.hybrid: 0.24, TrainingMethod.decoder: 0.026,
+    ]
+    private static let familyScale: [String: Double] = [
+        "tiny": 0.05, "base": 0.1, "small": 0.3, "medium": 0.6, "large": 1,
     ]
     private static let tailMinutes: [String: Double] = [
         "tiny": 3, "base": 4, "small": 7, "medium": 14, "large": 26,
     ]
 
-    /// Pre-run whole-pipeline estimate for LoRA on this Mac (nil when the
-    /// audio pool is empty or the family is unknown).
+    /// Pre-run whole-pipeline estimate for the local methods (nil when the
+    /// audio pool is empty or the family/method is unknown).
     private var estimatedMinutes: Double? {
         guard let model = selectedTrainingModel,
               let audio = readiness?.eligibleAudioMinutes, audio > 0,
-              let rate = Self.sftMinutesPerAudioMinute[model.family]
+              let scale = Self.familyScale[model.family],
+              let epoch = Self.epochMinutesPerAudioMinute[selectedMethod]
         else { return nil }
-        return audio * rate * 3 + (Self.tailMinutes[model.family] ?? 5)
+        let sft = audio * scale * (Self.encodeMinutesPerAudioMinute + epoch * 3)
+        return sft + (Self.tailMinutes[model.family] ?? 5)
     }
 
     private func timeText(_ minutes: Double) -> String {
@@ -681,7 +698,7 @@ struct TrainingSettingsView: View {
     private var outputCard: some View {
         SettingsCard("OUTPUT MODEL") {
             infoRow("Base", job?.baseModel ?? selectedTrainingModel?.hfModel ?? "Loading models…")
-            infoRow("Method", (job?.method ?? selectedMethod).uppercased())
+            infoRow("Method", TrainingMethod.label(job?.method ?? selectedMethod))
             infoRow("RAM cap", "\(Int(job?.maxRamGB ?? maxRamGB)) GB")
             infoRow("Name", job?.modelName
                     ?? (customName.trimmingCharacters(in: .whitespaces).isEmpty
@@ -750,7 +767,7 @@ struct TrainingSettingsView: View {
                 }
                 if let job, job.isActive {
                     selectedModel = job.sourceModel
-                    selectedMethod = job.method
+                    selectedMethod = job.method == "lora" ? TrainingMethod.hybrid : job.method
                     maxRamGB = job.maxRamGB
                 }
                 if let job, job.isActive { poll(job.id) }

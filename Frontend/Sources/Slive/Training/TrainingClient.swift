@@ -8,12 +8,11 @@ struct WhisperTrainingModel: Decodable, Identifiable {
     let multilingual: Bool
     let detail: String
     // The size-aware training profile the backend picked for this checkpoint:
-    // smaller models take more adapter capacity and update more often; large
-    // ones move slower and accumulate longer.
+    // LoRA rank, learning rate (smaller models move faster) and the weight of
+    // the KL-to-base term that keeps the model from drifting.
     let learningRate: Double
     let loraRank: Int
-    let gradientAccumulationSteps: Int
-    let klEvery: Int
+    let klWeight: Double
     let loraRamGB: Double
     let qloraRamGB: Double
 
@@ -22,8 +21,7 @@ struct WhisperTrainingModel: Decodable, Identifiable {
         case hfModel = "hf_model"
         case learningRate = "learning_rate"
         case loraRank = "lora_rank"
-        case gradientAccumulationSteps = "gradient_accumulation_steps"
-        case klEvery = "kl_every"
+        case klWeight = "kl_weight"
         case loraRamGB = "lora_ram_gb"
         case qloraRamGB = "qlora_ram_gb"
     }
@@ -39,19 +37,35 @@ struct WhisperTrainingModel: Decodable, Identifiable {
         // Tolerate a backend one release behind (no profile fields yet).
         learningRate = try c.decodeIfPresent(Double.self, forKey: .learningRate) ?? 0
         loraRank = try c.decodeIfPresent(Int.self, forKey: .loraRank) ?? 0
-        gradientAccumulationSteps = try c.decodeIfPresent(Int.self, forKey: .gradientAccumulationSteps) ?? 0
-        klEvery = try c.decodeIfPresent(Int.self, forKey: .klEvery) ?? 0
+        klWeight = try c.decodeIfPresent(Double.self, forKey: .klWeight) ?? 0
         loraRamGB = try c.decodeIfPresent(Double.self, forKey: .loraRamGB) ?? 0
         qloraRamGB = try c.decodeIfPresent(Double.self, forKey: .qloraRamGB) ?? 0
     }
 
-    /// The profile as one mono line, e.g. "lr 5e-6 · r=4 · accum 16 · KL ¼".
+    /// The profile as one mono line, e.g. "lr 0.0001 · r=16 · KL ×0.3".
     var profileSummary: String? {
         guard learningRate > 0, loraRank > 0 else { return nil }
         let lr = String(format: "%g", learningRate)
-        var parts = ["lr \(lr)", "r=\(loraRank)", "accum \(gradientAccumulationSteps)"]
-        if klEvery > 0 { parts.append("KL every \(klEvery)") }
+        var parts = ["lr \(lr)", "r=\(loraRank)"]
+        if klWeight > 0 { parts.append(String(format: "KL ×%g", klWeight)) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The backend's training methods (pipeline.TRAINING_METHODS) by name.
+enum TrainingMethod {
+    static let hybrid = "hybrid"
+    static let decoder = "decoder"
+    static let qlora = "qlora"
+
+    static func label(_ id: String) -> String {
+        switch id {
+        case hybrid: return "Hybrid"
+        case decoder: return "Decoder only"
+        case qlora: return "QLoRA"
+        case "lora": return "LoRA"          // jobs from before Oct 2026
+        default: return id
+        }
     }
 }
 
@@ -145,8 +159,8 @@ struct WhisperTrainingJob: Decodable {
         id = try c.decode(String.self, forKey: .id)
         modelName = try c.decode(String.self, forKey: .modelName)
         sourceModel = try c.decodeIfPresent(String.self, forKey: .sourceModel) ?? "large-v3-v20240930_626MB"
-        baseModel = try c.decodeIfPresent(String.self, forKey: .baseModel) ?? "openai/whisper-large-v3"
-        method = try c.decodeIfPresent(String.self, forKey: .method) ?? "lora"
+        baseModel = try c.decodeIfPresent(String.self, forKey: .baseModel) ?? "openai/whisper-large-v3-turbo"
+        method = try c.decodeIfPresent(String.self, forKey: .method) ?? TrainingMethod.hybrid
         maxRamGB = try c.decodeIfPresent(Double.self, forKey: .maxRamGB) ?? 12
         state = try c.decode(String.self, forKey: .state)
         stage = try c.decode(String.self, forKey: .stage)

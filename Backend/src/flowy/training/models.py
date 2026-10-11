@@ -14,8 +14,7 @@ class TrainingModel:
     multilingual: bool
     learning_rate: float
     lora_rank: int
-    gradient_accumulation_steps: int
-    kl_every: int
+    kl_weight: float
     lora_ram_gb: float
     qlora_ram_gb: float
     detail: str
@@ -32,19 +31,21 @@ def _model(
     english_only: bool = False,
     detail: str,
 ) -> TrainingModel:
-    # Smaller checkpoints can use a little more adapter capacity and update
-    # more often. Large checkpoints use a lower LR/rank and accumulate longer:
-    # less trainable state, lower peak pressure, and safer movement on a small
-    # personal corpus.
+    # LoRA r=16 (rsLoRA scaling) on every attention + MLP linear that trains,
+    # loss = CE + kl_weight x KL(base || fine-tuned). Measured on turbo (Oct 12,
+    # M4 Air 16GB, 394 clips, 3 epochs): lr 1e-4 moved held-out WER 16.2 ->
+    # 15.1% and generic 5.2 -> 4.7%; the old 1e-5/r=4 barely moves a LoRA.
+    # Smaller checkpoints get a higher LR (unmeasured, conventional scaling).
+    # RAM = peak process + Metal allocations for the local (cached) methods.
     profiles = {
-        # lr, rank, accumulation, KL cadence, LoRA host/unified RAM, QLoRA host RAM
-        "tiny": (2e-5, 8, 4, 8, 2.0, 2.0),
-        "base": (1.5e-5, 8, 4, 8, 3.0, 2.0),
-        "small": (1e-5, 4, 8, 6, 5.0, 3.0),
-        "medium": (7.5e-6, 4, 12, 4, 9.0, 4.0),
-        "large": (5e-6, 4, 16, 4, 14.0, 6.0),
+        # lr, rank, KL weight, local RAM, QLoRA host RAM
+        "tiny": (3e-4, 16, 0.3, 2.0, 2.0),
+        "base": (2e-4, 16, 0.3, 3.0, 2.0),
+        "small": (1.5e-4, 16, 0.3, 4.0, 3.0),
+        "medium": (1e-4, 16, 0.3, 6.0, 4.0),
+        "large": (1e-4, 16, 0.3, 10.0, 6.0),
     }
-    learning_rate, rank, accumulation, kl_every, lora_ram, qlora_ram = profiles[family]
+    learning_rate, rank, kl_weight, lora_ram, qlora_ram = profiles[family]
     suffix = ".en" if english_only else ""
     hf_variant = f"{variant}{suffix}"
     return TrainingModel(
@@ -55,8 +56,7 @@ def _model(
         multilingual=not english_only,
         learning_rate=learning_rate,
         lora_rank=rank,
-        gradient_accumulation_steps=accumulation,
-        kl_every=kl_every,
+        kl_weight=kl_weight,
         lora_ram_gb=lora_ram,
         qlora_ram_gb=qlora_ram,
         detail=detail,
@@ -85,9 +85,14 @@ _OPTIMIZED_BALANCED = TrainingModel(
         **asdict(_large_v3),
         "id": "large-v3-v20240930_626MB",
         "label": "Balanced (626 MB source)",
+        # The served 626 MB package is large-v3-turbo (32 encoder / 4 decoder
+        # layers) — training plain large-v3 (32 decoder layers) produced a
+        # different, slower model, not a personalised Balanced.
+        "hf_model": "openai/whisper-large-v3-turbo",
+        "lora_ram_gb": 8.0,
         "detail": (
-            "Trains from openai/whisper-large-v3; the stock 626 MB package is "
-            "an optimized Core ML distribution, not separate trainable weights"
+            "Trains from openai/whisper-large-v3-turbo, the model inside the "
+            "stock 626 MB Core ML package"
         ),
     }
 )
