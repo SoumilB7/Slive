@@ -57,23 +57,124 @@ enum PasteEngine {
         return Thread.isMainThread ? check() : DispatchQueue.main.sync(execute: check)
     }
 
-    /// Post one run of characters as a single synthetic keystroke (tagged +
-    /// modifier-cleared so our hotkey tap ignores it and a held stream key can't
-    /// alter it). The live typist calls this one character at a time for a smooth
-    /// reveal. No focus check here — the caller gates the session with
-    /// `canStreamType()` and serialises calls on its own queue.
+    /// The field a live session started typing into: the focused app's PID
+    /// and, when its identity is trustworthy, the raw focused AX element.
+    /// The live typist re-checks it before each burst — focus was once checked
+    /// only at start, so switching apps mid-hold (or during the release→final
+    /// pass window) sent the corrections' BACKSPACES into the new target.
+    struct StreamTarget {
+        let pid: pid_t
+        /// nil → compare by app only: AX couldn't name the element, or the app
+        /// is Chromium/Electron, whose lazily-rebuilt AX trees don't keep a
+        /// stable element identity (a false mismatch would box good dictation).
+        let element: AXUIElement?
+    }
+
+    /// Snapshot the current focus target (call right after `canStreamType()`).
+    /// nil when AX can't even name the focused app — the session then can't be
+    /// guarded and types unchecked (fail open, as everywhere else here).
+    static func currentStreamTarget() -> StreamTarget? {
+        func capture() -> StreamTarget? {
+            guard let pid = focusedAppPID()
+                    ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+            else { return nil }
+            let lazy = appHasLazyAX(NSRunningApplication(processIdentifier: pid))
+            return StreamTarget(pid: pid, element: lazy ? nil : rawFocusedElement())
+        }
+        return Thread.isMainThread ? capture() : DispatchQueue.main.sync(execute: capture)
+    }
+
+    /// Is keyboard focus still on `target` (and not a password field)? Cheap —
+    /// two to four AX reads, no tree walk — so it can run before every burst,
+    /// from the typist's queue (AX reads are thread-safe; no main hop, which
+    /// would stall typing behind UI work). Unknown answers fail open.
+    static func isStillStreamTarget(_ target: StreamTarget) -> Bool {
+        if let focused = rawFocusedElement() {
+            if isSecure(focused) { return false }
+            var pid: pid_t = 0
+            if AXUIElementGetPid(focused, &pid) == .success, pid != target.pid { return false }
+            if let recorded = target.element, !CFEqual(recorded, focused) { return false }
+            return true
+        }
+        // AX couldn't name an element (asleep Electron tree): judge by app.
+        if let pid = focusedAppPID() { return pid == target.pid }
+        return true
+    }
+
+    /// The system-wide focused element exactly as AX reports it (no descendant
+    /// resolution — identity comparisons need the same raw read both times).
+    private static func rawFocusedElement() -> AXUIElement? {
+        var value: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &value)
+        return err == .success ? axElement(value) : nil
+    }
+
+    private static func focusedAppPID() -> pid_t? {
+        var value: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value)
+        guard err == .success, let app = axElement(value) else { return nil }
+        var pid: pid_t = 0
+        return AXUIElementGetPid(app, &pid) == .success ? pid : nil
+    }
+
+    /// Post a run of characters as synthetic keystrokes (tagged + modifier-
+    /// cleared so our hotkey tap ignores them and a held stream key can't alter
+    /// them), split by `unicodeChunks` — many apps silently truncate a unicode
+    /// string longer than ~20 UTF-16 units, so one long post lost text while the
+    /// caller believed it was typed. No focus check here — the live typist
+    /// re-checks its `StreamTarget` before each burst and serialises calls on
+    /// its own queue.
     static func postUnicode(_ s: String) {
         guard !s.isEmpty, let source = CGEventSource(stateID: .combinedSessionState) else { return }
-        let utf16 = Array(s.utf16)
+        for (i, chunk) in unicodeChunks(s).enumerated() {
+            if i > 0 { usleep(800) }   // brief pacing between chunks (keeps fast apps from dropping input)
+            postUnicodeEvent(chunk, source: source)
+        }
+    }
+
+    /// Most UTF-16 units one unicode key event may carry. 20 is CGEvent's
+    /// documented ceiling; past it apps truncate the string.
+    static let maxUnicodeUnitsPerEvent = 20
+
+    /// Split `s` into runs of ≤ `maxUnits` UTF-16 units, never splitting a
+    /// grapheme cluster (half an emoji or a base without its combining mark
+    /// types as garbage). A single cluster longer than the limit (a long ZWJ
+    /// emoji sequence) goes alone in its own event. Pure; self-tested.
+    static func unicodeChunks(_ s: String, maxUnits: Int = maxUnicodeUnitsPerEvent) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        var units = 0
+        for ch in s {
+            let n = ch.utf16.count
+            if units > 0 && units + n > maxUnits {
+                chunks.append(current)
+                current = ""; units = 0
+            }
+            current.append(ch); units += n
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    /// One key-down/up pair carrying `chunk` (already ≤ the per-event limit).
+    private static func postUnicodeEvent(_ chunk: String, source: CGEventSource) {
+        let utf16 = Array(chunk.utf16)
         utf16.withUnsafeBufferPointer { buffer in
             if let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) {
-                down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+                down.keyboardSetUnicodeString(stringLength: buffer.count,
+                                              unicodeString: buffer.baseAddress)
+                // Strip modifiers so a held stream key (e.g. ⌥) can't turn the
+                // typed character into an accented glyph or a shortcut, and tag
+                // it so our own hotkey tap ignores it.
                 down.flags = []
                 down.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
                 down.post(tap: .cghidEventTap)
             }
             if let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
-                up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+                up.keyboardSetUnicodeString(stringLength: buffer.count,
+                                            unicodeString: buffer.baseAddress)
                 up.flags = []
                 up.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
                 up.post(tap: .cghidEventTap)
@@ -119,6 +220,10 @@ enum PasteEngine {
 
     // MARK: - Core
 
+    /// Serialises every `insertIfPossible` type-out (see performInsert).
+    private static let typingQueue = DispatchQueue(label: "com.slive.app.pastetyping",
+                                                   qos: .userInitiated)
+
     private static func performInsert(_ text: String,
                                       onDeliveryFailure: @escaping () -> Void) -> Bool {
         // No Accessibility permission → posted events would be dropped.
@@ -155,8 +260,9 @@ enum PasteEngine {
         // extension) falsely reports `.success` without actually inserting.
         // Synthetic typing IS keyboard input, so it lands reliably everywhere —
         // native fields, browsers, Electron, terminals. Async so pacing never
-        // blocks the UI.
-        DispatchQueue.global(qos: .userInitiated).async {
+        // blocks the UI — on ONE serial queue: two quick inserts on the old
+        // concurrent global queue could interleave their keystrokes.
+        typingQueue.async {
             typeOut(text)
             guard let deliverySnapshot else { return }
             verifyDelivery(deliverySnapshot, attempt: 0,
@@ -513,44 +619,15 @@ enum PasteEngine {
 
     // MARK: - Insertion: type it out
 
-    /// Type `text` into the frontmost app one character at a time via synthetic
-    /// Unicode key events. Works anywhere a keyboard works — Electron, VS Code,
-    /// terminals — because it *is* keyboard input, not a paste, and it never
-    /// touches the clipboard. Slive's overlay is non-activating, so the user's
-    /// app stays frontmost and receives the keystrokes.
+    /// Type `text` into the frontmost app via synthetic Unicode key events.
+    /// Works anywhere a keyboard works — Electron, VS Code, terminals — because
+    /// it *is* keyboard input, not a paste, and it never touches the clipboard.
+    /// Slive's overlay is non-activating, so the user's app stays frontmost and
+    /// receives the keystrokes. One event carries a whole run of characters, so
+    /// this posts ≤20-unit chunks rather than one event per character — long
+    /// transcripts land almost instantly. (Was 24 *Characters* per event, which
+    /// overran the per-event limit and apps silently dropped the excess.)
     private static func typeOut(_ text: String) {
-        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
-        // A single key event can carry a whole run of characters, so type in
-        // small chunks instead of one event per character — far fewer events,
-        // so long transcripts land almost instantly. A short pause between
-        // chunks keeps fast apps from dropping input.
-        let chars = Array(text)
-        let chunkSize = 24   // was 12: half the events + half the pacing sleeps
-        var i = 0
-        while i < chars.count {
-            let chunk = String(chars[i..<min(i + chunkSize, chars.count)])
-            let utf16 = Array(chunk.utf16)
-            utf16.withUnsafeBufferPointer { buffer in
-                if let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) {
-                    down.keyboardSetUnicodeString(stringLength: buffer.count,
-                                                  unicodeString: buffer.baseAddress)
-                    // Strip modifiers so a held stream key (e.g. ⌥) can't turn the
-                    // typed character into an accented glyph or a shortcut, and tag
-                    // it so our own hotkey tap ignores it.
-                    down.flags = []
-                    down.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
-                    down.post(tap: .cghidEventTap)
-                }
-                if let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
-                    up.keyboardSetUnicodeString(stringLength: buffer.count,
-                                                unicodeString: buffer.baseAddress)
-                    up.flags = []
-                    up.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
-                    up.post(tap: .cghidEventTap)
-                }
-            }
-            i += chunkSize
-            usleep(800)    // brief pacing between chunks (keeps fast apps from dropping input)
-        }
+        postUnicode(text)
     }
 }

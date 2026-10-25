@@ -17,8 +17,10 @@ import Foundation
 final class ContinuousDictation {
     private let whisper = TranscriptionModel.shared
     /// Paces the actual keystrokes so text appears smoothly, character by
-    /// character, rather than in per-pass bursts.
-    private let typist = LiveTypist()
+    /// character, rather than in per-pass bursts. A fresh one per session: a
+    /// new hold during the previous session's final pass must not have its
+    /// typist reset — or finished — by that stale stop.
+    private var typist = LiveTypist()
 
     /// What a finished session produced. `typed` is false when no editable field
     /// was focused, so nothing could stream into it — the caller should surface
@@ -62,7 +64,9 @@ final class ContinuousDictation {
         let canType = PasteEngine.canStreamType()
         typing = canType
         Log.live("start — model=\(model) cps=\(Int(Settings.shared.continuousTypeCPS)) canType=\(canType)")
-        typist.start(allowed: canType, cps: Settings.shared.continuousTypeCPS)
+        typist = LiveTypist()
+        typist.start(allowed: canType, cps: Settings.shared.continuousTypeCPS,
+                     target: canType ? PasteEngine.currentStreamTarget() : nil)
         let ok = whisper.startLiveDictation(model: model) { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
@@ -84,6 +88,10 @@ final class ContinuousDictation {
     func stop() async -> Outcome {
         guard active else { return Outcome(text: "", typed: typing) }
         active = false
+        // This session's own copies: a new start() during the final pass below
+        // replaces all of these.
+        let typist = self.typist, model = self.model, typing = self.typing
+        let lastTranscript = self.lastTranscript, vocabulary = self.vocabulary
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         let confirmedText = Self.normalize(whisper.liveConfirmedText)
         let confirmedEnd = whisper.liveConfirmedEndSeconds
@@ -116,6 +124,9 @@ final class ContinuousDictation {
         if final == nil {
             final = (await whisper.transcribeSamples(snapshot, model: model)).map(Self.normalize)
         }
+        // An empty final is a failed pass, not "the user said nothing": taken
+        // at face value it backspaced the typed tail and returned no text.
+        if final?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { final = nil }
         // Fall back to the last streamed transcript if the final pass fails
         // (already corrected; the stitched/full text is corrected here, after
         // the seam merge so a term split across the seam still matches).
@@ -123,10 +134,14 @@ final class ContinuousDictation {
             ?? lastTranscript
 
         let result: String
+        var typed = typing
         if typing {
             typist.setTarget(finalText)
             // Flush the remaining diff immediately so the field is correct on release.
-            result = await typist.finish()
+            let done = await typist.finish()
+            // Focus moved mid-session: typing stopped there, so hand back the
+            // whole text for the copy box instead of the partial field.
+            if done.focusLost { result = finalText; typed = false } else { result = done.text }
         } else {
             typist.cancel()
             result = finalText
@@ -134,7 +149,7 @@ final class ContinuousDictation {
         Log.live(String(format: "DONE  final pass %.2fs  len=%d  «%@»",
                         Date().timeIntervalSince(t0), result.count, String(result.suffix(40))))
         return Outcome(text: result.trimmingCharacters(in: .whitespacesAndNewlines),
-                       typed: typing)
+                       typed: typed)
     }
 
     /// Abort without a final pass or field edits (app quit / dismiss).
