@@ -233,17 +233,23 @@ def _wait_for_state(job_id: str, *states: str):
     raise AssertionError(f"job never reached {states}")
 
 
-def test_missing_whisperkit_converter_fails_before_any_work(monkeypatch) -> None:
+def _no_tools(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("WHISPERKIT_GENERATE_MODEL", raising=False)
+    monkeypatch.setenv("SLIVE_WHISPERKIT_TOOLS", str(tmp_path / "no-tools"))
     monkeypatch.setattr(pipeline.shutil, "which", lambda _name: None)
+
+
+def test_missing_whisperkit_converter_fails_before_any_work(monkeypatch, tmp_path) -> None:
+    _no_tools(monkeypatch, tmp_path)
     monkeypatch.setattr(
         jobs, "readiness", lambda _=None: pytest.fail("readiness ran before the preflight"))
 
-    with pytest.raises(ValueError, match="whisperkit-generate-model is not installed"):
+    with pytest.raises(pipeline.ConverterUnavailable, match="install-whisperkit-tools.sh"):
         jobs.start_job(source_model="tiny")
 
 
 def test_whisperkit_converter_env_must_be_executable(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pipeline, "_compiler_available", lambda: True)
     monkeypatch.setenv("WHISPERKIT_GENERATE_MODEL", str(tmp_path / "nope"))
     with pytest.raises(ValueError, match="not an executable file"):
         pipeline.whisperkit_converter()
@@ -256,13 +262,12 @@ def test_whisperkit_converter_env_must_be_executable(monkeypatch, tmp_path) -> N
 
 
 def test_run_pipeline_checks_converter_before_reading_the_store(monkeypatch, tmp_path) -> None:
-    monkeypatch.delenv("WHISPERKIT_GENERATE_MODEL", raising=False)
-    monkeypatch.setattr(pipeline.shutil, "which", lambda _name: None)
+    _no_tools(monkeypatch, tmp_path)
     monkeypatch.setattr(
         pipeline, "TrainingStore", lambda *_a, **_k: pytest.fail("store read before preflight"))
     config = PipelineConfig.for_model(model_name="x", source_model="tiny", output_root=tmp_path)
 
-    with pytest.raises(ValueError, match="not installed"):
+    with pytest.raises(ValueError, match="isn't installed"):
         pipeline.run_pipeline(config, lambda **_: None)
     assert not (tmp_path / "x").exists()
 
@@ -360,3 +365,205 @@ def test_configure_prefix_tokens_counts_tokens_after_sot() -> None:
     assert pipeline.configure_prefix_tokens(tok, model(True)) == 3
     assert tok.kwargs == {"language": "en", "task": "transcribe", "predict_timestamps": False}
     assert pipeline.configure_prefix_tokens(tok, model(False)) == 1
+
+
+def _executable(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_converter_prefers_slive_tools_venv_and_puts_shim_first(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("WHISPERKIT_GENERATE_MODEL", raising=False)
+    monkeypatch.setenv("SLIVE_WHISPERKIT_TOOLS", str(tmp_path))
+    tool = _executable(tmp_path / "venv" / "bin" / "whisperkit-generate-model")
+    _executable(tmp_path / "shim" / "xcrun")
+
+    assert pipeline.whisperkit_converter() == str(tool)
+    assert pipeline.converter_env()["PATH"].split(":")[0] == str(tmp_path / "shim")
+
+
+def test_converter_without_any_compiler_is_unavailable(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SLIVE_WHISPERKIT_TOOLS", str(tmp_path))
+    monkeypatch.setenv("WHISPERKIT_GENERATE_MODEL", str(_executable(tmp_path / "wk")))
+    monkeypatch.setattr(
+        pipeline.subprocess, "run", lambda *_a, **_k: type("R", (), {"returncode": 1})())
+    with pytest.raises(pipeline.ConverterUnavailable, match="Xcode or the Slive compile shim"):
+        pipeline.whisperkit_converter()
+
+
+def test_tokenizer_repo_matches_whisperkit_variant_detection() -> None:
+    assert pipeline.whisperkit_tokenizer_repo(51866, 1280) == "openai/whisper-large-v3"
+    assert pipeline.whisperkit_tokenizer_repo(51865, 1280) == "openai/whisper-large-v2"
+    assert pipeline.whisperkit_tokenizer_repo(51865, 384) == "openai/whisper-tiny"
+    assert pipeline.whisperkit_tokenizer_repo(51864, 768) == "openai/whisper-small.en"
+
+
+def _fake_whisperkit(folder, *, mel=True):
+    for name in pipeline.WHISPERKIT_MODELS:
+        if mel or name != "MelSpectrogram.mlmodelc":
+            (folder / name).mkdir(parents=True)
+    return folder
+
+
+def test_converter_output_needs_mel_and_picks_shallowest(tmp_path) -> None:
+    _fake_whisperkit(tmp_path / "a" / "deep" / "variant")
+    _fake_whisperkit(tmp_path / "b", mel=False)
+    assert pipeline.find_whisperkit_folder(tmp_path) == tmp_path / "a" / "deep" / "variant"
+    _fake_whisperkit(tmp_path / "c")
+    assert pipeline.find_whisperkit_folder(tmp_path) == tmp_path / "c"
+
+
+def test_install_lays_tokenizer_out_where_whisperkit_looks(monkeypatch, tmp_path) -> None:
+    import json
+
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path / "Custom")
+    merged = tmp_path / "merged"
+    merged.mkdir()
+    (merged / "config.json").write_text(json.dumps({"vocab_size": 51866, "d_model": 1280}))
+    (merged / "tokenizer.json").write_text("{}")
+    (merged / "tokenizer_config.json").write_text("{}")
+    config = PipelineConfig.for_model(model_name="voice", source_model="large-v3-v20240930_626MB")
+
+    with pytest.raises(RuntimeError, match="MelSpectrogram"):
+        pipeline._install_model(config, _fake_whisperkit(tmp_path / "nomel", mel=False),
+                                merged, tmp_path, tmp_path / "m.jsonl")
+    installed = pipeline._install_model(config, _fake_whisperkit(tmp_path / "out"), merged,
+                                        tmp_path, tmp_path / "m.jsonl")
+    tokenizer = installed / "tokenizer" / "models" / "openai" / "whisper-large-v3"
+    assert (tokenizer / "tokenizer.json").is_file()
+    assert (tokenizer / "tokenizer_config.json").is_file()
+    manifest = json.loads((installed / "manifest.json").read_text())
+    assert manifest["tokenizer_folder"] == "tokenizer"
+    assert manifest["created_at"][:4].isdigit()
+
+
+def test_qlora_is_refused_up_front_without_cuda(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "whisperkit_converter", lambda: "/bin/true")
+    monkeypatch.setattr(
+        jobs, "readiness", lambda _=None: pytest.fail("readiness ran before the preflight"))
+    with pytest.raises(jobs.TrainingUnavailable, match="NVIDIA"):
+        jobs.start_job(source_model="tiny", method="qlora")
+
+
+def test_start_refuses_when_disk_is_too_full(monkeypatch, tmp_path) -> None:
+    _ready(monkeypatch)
+    monkeypatch.setattr(jobs.shutil, "disk_usage", lambda _p: type("D", (), {"free": 1024**3})())
+    with pytest.raises(jobs.TrainingUnavailable, match="free disk"):
+        jobs.start_job(source_model="tiny", output_root=tmp_path, runner=lambda c, p: tmp_path)
+
+
+def test_failed_status_write_never_leaves_a_job_running(monkeypatch, tmp_path) -> None:
+    jobs._jobs.clear()
+    _ready(monkeypatch)
+
+    def broken_write(_job):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(jobs, "_write_job_file", broken_write)
+
+    def runner(config, progress):
+        progress(stage="training", message="Training", value=0.5, run_dir=str(tmp_path))
+        raise AssertionError("unreachable")
+
+    job = jobs.start_job(source_model="tiny", output_root=tmp_path, runner=runner)
+    done = _wait_for_state(job.id, "error")
+    assert "disk full" in done.error
+    assert done.failed_stage == "preparing"
+
+
+def test_failed_job_records_the_stage_it_failed_in(monkeypatch, tmp_path) -> None:
+    jobs._jobs.clear()
+    _ready(monkeypatch)
+
+    def runner(config, progress):
+        progress(stage="converting", message="Converting", value=0.84)
+        raise RuntimeError("conversion broke")
+
+    job = jobs.start_job(source_model="tiny", output_root=tmp_path, runner=runner)
+    done = _wait_for_state(job.id, "error")
+    assert (done.stage, done.failed_stage, done.error) == ("error", "converting", "conversion broke")
+
+
+def test_restart_marks_running_jobs_interrupted_and_reloads_them(monkeypatch, tmp_path) -> None:
+    import json
+
+    jobs._jobs.clear()
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path / "Custom")
+    run = tmp_path / "runs" / "voice"
+    (run / "encoder-cache").mkdir(parents=True)
+    (run / "merged-hf").mkdir()
+    (run / "adapter").mkdir()
+    (tmp_path / "Custom" / ".voice.staging").mkdir(parents=True)
+    old = jobs.TrainingJob(id="j1", model_name="voice", source_model="tiny", base_model="b",
+                           method="hybrid", max_ram_gb=8, state="running", stage="training",
+                           run_dir=str(run))
+    (run / "job.json").write_text(json.dumps(old.to_dict()))
+
+    assert jobs.recover_interrupted(tmp_path / "runs") == 1
+    latest = jobs.latest_job()
+    assert (latest.id, latest.state, latest.failed_stage) == ("j1", "error", "training")
+    assert "Interrupted" in latest.error
+    assert not (run / "encoder-cache").exists() and not (run / "merged-hf").exists()
+    assert (run / "adapter").exists()
+    assert json.loads((run / "job.json").read_text())["state"] == "error"
+    assert not (tmp_path / "Custom" / ".voice.staging").exists()
+
+
+def test_start_endpoint_status_reflects_the_kind_of_failure(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from flowy import server
+
+    client = TestClient(server.app, base_url="http://127.0.0.1:50711")
+    cases = [
+        (jobs.TrainingUnavailable("no converter"), 424),
+        (jobs.TrainingConflict("already running"), 409),
+        (ValueError("bad ram"), 422),
+    ]
+    for error, status in cases:
+        def refuse(**_kwargs):
+            raise error
+
+        monkeypatch.setattr(server.training_jobs, "start_job", refuse)
+        response = client.post("/training/start", json={"source_model": "tiny"})
+        assert response.status_code == status
+        assert response.json() == {"error": str(error)}
+
+
+def test_conversion_runs_space_free_and_collects_the_model(monkeypatch, tmp_path) -> None:
+    # Run dirs live under "Application Support"; argmaxtools shells out with
+    # unquoted paths, so the converter must only ever see space-free ones.
+    run = tmp_path / "Application Support" / "run"
+    merged = run / "merged-hf"
+    merged.mkdir(parents=True)
+    converter = tmp_path / "fake-converter"
+    converter.write_text(
+        "#!/bin/sh\n"
+        'case "$2$4" in *" "*) echo "space in $2 $4"; exit 3;; esac\n'
+        'test -d "$2" || exit 4\n'
+        'for m in AudioEncoder TextDecoder MelSpectrogram; do mkdir -p "$4/x_model/$m.mlmodelc"; done\n'
+        'echo converted\n',
+        encoding="utf-8",
+    )
+    converter.chmod(0o755)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda _s: None)
+    beats = []
+
+    folder = pipeline._convert_whisperkit(merged, run / "whisperkit", str(converter),
+                                          lambda **kw: beats.append(kw))
+
+    assert folder == run / "whisperkit" / "model"
+    assert all((folder / name).is_dir() for name in pipeline.WHISPERKIT_MODELS)
+    assert "converted" in (run / "whisperkit" / "conversion.log").read_text()
+
+
+def test_conversion_failure_reports_the_log_tail(monkeypatch, tmp_path) -> None:
+    converter = tmp_path / "fail"
+    converter.write_text("#!/bin/sh\necho 'xcrun: unable to find utility'\nexit 1\n")
+    converter.chmod(0o755)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda _s: None)
+    (tmp_path / "merged").mkdir()
+    with pytest.raises(RuntimeError, match="unable to find utility"):
+        pipeline._convert_whisperkit(tmp_path / "merged", tmp_path / "wk", str(converter))

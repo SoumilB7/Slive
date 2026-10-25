@@ -54,11 +54,13 @@ enum CustomWhisperModelRegistry {
             guard let data = try? Data(contentsOf: manifest) else { return nil }
             let decoder = JSONDecoder()
             decoder.userInfo[.customModelManifestURL] = manifest
+            // WhisperKit throws without any of the three — never list a model
+            // that would only fail at load.
             guard let model = try? decoder.decode(CustomWhisperModel.self, from: data),
-                  FileManager.default.fileExists(
-                    atPath: model.modelFolder.appendingPathComponent("AudioEncoder.mlmodelc").path),
-                  FileManager.default.fileExists(
-                    atPath: model.modelFolder.appendingPathComponent("TextDecoder.mlmodelc").path)
+                  ["AudioEncoder", "TextDecoder", "MelSpectrogram"].allSatisfy({
+                      FileManager.default.fileExists(
+                        atPath: model.modelFolder.appendingPathComponent("\($0).mlmodelc").path)
+                  })
             else { return nil }
             return model
         }

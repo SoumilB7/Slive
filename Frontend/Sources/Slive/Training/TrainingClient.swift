@@ -125,6 +125,8 @@ struct WhisperTrainingJob: Decodable {
     let requiredSamples: Int
     let installedModelDir: String?
     let error: String?
+    /// The stage that was running when the job failed (the rail marks it).
+    let failedStage: String?
     let metrics: [TrainingMetric]
     let totalUpdates: Int
     /// When the job was created — the anchor for the live ETA.
@@ -142,6 +144,7 @@ struct WhisperTrainingJob: Decodable {
         case installedModelDir = "installed_model_dir"
         case totalUpdates = "total_updates"
         case createdAt = "created_at"
+        case failedStage = "failed_stage"
     }
 
     /// Python isoformat carries 6-digit fractional seconds; parse with and
@@ -170,6 +173,7 @@ struct WhisperTrainingJob: Decodable {
         requiredSamples = try c.decode(Int.self, forKey: .requiredSamples)
         installedModelDir = try c.decodeIfPresent(String.self, forKey: .installedModelDir)
         error = try c.decodeIfPresent(String.self, forKey: .error)
+        failedStage = try c.decodeIfPresent(String.self, forKey: .failedStage)
         // Tolerate a backend one release behind (no telemetry fields yet).
         metrics = try c.decodeIfPresent([TrainingMetric].self, forKey: .metrics) ?? []
         totalUpdates = try c.decodeIfPresent(Int.self, forKey: .totalUpdates) ?? 0

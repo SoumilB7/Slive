@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import logging
 import math
 import shutil
 import threading
@@ -13,7 +15,12 @@ from pathlib import Path
 from typing import Callable
 
 from flowy.training import pipeline
-from flowy.training.pipeline import TRAINING_METHODS, PipelineConfig, run_pipeline
+from flowy.training.pipeline import (
+    TRAINING_METHODS,
+    PipelineConfig,
+    TrainingUnavailable,
+    run_pipeline,
+)
 from flowy.training.models import DEFAULT_TRAINING_MODEL, get_training_model
 from flowy.training.store import LabelPolicy, TrainingStore
 
@@ -21,6 +28,27 @@ MIN_TRAINING_SAMPLES = 50
 #: Fifty one-second clips are not a dataset — training also needs this much
 #: eligible audio in total before it may begin.
 MIN_TRAINING_AUDIO_MINUTES = 5.0
+
+logger = logging.getLogger(__name__)
+
+
+class TrainingConflict(ValueError):
+    """The request clashes with existing state (a running job, a taken name)
+    — the server answers 409. Plain ValueError is bad input (422);
+    TrainingUnavailable is a missing dependency (424)."""
+
+
+#: Rough disk a run needs on top of the encoder cache: fp16 weights for the
+#: merged checkpoint, the converter's output and the installed copy, by
+#: family (large = large-v3's 1.55 GB; turbo is ~1.6 GB). d_model sizes the
+#: cache (1,500 frames x d_model x 2 bytes per clip).
+_FAMILY_WEIGHTS_GB = {"tiny": 0.08, "base": 0.15, "small": 0.5, "medium": 1.5, "large": 3.1}
+_FAMILY_D_MODEL = {"tiny": 384, "base": 512, "small": 768, "medium": 1024, "large": 1280}
+
+
+def required_disk_gb(family: str, clips: int) -> float:
+    cache = clips * 1500 * _FAMILY_D_MODEL.get(family, 1280) * 2 / 1024**3
+    return cache + 3 * _FAMILY_WEIGHTS_GB.get(family, 3.1) + 1.0
 
 
 def fine_tuned_model_name(now: datetime | None = None) -> str:
@@ -60,6 +88,8 @@ class TrainingJob:
     run_dir: str | None = None
     installed_model_dir: str | None = None
     error: str | None = None
+    #: The stage that was running when the job failed (the UI marks that node).
+    failed_stage: str | None = None
     #: Per-update training telemetry for the live chart: dicts with
     #: update / epoch / loss (CE) and, every few updates, kl — the divergence
     #: of the fine-tuned token distribution from stock Balanced (nats/token).
@@ -69,6 +99,11 @@ class TrainingJob:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TrainingJob":
+        known = {name for name in cls.__dataclass_fields__}
+        return cls(**{key: value for key, value in data.items() if key in known})
 
 
 _jobs: dict[str, TrainingJob] = {}
@@ -119,7 +154,7 @@ def start_job(
     # training when the installer refuses to overwrite.
     model_name = sanitize_model_name(custom_name or "") or fine_tuned_model_name()
     if (pipeline.custom_models_root() / model_name).exists():
-        raise ValueError(
+        raise TrainingConflict(
             f"A personal model named “{model_name}” already exists — pick a "
             f"different name."
         )
@@ -129,6 +164,8 @@ def start_job(
     # runners don't convert, so they skip the check.
     if runner is run_pipeline:
         pipeline.whisperkit_converter()
+        if method == "qlora":
+            _require_cuda_qlora()
 
     ready = readiness(store_root)
     if not ready["ready"]:
@@ -138,17 +175,25 @@ def start_job(
             f"have {ready['eligible_count']} samples and "
             f"{ready.get('eligible_audio_minutes', 0):g} minutes."
         )
+    run_root = Path(output_root).expanduser() if output_root else pipeline.default_output_root()
+    need = required_disk_gb(profile.family, ready["eligible_count"])
+    run_root.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(run_root).free / 1024**3
+    if free < need:
+        raise TrainingUnavailable(
+            f"Training needs about {need:.0f} GB of free disk; {free:.0f} GB is free. "
+            f"Free some space and try again."
+        )
 
     with _lock:
         active = next((j for j in _jobs.values() if j.state in {"queued", "running"}), None)
         if active is not None:
-            raise ValueError(f"Training job {active.id} is already running")
+            raise TrainingConflict(f"Training job {active.id} is already running")
 
         # No job is running, so any leftover run folder for this name is a
         # failed run (the installed-model check above rules out a success).
         # run_pipeline refuses an existing run dir, so move it aside — kept
         # for its logs — instead of failing the retry inside the thread.
-        run_root = Path(output_root).expanduser() if output_root else pipeline.default_output_root()
         _set_aside_failed_run(run_root / model_name, pipeline.custom_models_root(), model_name)
 
         job = TrainingJob(
@@ -180,8 +225,38 @@ def start_job(
     return job
 
 
+def _require_cuda_qlora() -> None:
+    try:
+        import torch
+
+        cuda = torch.cuda.is_available()
+    except ImportError:
+        cuda = False
+    if not cuda or importlib.util.find_spec("bitsandbytes") is None:
+        raise TrainingUnavailable(
+            "QLoRA needs an NVIDIA GPU with bitsandbytes. On this Mac, choose "
+            "Hybrid (best) or Decoder only (quick)."
+        )
+
+
+#: Run-dir artifacts too big to keep once a run has failed (logs stay).
+_BULKY_RUN_ARTIFACTS = ("encoder-cache", "merged-hf")
+
+
+def _prune_failed_run(run_dir: Path) -> None:
+    for name in _BULKY_RUN_ARTIFACTS:
+        shutil.rmtree(run_dir / name, ignore_errors=True)
+    converted = run_dir / "whisperkit"
+    if converted.is_dir():
+        for child in converted.iterdir():
+            if child.name != "conversion.log":
+                shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink(
+                    missing_ok=True)
+
+
 def _set_aside_failed_run(run_dir: Path, models_root: Path, model_name: str) -> None:
     if run_dir.exists():
+        _prune_failed_run(run_dir)
         stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
         aside = run_dir.with_name(f"{run_dir.name}.failed-{stamp}")
         suffix = 1
@@ -204,7 +279,53 @@ def latest_job() -> TrainingJob | None:
         return next(reversed(_jobs.values()), None) if _jobs else None
 
 
+def recover_interrupted(output_root: Path | None = None) -> int:
+    """At server start: jobs live in memory, so a restart mid-run used to
+    leave job.json saying "running" forever, multi-GB artifacts on disk and
+    a UI that said nothing. Mark those runs interrupted, prune their bulky
+    artifacts, sweep half-copied installs, and reload past jobs so
+    /training/jobs/latest still answers. Returns how many were interrupted."""
+    root = output_root or pipeline.default_output_root()
+    found: list[TrainingJob] = []
+    interrupted = 0
+    for path in sorted(root.glob("*/job.json")) if root.is_dir() else []:
+        try:
+            job = TrainingJob.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            continue
+        if job.state in {"queued", "running"}:
+            interrupted += 1
+            job.failed_stage = job.stage
+            job.state = job.stage = "error"
+            job.error = job.message = (
+                "Interrupted — Slive or its server quit while this model was training. "
+                "Nothing was installed; start training again."
+            )
+            _prune_failed_run(path.parent)
+            _write_job_file(job)
+        found.append(job)
+    models_root = pipeline.custom_models_root()
+    for staging in models_root.glob(".*.staging") if models_root.is_dir() else []:
+        shutil.rmtree(staging, ignore_errors=True)
+    with _lock:
+        for job in sorted(found, key=lambda job: job.created_at):
+            _jobs.setdefault(job.id, job)
+    return interrupted
+
+
 def _run_job(job_id: str, config: PipelineConfig, runner) -> None:
+    try:
+        _run_job_inner(job_id, config, runner)
+    except Exception as exc:  # noqa: BLE001 - last resort: never leave a job "running"
+        logger.exception("Training job %s failed outside the pipeline", job_id)
+        with _lock:
+            job = _jobs[job_id]
+            job.failed_stage = job.failed_stage or job.stage
+            job.state = job.stage = "error"
+            job.error = job.message = str(exc) or type(exc).__name__
+
+
+def _run_job_inner(job_id: str, config: PipelineConfig, runner) -> None:
     _update(job_id, state="running", stage="preparing", message="Preparing training data")
 
     def progress(*, stage: str, message: str, value: float, **extra) -> None:
@@ -213,10 +334,13 @@ def _run_job(job_id: str, config: PipelineConfig, runner) -> None:
     try:
         installed = runner(config, progress)
     except Exception as exc:  # noqa: BLE001 - background boundary records full failure
+        with _lock:
+            failed_stage = _jobs[job_id].stage
         _update(
             job_id,
             state="error",
             stage="error",
+            failed_stage=failed_stage,
             message=str(exc),
             error=str(exc),
         )
@@ -255,7 +379,18 @@ def _update(job_id: str, **changes) -> None:
             # Non-finite scalars (progress) keep the last good value.
             if hasattr(job, key) and not _non_finite(value):
                 setattr(job, key, value)
-        if job.run_dir:
-            path = Path(job.run_dir) / "job.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(job.to_dict(), indent=2), encoding="utf-8")
+        _write_job_file(job)
+
+
+def _write_job_file(job: TrainingJob) -> None:
+    """Best effort: a full disk must not kill the job thread (its error
+    handler writes too, and used to re-raise, leaving the job "running"
+    forever and refusing every later start)."""
+    if not job.run_dir:
+        return
+    try:
+        path = Path(job.run_dir) / "job.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(job.to_dict(), indent=2), encoding="utf-8")
+    except OSError:
+        logger.warning("Couldn't write job.json for %s", job.id, exc_info=True)

@@ -13,7 +13,10 @@ import os
 import random
 import shutil
 import subprocess
+import tempfile
+import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -147,27 +150,116 @@ def require_finite_loss(where: str, **values: float) -> None:
         )
 
 
+class TrainingUnavailable(ValueError):
+    """Something training depends on is missing (toolchain, CUDA, disk) — not
+    bad input; the server answers 424."""
+
+
+class ConverterUnavailable(TrainingUnavailable):
+    """The WhisperKit conversion toolchain is missing."""
+
+
+#: Where Backend/scripts/install-whisperkit-tools.sh puts whisperkittools: its
+#: own Python 3.11 venv (it pins torch 2.5 / transformers 4.53, which clash
+#: with this venv) plus `shim/xcrun`, which compiles .mlpackage → .mlmodelc
+#: with Core ML's runtime compiler instead of Xcode's coremlcompiler.
+INSTALL_TOOLS_HINT = "run Backend/scripts/install-whisperkit-tools.sh"
+
+
+def whisperkit_tools_root() -> Path:
+    override = os.environ.get("SLIVE_WHISPERKIT_TOOLS")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / "Library" / "Application Support" / "Slive" / "tools" / "whisperkittools"
+
+
 def whisperkit_converter() -> str:
-    """Resolve the WhisperKit converter (WHISPERKIT_GENERATE_MODEL, else PATH)
-    or raise ValueError — checked BEFORE training so a missing tool doesn't
-    surface only after tens of minutes of work."""
+    """Resolve the WhisperKit converter — WHISPERKIT_GENERATE_MODEL, then the
+    Slive tools venv, then PATH — and make sure its .mlpackage → .mlmodelc
+    compile can run (Xcode's coremlcompiler, or the Slive xcrun shim).
+    Raises ConverterUnavailable BEFORE training, so a missing tool never
+    surfaces only after an hour of work."""
     configured = os.environ.get("WHISPERKIT_GENERATE_MODEL")
     if configured:
         executable = shutil.which(configured)
         if not executable:
-            raise ValueError(
+            raise ConverterUnavailable(
                 f"WHISPERKIT_GENERATE_MODEL points to “{configured}”, which is not "
                 f"an executable file. Fix the path before training."
             )
-        return executable
-    executable = shutil.which("whisperkit-generate-model")
-    if not executable:
-        raise ValueError(
-            "whisperkit-generate-model is not installed, so a trained model "
-            "could not be converted for WhisperKit. Install the pinned "
-            "WhisperKit tools (or set WHISPERKIT_GENERATE_MODEL) before training."
+    else:
+        bundled = whisperkit_tools_root() / "venv" / "bin" / "whisperkit-generate-model"
+        executable = str(bundled) if os.access(bundled, os.X_OK) else shutil.which(
+            "whisperkit-generate-model")
+        if not executable:
+            raise ConverterUnavailable(
+                "The WhisperKit converter isn't installed, so a trained model "
+                f"couldn't be made runnable in Slive. To set it up, {INSTALL_TOOLS_HINT} "
+                "(one time, ~3 GB), then train again."
+            )
+    if not _compiler_available():
+        raise ConverterUnavailable(
+            "The WhisperKit converter is installed, but compiling Core ML models "
+            f"needs Xcode or the Slive compile shim — {INSTALL_TOOLS_HINT} again "
+            "to add the shim."
         )
     return executable
+
+
+def _shim_dir() -> Path:
+    return whisperkit_tools_root() / "shim"
+
+
+def _compiler_available() -> bool:
+    if os.access(_shim_dir() / "xcrun", os.X_OK):
+        return True
+    found = subprocess.run(["xcrun", "--find", "coremlcompiler"],
+                           capture_output=True, check=False)
+    return found.returncode == 0
+
+
+def converter_env() -> dict[str, str]:
+    """The converter's environment: the shim first on PATH (argmaxtools
+    shells out to `xcrun coremlcompiler compile`), plus the usual tool dirs a
+    GUI-launched server lacks."""
+    env = dict(os.environ)
+    extra = [str(_shim_dir())] if os.access(_shim_dir() / "xcrun", os.X_OK) else []
+    extra += ["/opt/homebrew/bin", "/usr/local/bin"]
+    env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "/usr/bin:/bin")])
+    return env
+
+
+#: WhisperKit (0.9.4) resolves a local tokenizer at
+#: <tokenizerFolder>/models/<repo>/tokenizer.json, where <repo> comes from the
+#: variant it detects from the model's logits and encoder widths.
+def whisperkit_tokenizer_repo(vocab_size: int, d_model: int) -> str:
+    if vocab_size == 51866:
+        return "openai/whisper-large-v3"
+    sizes = {384: "tiny", 512: "base", 768: "small", 1024: "medium"}
+    if vocab_size == 51864:
+        return f"openai/whisper-{sizes.get(d_model, 'base')}.en"
+    if d_model == 1280:
+        return "openai/whisper-large-v2"
+    return f"openai/whisper-{sizes.get(d_model, 'base')}"
+
+
+#: The base checkpoint's own tokenizer/config files. LoRA never changes the
+#: vocabulary, and the converter's transformers 4.53 can't read the
+#: transformers-5 tokenizer_config.json / config.json this venv would write.
+BASE_REPO_FILES = (
+    "config.json",
+    "generation_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
+    "added_tokens.json",
+    "special_tokens_map.json",
+    "normalizer.json",
+    "preprocessor_config.json",
+)
+TOKENIZER_FILES = tuple(name for name in BASE_REPO_FILES
+                        if name not in ("config.json", "generation_config.json"))
 
 
 Progress = Callable[..., None]
@@ -227,9 +319,15 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     _merge_adapter(config, adapter_dir, merged_dir)
     memory.check("WhisperKit conversion")
     progress(stage="converting", message="Converting merged model for WhisperKit", value=0.84)
-    model_folder = _convert_whisperkit(merged_dir, converted_dir, converter)
+    model_folder = _convert_whisperkit(merged_dir, converted_dir, converter, progress)
     progress(stage="installing", message="Installing fine-tuned model", value=0.96)
     installed = _install_model(config, model_folder, merged_dir, run_dir, manifest_path)
+    # The installed copy is what Slive serves; the run keeps adapter + logs.
+    log = converted_dir / "conversion.log"
+    if log.is_file():
+        shutil.copy2(log, run_dir / "conversion.log")
+    shutil.rmtree(merged_dir, ignore_errors=True)
+    shutil.rmtree(converted_dir, ignore_errors=True)
     return installed
 
 
@@ -421,6 +519,14 @@ def _train_cached(
     tokenizer = processor.tokenizer
     forced = configure_prefix_tokens(tokenizer, model)
     sequences = [tokenizer(sample.reference_text).input_ids for sample in samples]
+    # The decoder has max_target_positions (448) slots; a longer label would
+    # crash mid-training, after the whole encoding pass.
+    limit = model.config.max_target_positions
+    kept = [i for i, seq in enumerate(sequences) if len(seq) <= limit]
+    if not kept:
+        raise ValueError(f"Every label is longer than {limit} tokens")
+    samples = [samples[i] for i in kept]
+    sequences = [sequences[i] for i in kept]
 
     # 1. Cache — the frozen encoder runs once per clip.
     encoder_layers = model.config.encoder_layers
@@ -547,39 +653,102 @@ def _train_cached(
 
 
 def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) -> None:
-    _, _, PeftModel, _, _, Model, Processor = _training_imports()
+    """Fold the adapter into the base weights and save them with the base
+    repo's own config/tokenizer files (BASE_REPO_FILES) beside them.
+
+    Precision: Transformers 5 loads the fp16 checkpoint, so the merge happens
+    in fp16. Measured Oct 29 on a real hybrid adapter: merging in fp32 and
+    saving fp16 loses the same 0.37% of the LoRA delta — the fp16 weights
+    the converter needs are the limit, not the merge — so the lighter fp16
+    load stays."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError
+
+    _, _, PeftModel, _, _, Model, _ = _training_imports()
     base = Model.from_pretrained(config.base_model)
     merged = PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()
     merged.save_pretrained(merged_dir, safe_serialization=True)
-    Processor.from_pretrained(config.base_model).save_pretrained(merged_dir)
+    for name in BASE_REPO_FILES:
+        try:
+            source = hf_hub_download(config.base_model, name)
+        except EntryNotFoundError:
+            continue
+        shutil.copy2(source, merged_dir / name)
 
 
-def _convert_whisperkit(merged_dir: Path, output_dir: Path, executable: str) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    command = [
-        executable,
-        "--model-version",
-        str(merged_dir),
-        "--output-dir",
-        str(output_dir),
-    ]
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
-    (output_dir / "conversion.log").write_text(
-        completed.stdout + "\n" + completed.stderr, encoding="utf-8"
+#: WhisperKit needs all three to load a model folder.
+WHISPERKIT_MODELS = ("AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc")
+CONVERT_TIMEOUT_SECONDS = 3 * 60 * 60
+
+
+def find_whisperkit_folder(output_dir: Path) -> Path | None:
+    """The converter's model folder: the shallowest folder holding all of
+    WHISPERKIT_MODELS (deterministic when several variants exist)."""
+    candidates = sorted(
+        (path.parent for path in output_dir.rglob("AudioEncoder.mlmodelc")
+         if all((path.parent / name).is_dir() for name in WHISPERKIT_MODELS)),
+        key=lambda folder: (len(folder.parts), str(folder)),
     )
-    if completed.returncode != 0:
+    return candidates[0] if candidates else None
+
+
+def _convert_whisperkit(
+    merged_dir: Path, output_dir: Path, executable: str, progress: Progress | None = None
+) -> Path:
+    """Run whisperkit-generate-model (fp16, no palettization) with the
+    converter env, streaming its output to conversion.log and heartbeating
+    progress — this is the longest stage and used to sit silent at 84%."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / "conversion.log"
+    # argmaxtools runs `os.system(f"xcrun coremlcompiler compile {pkg} {dir}")`
+    # with UNQUOTED paths, and names its output folder after --model-version —
+    # Slive's run dirs live under "Application Support", so convert in a
+    # space-free scratch dir (the merged checkpoint symlinked in).
+    work = Path(tempfile.mkdtemp(prefix="slive-convert-"))
+    try:
+        (work / "model").symlink_to(merged_dir.resolve(), target_is_directory=True)
+        converted = _run_converter(executable, work, log_path, progress)
+        folder = find_whisperkit_folder(converted)
+        if folder is None:
+            raise RuntimeError(
+                "Conversion finished but produced no complete WhisperKit model "
+                f"(needs {', '.join(WHISPERKIT_MODELS)}); see {log_path}")
+        final = output_dir / "model"
+        shutil.rmtree(final, ignore_errors=True)
+        for name in WHISPERKIT_MODELS + ("TextDecoderContextPrefill.mlmodelc",):
+            if (folder / name).is_dir():
+                shutil.copytree(folder / name, final / name)
+        return final
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _run_converter(executable: str, work: Path, log_path: Path,
+                   progress: Progress | None) -> Path:
+    out = work / "out"
+    command = [executable, "--model-version", str(work / "model"), "--output-dir", str(out)]
+    started = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                   env=converter_env(), text=True, cwd=work)
+        while process.poll() is None:
+            elapsed = time.monotonic() - started
+            if elapsed > CONVERT_TIMEOUT_SECONDS:
+                process.kill()
+                process.wait()
+                raise RuntimeError(
+                    f"WhisperKit conversion timed out after {elapsed / 3600:.1f} h; "
+                    f"see {log_path}")
+            if progress is not None:
+                progress(stage="converting", value=0.84,
+                         message=f"Converting for WhisperKit · {int(elapsed // 60)} min")
+            time.sleep(15)
+    if process.returncode != 0:
+        tail = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-3:]
         raise RuntimeError(
-            f"WhisperKit conversion failed ({completed.returncode}); see "
-            f"{output_dir / 'conversion.log'}"
-        )
-    candidates = [
-        path.parent
-        for path in output_dir.rglob("AudioEncoder.mlmodelc")
-        if (path.parent / "TextDecoder.mlmodelc").is_dir()
-    ]
-    if not candidates:
-        raise RuntimeError("Conversion completed but no WhisperKit model folder was found")
-    return candidates[0]
+            f"WhisperKit conversion failed ({process.returncode}): "
+            f"{' / '.join(tail) or 'no output'} — full log: {log_path}")
+    return out
 
 
 def _install_model(
@@ -595,14 +764,22 @@ def _install_model(
     staging = root / f".{config.model_name}.staging"
     if final.exists() or staging.exists():
         raise FileExistsError(f"Custom model already exists: {final}")
+    missing = [name for name in WHISPERKIT_MODELS if not (model_folder / name).is_dir()]
+    if missing:
+        raise RuntimeError(f"Converted model is missing {', '.join(missing)}")
     staging.mkdir()
     shutil.copytree(model_folder, staging / "model")
-    tokenizer = staging / "tokenizer"
-    tokenizer.mkdir()
-    for pattern in ("*token*", "vocab.json", "merges.txt", "preprocessor_config.json"):
-        for source in merged_dir.glob(pattern):
-            if source.is_file():
-                shutil.copy2(source, tokenizer / source.name)
+    # WhisperKit's local tokenizer lookup: <tokenizer>/models/<repo>/… — a
+    # flat folder silently fell back to a Hub download (and failed offline).
+    model_config = json.loads((merged_dir / "config.json").read_text(encoding="utf-8"))
+    repo = whisperkit_tokenizer_repo(model_config["vocab_size"], model_config["d_model"])
+    tokenizer = staging / "tokenizer" / "models" / repo
+    tokenizer.mkdir(parents=True)
+    for name in TOKENIZER_FILES:
+        if (merged_dir / name).is_file():
+            shutil.copy2(merged_dir / name, tokenizer / name)
+    if not (tokenizer / "tokenizer.json").is_file():
+        raise RuntimeError(f"No tokenizer.json in {merged_dir}")
     manifest = {
         "id": config.model_name,
         "display_name": config.model_name,
@@ -614,7 +791,7 @@ def _install_model(
         "tokenizer_folder": "tokenizer",
         "training_run": str(run_dir),
         "training_manifest": str(training_manifest),
-        "created_at": config.model_name.removeprefix("balenced-ft-"),
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     staging.replace(final)
