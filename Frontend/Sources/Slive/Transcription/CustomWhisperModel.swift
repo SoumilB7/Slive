@@ -49,21 +49,25 @@ enum CustomWhisperModelRegistry {
     static func load() -> [CustomWhisperModel] {
         guard let folders = try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil) else { return [] }
-        return folders.compactMap { folder in
-            let manifest = folder.appendingPathComponent("manifest.json")
-            guard let data = try? Data(contentsOf: manifest) else { return nil }
-            let decoder = JSONDecoder()
-            decoder.userInfo[.customModelManifestURL] = manifest
-            // WhisperKit throws without any of the three — never list a model
-            // that would only fail at load.
-            guard let model = try? decoder.decode(CustomWhisperModel.self, from: data),
-                  ["AudioEncoder", "TextDecoder", "MelSpectrogram"].allSatisfy({
-                      FileManager.default.fileExists(
-                        atPath: model.modelFolder.appendingPathComponent("\($0).mlmodelc").path)
-                  })
-            else { return nil }
-            return model
-        }
-        .sorted { $0.id > $1.id } // timestamped balenced-ft ids: newest first
+        return folders.compactMap { model(in: $0) }
+            .sorted { $0.id > $1.id } // timestamped balenced-ft ids: newest first
+    }
+
+    /// The installed model in `folder` (its manifest.json), or nil when the
+    /// manifest is unreadable or a model file is missing.
+    static func model(in folder: URL) -> CustomWhisperModel? {
+        let manifest = folder.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifest) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.userInfo[.customModelManifestURL] = manifest
+        // WhisperKit throws without any of the three — never list a model
+        // that would only fail at load.
+        guard let model = try? decoder.decode(CustomWhisperModel.self, from: data),
+              ["AudioEncoder", "TextDecoder", "MelSpectrogram"].allSatisfy({
+                  FileManager.default.fileExists(
+                    atPath: model.modelFolder.appendingPathComponent("\($0).mlmodelc").path)
+              })
+        else { return nil }
+        return model
     }
 }

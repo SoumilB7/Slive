@@ -110,6 +110,25 @@ struct TrainingMetric: Decodable, Equatable {
     let kl: Double?
 }
 
+/// The pipeline's pre-install check on clips the model never trained on.
+struct TrainingEvaluation: Decodable {
+    let clips: Int
+    let baseWer: Double
+    let tunedWer: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case clips
+        case baseWer = "base_wer"
+        case tunedWer = "tuned_wer"
+    }
+
+    /// e.g. "6.9% → 6.4% word errors · 63 held-out clips".
+    var summary: String {
+        String(format: "%.1f%% → %.1f%% word errors · %d held-out clips",
+               100 * baseWer, 100 * tunedWer, clips)
+    }
+}
+
 struct WhisperTrainingJob: Decodable {
     let id: String
     let modelName: String
@@ -127,6 +146,7 @@ struct WhisperTrainingJob: Decodable {
     let error: String?
     /// The stage that was running when the job failed (the rail marks it).
     let failedStage: String?
+    let evaluation: TrainingEvaluation?
     let metrics: [TrainingMetric]
     let totalUpdates: Int
     /// When the job was created — the anchor for the live ETA.
@@ -145,6 +165,7 @@ struct WhisperTrainingJob: Decodable {
         case totalUpdates = "total_updates"
         case createdAt = "created_at"
         case failedStage = "failed_stage"
+        case evaluation
     }
 
     /// Python isoformat carries 6-digit fractional seconds; parse with and
@@ -174,6 +195,7 @@ struct WhisperTrainingJob: Decodable {
         installedModelDir = try c.decodeIfPresent(String.self, forKey: .installedModelDir)
         error = try c.decodeIfPresent(String.self, forKey: .error)
         failedStage = try c.decodeIfPresent(String.self, forKey: .failedStage)
+        evaluation = try? c.decodeIfPresent(TrainingEvaluation.self, forKey: .evaluation)
         // Tolerate a backend one release behind (no telemetry fields yet).
         metrics = try c.decodeIfPresent([TrainingMetric].self, forKey: .metrics) ?? []
         totalUpdates = try c.decodeIfPresent(Int.self, forKey: .totalUpdates) ?? 0

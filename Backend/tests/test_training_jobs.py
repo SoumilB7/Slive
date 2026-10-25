@@ -567,3 +567,32 @@ def test_conversion_failure_reports_the_log_tail(monkeypatch, tmp_path) -> None:
     (tmp_path / "merged").mkdir()
     with pytest.raises(RuntimeError, match="unable to find utility"):
         pipeline._convert_whisperkit(tmp_path / "merged", tmp_path / "wk", str(converter))
+
+
+def test_heldout_split_is_stable_disjoint_and_bounded() -> None:
+    sample = type("S", (), {})
+    samples = []
+    for i in range(423):
+        s = sample()
+        s.id = f"clip-{i}"
+        samples.append(s)
+    train, held = pipeline.split_heldout(samples)
+    assert len(held) == 63 and len(train) == 360
+    assert not {s.id for s in train} & {s.id for s in held}
+    assert [s.id for s in pipeline.split_heldout(list(reversed(samples)))[1]] == \
+        [s.id for s in reversed(held)]
+    assert len(pipeline.split_heldout(samples[:50])[1]) == 15   # never over 30%
+    assert len(pipeline.split_heldout(samples * 2)[1]) == 80
+
+
+def test_word_error_rate_and_style_rates() -> None:
+    assert pipeline.word_error_rate(["Hello, world."], ["hello world"]) == 0
+    assert pipeline.word_error_rate(["a b c d"], ["a x c"]) == 0.5
+    assert pipeline.style_rates(["Fine.", "nope", "Why?"]) == (2 / 3, 2 / 3)
+
+
+def test_install_gate_refuses_a_model_that_got_worse() -> None:
+    pipeline.check_improvement(None)
+    pipeline.check_improvement({"clips": 60, "base_wer": 0.07, "tuned_wer": 0.074})
+    with pytest.raises(RuntimeError, match="7.0% → 8.0%"):
+        pipeline.check_improvement({"clips": 60, "base_wer": 0.07, "tuned_wer": 0.08})

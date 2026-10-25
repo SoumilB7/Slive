@@ -90,6 +90,9 @@ class TrainingJob:
     error: str | None = None
     #: The stage that was running when the job failed (the UI marks that node).
     failed_stage: str | None = None
+    #: Held-out check before install: clips, base_wer, tuned_wer, and the
+    #: casing / end-punctuation rates of both (pipeline._evaluate_heldout).
+    evaluation: dict | None = None
     #: Per-update training telemetry for the live chart: dicts with
     #: update / epoch / loss (CE) and, every few updates, kl — the divergence
     #: of the fine-tuned token distribution from stock Balanced (nats/token).

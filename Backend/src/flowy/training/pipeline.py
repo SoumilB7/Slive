@@ -6,11 +6,13 @@ dictation and assistant usage therefore remain lightweight.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import importlib.util
 import math
 import os
 import random
+import re
 import shutil
 import subprocess
 import tempfile
@@ -118,6 +120,66 @@ def pad_label_batch(
         target = [-100] * min(forced, n) + seq[1 + forced:]
         labels.append(target + [-100] * (width - len(target)))
     return inputs, labels
+
+
+def split_heldout(samples: list, fraction: float = 0.15, minimum: int = 20,
+                  maximum: int = 80) -> tuple[list, list]:
+    """(train, held_out): a stable ~15% of samples (20–80, never over 30%)
+    picked by a hash of the sample id, so a re-run holds out the same clips
+    and the held-out set never leaks into training."""
+    size = min(maximum, max(minimum, round(fraction * len(samples))), int(0.3 * len(samples)))
+    ranked = sorted(samples, key=lambda s: hashlib.sha1(s.id.encode()).hexdigest())
+    held = {s.id for s in ranked[:size]}
+    return [s for s in samples if s.id not in held], [s for s in samples if s.id in held]
+
+
+def _words(text: str) -> list[str]:
+    return re.sub(r"[^a-z0-9' ]+", " ", text.lower().replace("\u2019", "'")).split()
+
+
+def word_error_rate(references: list[str], hypotheses: list[str]) -> float:
+    """Corpus WER on lowercased, punctuation-free words."""
+    errors = total = 0
+    for reference, hypothesis in zip(references, hypotheses):
+        ref, hyp = _words(reference), _words(hypothesis)
+        row = list(range(len(hyp) + 1))
+        for i in range(1, len(ref) + 1):
+            previous, row[0] = row[0], i
+            for j in range(1, len(hyp) + 1):
+                current = row[j]
+                row[j] = min(row[j] + 1, row[j - 1] + 1, previous + (ref[i - 1] != hyp[j - 1]))
+                previous = current
+        errors += row[len(hyp)]
+        total += len(ref)
+    return errors / max(1, total)
+
+
+def style_rates(texts: list[str]) -> tuple[float, float]:
+    """(share starting with a capital, share ending in . ? or !) — the
+    lowercase/no-punctuation mode Whisper sometimes flips into."""
+    said = [t.strip() for t in texts if t.strip()]
+    if not said:
+        return 0.0, 0.0
+    return (sum(t[0].isupper() for t in said) / len(said),
+            sum(t[-1] in ".?!" for t in said) / len(said))
+
+
+#: A fine-tune may cost at most this much held-out WER (absolute) and still
+#: install — label noise makes tiny regressions meaningless, real ones aren't.
+MAX_WER_REGRESSION = 0.005
+
+
+def check_improvement(evaluation: dict | None) -> None:
+    """Refuse to install a model that got worse on clips it never trained on."""
+    if not evaluation:
+        return
+    base, tuned = evaluation["base_wer"], evaluation["tuned_wer"]
+    if tuned > base + MAX_WER_REGRESSION:
+        raise RuntimeError(
+            f"The fine-tuned model was less accurate on {evaluation['clips']} held-out "
+            f"recordings ({100 * base:.1f}% → {100 * tuned:.1f}% word errors), so it "
+            f"wasn't installed. More or cleaner corrected recordings usually help."
+        )
 
 
 def teacher_forcing_pair(sequence: list[int], forced: int) -> tuple[list[int], list[int]]:
@@ -304,16 +366,23 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     merged_dir = run_dir / "merged-hf"
     converted_dir = run_dir / "whisperkit"
 
+    evaluation = None
     if config.method == "qlora":
         _train_lora(config, report.eligible_samples, adapter_dir, progress, memory)
     else:
+        train, heldout = split_heldout(list(report.eligible_samples))
+        (run_dir / "heldout-ids.txt").write_text(
+            "".join(f"{s.id}\n" for s in heldout), encoding="utf-8")
         cache_dir = run_dir / "encoder-cache"
         try:
-            _train_cached(config, report.eligible_samples, adapter_dir, cache_dir,
-                          progress, memory)
+            evaluation = _train_cached(config, train, adapter_dir, cache_dir,
+                                       progress, memory, heldout=heldout)
         finally:
             # ~3.8 MB per clip — never left behind by a failed or aborted run.
             shutil.rmtree(cache_dir, ignore_errors=True)
+        (run_dir / "evaluation.json").write_text(json.dumps(evaluation, indent=2),
+                                                 encoding="utf-8")
+        check_improvement(evaluation)
     memory.check("adapter merge")
     progress(stage="merging", message="Merging LoRA into Balanced Whisper", value=0.76)
     _merge_adapter(config, adapter_dir, merged_dir)
@@ -321,7 +390,8 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     progress(stage="converting", message="Converting merged model for WhisperKit", value=0.84)
     model_folder = _convert_whisperkit(merged_dir, converted_dir, converter, progress)
     progress(stage="installing", message="Installing fine-tuned model", value=0.96)
-    installed = _install_model(config, model_folder, merged_dir, run_dir, manifest_path)
+    installed = _install_model(config, model_folder, merged_dir, run_dir, manifest_path,
+                               evaluation=evaluation)
     # The installed copy is what Slive serves; the run keeps adapter + logs.
     log = converted_dir / "conversion.log"
     if log.is_file():
@@ -499,7 +569,8 @@ def _train_cached(
     cache_dir: Path,
     progress: Progress,
     memory: MemoryGuard,
-) -> None:
+    heldout: list | None = None,
+) -> dict | None:
     """The local trainer (hybrid / decoder): encode every clip once through
     the frozen encoder, then train LoRA on top of the cache with
     CE + kl_weight x KL(base || fine-tuned) against the same weights with the
@@ -649,7 +720,54 @@ def _train_cached(
     adapter_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(adapter_dir)
     processor.save_pretrained(adapter_dir)
-    del cache, model
+    del cache
+    evaluation = None
+    if heldout:
+        evaluation = _evaluate_heldout(model, processor, heldout, device, progress)
+    del model
+    return evaluation
+
+
+def _evaluate_heldout(model, processor, heldout: list, device, progress: Progress) -> dict:
+    """Transcribe the held-out clips with the adapter on and off (the same
+    weights — base = `disable_adapter()`), greedy, as WhisperKit decodes."""
+    import torch
+
+    model.eval()
+    kwargs = {"max_new_tokens": 220, "use_cache": True}
+    if getattr(model.generation_config, "is_multilingual", True):
+        kwargs.update(language="en", task="transcribe")
+    tuned, base = [], []
+    with torch.no_grad():
+        for start in range(0, len(heldout), 8):
+            chunk = heldout[start:start + 8]
+            audio = [_load_audio(sample.audio.path)[0][: 30 * 16_000] for sample in chunk]
+            features = processor.feature_extractor(
+                audio, sampling_rate=16_000, return_tensors="pt"
+            ).input_features.to(device)
+            tuned += processor.batch_decode(model.generate(input_features=features, **kwargs),
+                                            skip_special_tokens=True)
+            with model.disable_adapter():
+                base += processor.batch_decode(
+                    model.generate(input_features=features, **kwargs), skip_special_tokens=True)
+            progress(stage="training", value=0.74,
+                     message=f"Checking accuracy on held-out clips "
+                             f"{min(start + 8, len(heldout))}/{len(heldout)}")
+    references = [sample.reference_text for sample in heldout]
+    (base_cased, base_punct), (tuned_cased, tuned_punct) = style_rates(base), style_rates(tuned)
+    evaluation = {
+        "clips": len(heldout),
+        "base_wer": round(word_error_rate(references, base), 4),
+        "tuned_wer": round(word_error_rate(references, tuned), 4),
+        "base_cased": round(base_cased, 3),
+        "tuned_cased": round(tuned_cased, 3),
+        "base_punct": round(base_punct, 3),
+        "tuned_punct": round(tuned_punct, 3),
+    }
+    progress(stage="training", value=0.75, evaluation=evaluation,
+             message=f"Held-out word errors {100 * evaluation['base_wer']:.1f}% → "
+                     f"{100 * evaluation['tuned_wer']:.1f}%")
+    return evaluation
 
 
 def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) -> None:
@@ -757,6 +875,7 @@ def _install_model(
     merged_dir: Path,
     run_dir: Path,
     training_manifest: Path,
+    evaluation: dict | None = None,
 ) -> Path:
     root = custom_models_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -792,6 +911,7 @@ def _install_model(
         "training_run": str(run_dir),
         "training_manifest": str(training_manifest),
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "evaluation": evaluation,
     }
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     staging.replace(final)

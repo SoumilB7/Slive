@@ -754,6 +754,8 @@ struct TrainingSettingsView: View {
             infoRow("Base", job?.baseModel ?? selectedTrainingModel?.hfModel ?? "Loading models…")
             infoRow("Method", TrainingMethod.label(job?.method ?? selectedMethod))
             infoRow("RAM cap", "\(Int(job?.maxRamGB ?? maxRamGB)) GB")
+            infoRow("Held-out check", job?.evaluation?.summary
+                    ?? "Before installing, the model is tested on recordings it never trained on — it's only installed if it isn't worse")
             infoRow("Name", job?.modelName
                     ?? (customName.trimmingCharacters(in: .whitespaces).isEmpty
                         ? "balanced-ft-<date>-<time>"
