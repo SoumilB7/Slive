@@ -10,6 +10,8 @@ import SwiftUI
 struct TrainingSettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject private var transcription = TranscriptionModel.shared
+    /// A ground-truth run in progress (started on the Data page).
+    @ObservedObject private var labelRun = LabelRun.shared
     @Environment(\.sliveLayout) private var layout
     /// Navigates to the Data page (capture + ground truth live there).
     var openData: () -> Void = {}
@@ -102,6 +104,7 @@ struct TrainingSettingsView: View {
 
             // 1. Can I train yet? — the first question, answered first.
             readinessSection
+            labelRunStatus
 
             CardDivider()
 
@@ -568,6 +571,24 @@ struct TrainingSettingsView: View {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text("Checking your data…").sliveCaption()
+            }
+        }
+    }
+
+    /// While the Data page is labeling, say so here — fresh labels are what
+    /// moves the readiness bars, so "wait for it" is worth knowing.
+    @ViewBuilder private var labelRunStatus: some View {
+        if labelRun.isRunning {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Labeling ground truth · \(labelRun.done.formatted()) of \(labelRun.total.formatted())")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textSecondary)
+                Spacer(minLength: 0)
+                Button("View", action: openData)
+                    .buttonStyle(.plain)
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(SliveTheme.accent)
             }
         }
     }

@@ -31,6 +31,10 @@ struct EditSample: Codable, Identifiable {
     /// column), and which model produced it. nil until fetched.
     var llmTranscript: String?
     var llmModel: String?
+    /// For consensus labels: how closely the transcribers agreed (0…1). Low
+    /// values mark the rows worth a listen. nil for every other label —
+    /// and omitted from the JSON line then, so older rows are unchanged.
+    var llmAgreement: Double?
 }
 
 /// Local, append-only store for captured edit samples + their audio. Everything
@@ -113,6 +117,7 @@ final class TrainingStore: ObservableObject {
 
     /// Delete every captured sample + audio and reset usage.
     func clearAll() {
+        indexWrites.cancel()   // nothing left to flush
         try? FileManager.default.removeItem(at: indexFile)
         if let files = try? FileManager.default.contentsOfDirectory(at: audioDir, includingPropertiesForKeys: nil) {
             for f in files { try? FileManager.default.removeItem(at: f) }
@@ -158,13 +163,28 @@ final class TrainingStore: ObservableObject {
 
     /// Attach a ground-truth transcription to a stored sample and persist.
     /// Rewrites the JSONL index (samples are small; simplicity over cleverness).
-    func setLLMTranscript(id: String, text: String, model: String) {
+    /// `coalesced` is for bulk runs: thousands of labels would otherwise each
+    /// rewrite the whole index, so the write folds into one flush at most
+    /// `IndexWriteCoalescer.interval` later (and at the run's end).
+    func setLLMTranscript(id: String, text: String, model: String,
+                          agreement: Double? = nil, coalesced: Bool = false) {
         guard let idx = samples.firstIndex(where: { $0.id == id }) else { return }
         samples[idx].llmTranscript = text
         samples[idx].llmModel = model
+        samples[idx].llmAgreement = agreement
         if samples[idx].id == latest?.id { latest = samples[idx] }
-        rewriteIndex()
+        if coalesced { indexWrites.markDirty() } else { rewriteIndex() }
     }
+
+    /// Write any coalesced label changes now (end of a run, app quit).
+    func flushPendingWrites() {
+        indexWrites.flushNow()
+    }
+
+    /// Folds bursts of label writes into one index rewrite. Safe against
+    /// dictations captured meanwhile: `add` appends to both the file and
+    /// `samples`, and the flush writes all of `samples` — the same JSONL.
+    private lazy var indexWrites = IndexWriteCoalescer { [weak self] in self?.rewriteIndex() }
 
     /// Save an explicit human correction from the Data page. `finalText` is
     /// intentionally separate from `llmTranscript`: the backend's
@@ -182,7 +202,9 @@ final class TrainingStore: ObservableObject {
     }
 
     /// Rewrite the whole JSONL index from `samples` (used after in-place edits).
+    /// Also satisfies any pending coalesced write — it carries every change.
     private func rewriteIndex() {
+        indexWrites.cancel()
         var blob = Data()
         for sample in samples {
             guard let line = try? JSONEncoder.iso.encode(sample) else { continue }
@@ -249,6 +271,54 @@ final class TrainingStore: ObservableObject {
 
     private func fileSize(_ url: URL) -> Int64 {
         (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { Int64($0) } ?? 0
+    }
+}
+
+/// Debounces "the index changed" into at most one write per `interval`: the
+/// first mark schedules a flush, later marks ride along until it runs.
+/// `flushNow` writes immediately (only if something is pending); `cancel`
+/// drops the pending flush once a full rewrite already covered it.
+@MainActor
+final class IndexWriteCoalescer {
+    nonisolated static let interval: TimeInterval = 2
+    private let write: () -> Void
+    private let schedule: (@escaping @MainActor () -> Void) -> Void
+    private(set) var isPending = false
+    /// Bumped by flush/cancel so a timer scheduled for an older batch is a no-op.
+    private var generation = 0
+
+    /// `schedule` is injectable so the self-test can fire timers by hand.
+    init(schedule: ((@escaping @MainActor () -> Void) -> Void)? = nil,
+         write: @escaping () -> Void) {
+        self.write = write
+        self.schedule = schedule ?? { fire in
+            DispatchQueue.main.asyncAfter(deadline: .now() + IndexWriteCoalescer.interval) {
+                MainActor.assumeIsolated { fire() }
+            }
+        }
+    }
+
+    func markDirty() {
+        guard !isPending else { return }
+        isPending = true
+        let batch = generation
+        schedule { [weak self] in
+            guard let self, self.generation == batch else { return }
+            self.flushNow()
+        }
+    }
+
+    func flushNow() {
+        guard isPending else { return }
+        isPending = false
+        generation += 1
+        write()
+    }
+
+    func cancel() {
+        guard isPending else { return }
+        isPending = false
+        generation += 1
     }
 }
 

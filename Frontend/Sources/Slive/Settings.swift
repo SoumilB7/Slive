@@ -37,6 +37,7 @@ final class Settings: ObservableObject {
         static let groundTruthModel = "groundTruthModel"
         static let groundTruthBaseURL = "groundTruthBaseURL"
         static let groundTruthPrompt = "groundTruthPrompt"
+        static let groundTruthRecipe = "groundTruthRecipe"
         static let localQuantized = "localQuantized"
         static let localMemLimitGB = "localMemLimitGB"
         static let speedTier = "speedTier"
@@ -284,6 +285,12 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(groundTruthPrompt, forKey: Keys.groundTruthPrompt) }
     }
 
+    /// How Should-be labels are made: the 3-way consensus (default — the
+    /// measured best) or a single provider/model from the picker.
+    @Published var groundTruthRecipe: GroundTruthRecipe {
+        didSet { UserDefaults.standard.set(groundTruthRecipe.rawValue, forKey: Keys.groundTruthRecipe) }
+    }
+
     /// Local provider: load models int8-quantized (≈ half the RAM of bf16,
     /// near-identical output). Default on; applies from the next local ask
     /// (flipping it reloads the model).
@@ -422,6 +429,8 @@ final class Settings: ObservableObject {
         groundTruthModel = gtModel
         groundTruthBaseURL = UserDefaults.standard.string(forKey: Keys.groundTruthBaseURL) ?? ""
         groundTruthPrompt = UserDefaults.standard.string(forKey: Keys.groundTruthPrompt) ?? ""
+        groundTruthRecipe = UserDefaults.standard.string(forKey: Keys.groundTruthRecipe)
+            .flatMap(GroundTruthRecipe.init(rawValue:)) ?? .consensus
         let localOpts = Self.localInferenceOptions()
         localQuantized = localOpts.quantized
         localMemLimitGB = localOpts.memGB

@@ -11,6 +11,9 @@ struct GroundTruthClient {
         case missingKey(String)
         case backendDown
         case server(String)
+        /// The key itself is unusable (rejected / out of quota) — every clip
+        /// would fail the same way, so a bulk run stops on this one.
+        case fatal(String)
 
         var errorDescription: String? {
             switch self {
@@ -18,11 +21,23 @@ struct GroundTruthClient {
                 return "No API key for \(provider) — set it below."
             case .backendDown:
                 return "Backend didn't come up — try again in a moment."
-            case .server(let message):
+            case .server(let message), .fatal(let message):
                 return message
             }
         }
+
+        /// Whether a bulk run should stop instead of counting a failure.
+        var stopsRun: Bool {
+            switch self {
+            case .missingKey, .backendDown, .fatal: return true
+            case .server: return false
+            }
+        }
     }
+
+    /// Where the consensus recipe's key lives, said exactly.
+    static let missingOpenAIKeyMessage =
+        "Best quality needs your OpenAI key — add it in Models → OpenAI, then press Label everything again."
 
     private struct RequestBody: Encodable {
         let provider: String
@@ -127,5 +142,79 @@ struct GroundTruthClient {
         if let error = decoded.error { throw GroundTruthError.server(error) }
         return ((decoded.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                 decoded.prompt)
+    }
+
+    // MARK: - 3-way consensus (POST /label_consensus)
+
+    /// One consensus label: gpt-transcribe (steered by the Vocabulary) and
+    /// whisper-1 run in parallel server-side, and the transcript closest to
+    /// the other two — Slive's own typed text being the third vote — wins.
+    struct ConsensusResult: Decodable {
+        let text: String
+        /// "gpt-transcribe" | "whisper-1" | "typed"
+        let chosen: String
+        /// 0…1 — how closely the candidates agreed.
+        let agreement: Double
+        let candidates: [String: String]
+        /// The prompt + keywords gpt-transcribe was given.
+        let prompt: String?
+    }
+
+    private struct ConsensusBody: Encodable {
+        let api_key: String
+        let audio_b64: String
+        let media_type: String
+        let typed: String
+        let hotwords: String
+        let context: String
+    }
+
+    private struct ConsensusReply: Decodable {
+        let text: String?
+        let chosen: String?
+        let agreement: Double?
+        let candidates: [String: String]?
+        let prompt: String?
+        let error: String?
+        /// "auth" | "quota" when the key itself is the problem.
+        let fatal: String?
+    }
+
+    /// Map the endpoint's JSON to a result or the right error — split out
+    /// so the self-test can check the fatal mapping without a server.
+    static func decodeConsensus(_ data: Data) throws -> ConsensusResult {
+        let reply = try JSONDecoder().decode(ConsensusReply.self, from: data)
+        if let error = reply.error {
+            throw reply.fatal != nil ? GroundTruthError.fatal(error) : GroundTruthError.server(error)
+        }
+        let text = (reply.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw GroundTruthError.server("The transcribers returned nothing for this clip.")
+        }
+        return ConsensusResult(
+            text: text, chosen: reply.chosen ?? "", agreement: reply.agreement ?? 0,
+            candidates: reply.candidates ?? [:], prompt: reply.prompt)
+    }
+
+    func consensus(audioURL: URL, apiKey: String, typed: String,
+                   hotwords: String, context: String) async throws -> ConsensusResult {
+        guard !apiKey.isEmpty else {
+            throw GroundTruthError.fatal(Self.missingOpenAIKeyMessage)
+        }
+        guard await BackendManager.shared.ensureHealthy() else {
+            throw GroundTruthError.backendDown
+        }
+        let audio = try Data(contentsOf: audioURL)
+        let body = ConsensusBody(
+            api_key: apiKey, audio_b64: audio.base64EncodedString(),
+            media_type: "audio/wav", typed: typed, hotwords: hotwords, context: context)
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:50711/label_consensus")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        // Two hosted calls in parallel, each retried with backoff on 429/5xx.
+        request.timeoutInterval = 300
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try Self.decodeConsensus(data)
     }
 }
