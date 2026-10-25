@@ -129,6 +129,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         whisper.onModelReady = { [weak self] model in
             guard let self else { return }
             if model == Settings.shared.whisperModel { self.servingDictationModel = model }
+            // The launch stand-in is ready first: dictation runs on it until
+            // the picked model has compiled.
+            else if model == self.launchStandIn(for: Settings.shared.whisperModel),
+                    !self.whisper.isReady(Settings.shared.whisperModel) {
+                self.servingDictationModel = model
+                Log.event("dictating on \(model) until \(Settings.shared.whisperModel) is ready")
+            }
             if model == Settings.shared.continuousModel { self.servingContinuousModel = model }
             self.refreshModelResidency()
         }
@@ -196,6 +203,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if continuousOn, let old = servingContinuousModel,
            !whisper.isReady(Settings.shared.continuousModel) { keep.insert(old) }
         whisper.retainModels(keep)
+        // Launch stand-in. When macOS has discarded Whisper's compiled copy
+        // (it does within about a day) its Neural Engine compile takes 60–90s,
+        // and macOS compiles one model at a time — so nothing could be
+        // dictated for over a minute after launch (Oct 31: 70s). Parakeet
+        // compiles in ~10s: load it FIRST and dictate on it until Whisper is
+        // ready (`onModelReady` re-runs this and starts Whisper right after).
+        // Only when nothing else can serve and Whisper hasn't started loading.
+        if let standIn = launchStandIn(for: dictation), !whisper.isReady(dictation),
+           !whisper.isReady(standIn), servingDictationModel.map({ !whisper.isReady($0) }) ?? true {
+            switch (whisper.status(for: dictation), whisper.status(for: standIn)) {
+            case (.preparing, _), (.downloading, _): break   // already compiling — queueing behind it helps nobody
+            case (_, .failed): break                          // no stand-in; Whisper as usual
+            default:
+                whisper.select(standIn)
+                // Ready or failed, Whisper goes next.
+                Task { [weak self] in
+                    _ = await self?.whisper.awaitReady(standIn)
+                    self?.refreshModelResidency()
+                }
+                whisper.applySpeedTier()
+                return
+            }
+        }
         // Dictation first. macOS compiles one model at a time for the Neural
         // Engine, and after its compile cache is purged (low disk space, OS
         // update) a cold compile takes minutes — the continuous model must
@@ -210,6 +240,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         whisper.applySpeedTier()   // arm (or disarm) the Feather-tier idle unload
+    }
+
+    /// A downloaded Parakeet model to dictate on while a Whisper pick compiles
+    /// — the continuous model if it's one, else any downloaded Parakeet.
+    private func launchStandIn(for dictation: String) -> String? {
+        guard SpeechEngine.of(dictation) == .whisper else { return nil }
+        let candidates = [Settings.shared.continuousModel] + ParakeetModel.allCases.map(\.rawValue)
+        return candidates.first {
+            if case .parakeet = SpeechEngine.of($0) { return whisper.isDownloaded($0) }
+            return false
+        }
     }
 
     /// Clicking the Dock icon (no windows open) reopens the home window.
