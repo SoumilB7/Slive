@@ -30,6 +30,8 @@ from flowy.assistant import answer_stream as assistant_answer_stream
 from flowy.assistant import list_models as assistant_list_models
 from flowy.assistant import transcribe_audio as assistant_transcribe_audio
 from flowy.assistant import TRANSCRIBE_PROMPT as ASSISTANT_TRANSCRIBE_PROMPT
+from flowy.label_consensus import LabelFatalError
+from flowy.label_consensus import label as consensus_label
 from flowy import local as local_models
 from flowy.training import jobs as training_jobs
 from flowy.training.models import training_models_payload
@@ -286,6 +288,46 @@ async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
     # The exact instruction the model saw rides back — the UI shows it so
     # "what went in" is inspectable, vocabulary hint included.
     return JSONResponse(status_code=200, content={"text": text, "prompt": prompt_used})
+
+
+class LabelConsensusRequest(BaseModel):
+    """One clip for the 3-way consensus labeler (gpt-transcribe + whisper-1 +
+    Slive's own transcript). OpenAI key per request, nothing stored."""
+
+    api_key: str
+    audio_b64: str
+    media_type: str = "audio/wav"
+    #: What Slive typed for this clip — the third vote.
+    typed: str = ""
+    #: The user's Custom words: a list, or the raw comma/newline string.
+    hotwords: list[str] | str = ""
+    #: The user's Vocabulary context sentence (may be empty).
+    context: str = ""
+
+    _clean_key = field_validator("api_key")(_clean_api_key)
+
+
+@app.post("/label_consensus")
+async def label_consensus_endpoint(req: LabelConsensusRequest) -> JSONResponse:
+    try:
+        result = await consensus_label(
+            api_key=req.api_key,
+            audio_b64=req.audio_b64,
+            media_type=req.media_type,
+            typed=req.typed,
+            hotwords=req.hotwords,
+            context=req.context,
+        )
+    except LabelFatalError as exc:
+        # A key problem fails every clip the same way — flagged so the app
+        # stops the whole run instead of counting a thousand failures.
+        return JSONResponse(status_code=401, content={"error": str(exc), "fatal": exc.kind})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
+        logger.exception("Consensus label failed")
+        return JSONResponse(status_code=502, content={"error": str(exc)})
+    return JSONResponse(status_code=200, content=result)
 
 
 class ModelsRequest(BaseModel):
