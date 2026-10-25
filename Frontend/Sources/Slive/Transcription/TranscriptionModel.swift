@@ -5,18 +5,56 @@ import WhisperKit
 
 private struct TimeoutError: Error {}
 
+/// Resumes a continuation exactly once, from whichever side finishes first.
+private final class TimeoutRace<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
+
+    /// Resume the caller with `result` — true only for the first finisher.
+    func finish(_ result: Result<T, Error>) -> Bool {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(with: result)
+        return pending != nil
+    }
+}
+
 /// Run `operation`, failing with `TimeoutError` if it doesn't finish in time.
+///
+/// Races an UNSTRUCTURED task against the timer. A task group can't do this:
+/// it waits for every child before returning, and WhisperKit's `loadModels` /
+/// FluidAudio's `AsrModels.load` ignore cancellation — so a hung Neural
+/// Engine compile held the 600s "timeout" open forever (status stuck on
+/// Preparing, every dictation waiting on the load never typed).
+///
+/// On timeout the operation is abandoned, not stopped (it can't be), and a
+/// result that arrives later is DISCARDED: the app already reported the
+/// failure, a retry may be under way, and Re-download may have deleted the
+/// files it loaded. The retry is cheap by then — the compile it finished is
+/// cached by the OS.
 private func withTimeout<T>(seconds: UInt64,
                             _ operation: @escaping () async throws -> T) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
-        group.addTask {
-            try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            throw TimeoutError()
+    try await withCheckedThrowingContinuation { continuation in
+        let race = TimeoutRace(continuation)
+        let timer = Task {
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            if !Task.isCancelled { _ = race.finish(.failure(TimeoutError())) }
         }
-        guard let result = try await group.next() else { throw TimeoutError() }
-        group.cancelAll()
-        return result
+        Task {
+            do {
+                let value = try await operation()
+                timer.cancel()
+                if !race.finish(.success(value)) {
+                    Log.event("model load finished after its timeout — result discarded")
+                }
+            } catch {
+                timer.cancel()
+                _ = race.finish(.failure(error))
+            }
+        }
     }
 }
 
@@ -430,6 +468,8 @@ final class TranscriptionModel: ObservableObject {
         if let engine = parakeets[model] {
             guard samples.count > 16_000 / 3 else { return nil }
             lastDecodeAt = Date()
+            await beginDecode(model)
+            defer { endDecode(model) }
             let t0 = Date()
             guard let text = try? await engine.transcribe(samples) else { return nil }
             Self.recordDecode(model: model, audioSeconds: Double(samples.count) / 16_000,
@@ -438,6 +478,8 @@ final class TranscriptionModel: ObservableObject {
         }
         guard let pipe = pipes[model], samples.count > 16_000 / 3 else { return nil }   // <~0.33s → skip
         lastDecodeAt = Date()
+        await beginDecode(model)   // t0 after: the calibration measures this decode only
+        defer { endDecode(model) }
         let t0 = Date()
         let results: [TranscriptionResult]? =
             try? await pipe.transcribe(audioArray: samples,
@@ -476,10 +518,14 @@ final class TranscriptionModel: ObservableObject {
     /// Start `model`'s load, or join the one already running.
     private func loadShared(_ model: String) async {
         if let running = loadTasks[model] { await running.value; return }
-        let task = Task { await self.load(model) }
+        // The task clears its own entry before anyone it wakes runs, so no
+        // waiter (e.g. `redownload`) can find and re-join a finished load.
+        let task = Task {
+            await self.load(model)
+            self.loadTasks[model] = nil
+        }
         loadTasks[model] = task
         await task.value
-        loadTasks[model] = nil
     }
 
     /// Decode options shared by every transcription path (file dictation, the live
@@ -590,37 +636,60 @@ final class TranscriptionModel: ObservableObject {
 
     // MARK: - Warmup + residency (speed vs battery)
 
-    /// Stamped at the start of every decode; drives the battery-mode idle
-    /// unload and the cold-graph priming heuristic.
+    /// Last use of any model: stamped at the start of every decode, at hold
+    /// start and when a load finishes. Drives the battery-mode idle unload
+    /// and the cold-graph priming heuristic. (Stamping only decodes let
+    /// Feather drop a model a minute after a 90s compile that followed a
+    /// long idle, or between the hold-start reload and the release decode.)
     private var lastDecodeAt = Date()
-    private var warming = false
+    /// The in-flight warm-up per model — warming one model never skips
+    /// warming another.
+    private var warmUps: [String: Task<Void, Never>] = [:]
+    /// Real decodes running per model (absent = none).
+    private var decodesInFlight: [String: Int] = [:]
     private var idleUnloadTimer: Timer?
+
+    /// Mark a real decode of `model` running, then wait out its in-flight
+    /// warm-up: one WhisperKit instance isn't built for concurrent
+    /// transcribes, and a warm-up sharing the pipe is the likely cause of
+    /// "the first decode on a just-loaded model came back empty" (Oct 7).
+    /// The wait is at most the warm-up already running; none starts while
+    /// the decode is counted. Pair with `endDecode`.
+    private func beginDecode(_ model: String) async {
+        decodesInFlight[model, default: 0] += 1
+        if let warming = warmUps[model] { await warming.value }
+    }
+
+    private func endDecode(_ model: String) {
+        let left = decodesInFlight[model, default: 1] - 1
+        decodesInFlight[model] = left > 0 ? left : nil
+    }
 
     /// One real decode so the first dictation pays inference only. It must
     /// be SPEECH: 0.5s of silence (the old warm-up) is skipped by Whisper in
     /// ~10ms, leaving the first real dictation to pay ~1.3s of one-time setup
     /// (`--bench-coldstart`: first dictation 2.46s vs 1.15s warm; with a
     /// speech warm-up it's 1.18s). The bundled WarmUp.wav is 4.8s of macOS
-    /// text-to-speech. Fire-and-forget; self-serialising.
+    /// text-to-speech. Fire-and-forget; one at a time per model, and skipped
+    /// while a real decode runs on it (that decode IS the warm-up).
     func warmUp(_ model: String) {
-        if let engine = parakeets[model], !warming {
+        guard warmUps[model] == nil, decodesInFlight[model] == nil else { return }
+        if let engine = parakeets[model] {
             guard let audio = Self.warmUpAudio else { return }
-            warming = true
-            Task {
-                let t0 = Date()
-                _ = try? await engine.transcribe(audio)
-                warming = false
-                Log.stt(String(format: "warmed %@ in %.2fs", model, Date().timeIntervalSince(t0)))
-            }
+            runWarmUp(model) { _ = try? await engine.transcribe(audio) }
             return
         }
-        guard let pipe = pipes[model], !warming else { return }
-        warming = true
+        guard let pipe = pipes[model] else { return }
         let audio = Self.warmUpAudio ?? [Float](repeating: 0, count: 8_000)
-        Task {
+        let options = decodeOptions()
+        runWarmUp(model) { _ = try? await pipe.transcribe(audioArray: audio, decodeOptions: options) }
+    }
+
+    private func runWarmUp(_ model: String, _ decode: @escaping () async -> Void) {
+        warmUps[model] = Task {
             let t0 = Date()
-            _ = try? await pipe.transcribe(audioArray: audio, decodeOptions: decodeOptions())
-            warming = false
+            await decode()
+            warmUps[model] = nil
             Log.stt(String(format: "warmed %@ in %.2fs", model, Date().timeIntervalSince(t0)))
         }
     }
@@ -644,15 +713,18 @@ final class TranscriptionModel: ObservableObject {
     /// decode), run a warmup in parallel with the hold so release pays
     /// inference only.
     func primeIfCold(_ model: String) {
+        let idle = Date().timeIntervalSince(lastDecodeAt)
+        // A hold is use: Feather must not drop the model between this
+        // hold-start (re)load and the release decode. Also debounces repeat
+        // holds while warming.
+        lastDecodeAt = Date()
         if !isResident(model) {
             if isDownloaded(model) {
                 Task { await loadShared(model) }   // load() warms up on success
             }
             return
         }
-        guard Settings.shared.resolvedSpeedTier.primesOnHold,
-              Date().timeIntervalSince(lastDecodeAt) > 300 else { return }
-        lastDecodeAt = Date()   // debounce repeat holds while warming
+        guard Settings.shared.resolvedSpeedTier.primesOnHold, idle > 300 else { return }
         warmUp(model)
     }
 
@@ -676,14 +748,19 @@ final class TranscriptionModel: ObservableObject {
     private func unloadIfIdle() {
         guard let after = Settings.shared.resolvedSpeedTier.idleUnloadAfter,
               Date().timeIntervalSince(lastDecodeAt) > after,
-              liveTranscriber == nil, parakeetLive == nil,
-              !pipes.isEmpty || !parakeets.isEmpty else { return }
+              liveTranscriber == nil, parakeetLive == nil else { return }
+        // Never pull a model out from under its own load, warm-up or decode.
+        let busy = loadingModels.union(warmUps.keys).union(decodesInFlight.keys)
+        let idle = Set(pipes.keys).union(parakeets.keys).subtracting(busy)
+        guard !idle.isEmpty else { return }
         NSLog("Slive: Feather tier — released idle transcription model(s)")
         // Statuses stay .ready on purpose: the models are still downloaded and
         // one hold away — every decode path load-on-demands through
         // `primeIfCold` / `transcribe(url:)`.
-        pipes.removeAll()
-        parakeets.removeAll()
+        for key in idle {
+            pipes.removeValue(forKey: key)
+            parakeets.removeValue(forKey: key)
+        }
     }
 
     // MARK: - Selection / loading
@@ -738,6 +815,11 @@ final class TranscriptionModel: ObservableObject {
     /// Delete the on-disk copy and fetch fresh (recovers a stale/partial download).
     func redownload(_ model: String) async {
         if customModel(model) != nil { await loadShared(model); return }
+        // Let an in-flight load of this model finish first: deleting its
+        // files under it and then JOINING it (download → loadShared) left
+        // the stale load's outcome standing in for the fresh one. Bounded by
+        // the load timeout.
+        if let running = loadTasks[model] { await running.value }
         pipes.removeValue(forKey: model)
         parakeets.removeValue(forKey: model)
         removeDownloaded(model)
@@ -802,6 +884,7 @@ final class TranscriptionModel: ObservableObject {
             }
             pipes[model] = p
             loadingModels.remove(model)
+            lastDecodeAt = Date()   // a fresh load is use — Feather keeps it its full window
             statuses[model] = .ready
             onModelReady?(model)
             Log.stt(String(format: "READY \(model) in %.1fs (resident: \(pipes.keys.sorted()))", Date().timeIntervalSince(t0)))
@@ -837,6 +920,7 @@ final class TranscriptionModel: ObservableObject {
             }
             parakeets[model] = engine
             loadingModels.remove(model)
+            lastDecodeAt = Date()
             statuses[model] = .ready
             onModelReady?(model)
             Log.event(String(format: "model ready: %@ in %.1fs", model, Date().timeIntervalSince(t0)))
@@ -856,10 +940,10 @@ final class TranscriptionModel: ObservableObject {
     /// it when it's available; returns nil otherwise (and kicks off a select) so the
     /// caller can tell the user what to do.
     func transcribe(_ url: URL, model: String) async -> String? {
-        if !isResident(model) {
-            guard isDownloaded(model) else { select(model); return nil }
-            await loadShared(model)   // join an in-flight load; never start a duplicate
-        }
+        // Joins an in-flight load (never a duplicate) as a WAITING dictation,
+        // so the load skips its warm-up instead of making this decode queue
+        // behind it.
+        guard await awaitReady(model) else { return nil }
         if parakeets[model] != nil {
             guard let file = try? AVAudioFile(forReading: url),
                   file.processingFormat.sampleRate == 16_000, file.processingFormat.channelCount == 1,
@@ -872,6 +956,8 @@ final class TranscriptionModel: ObservableObject {
         }
         guard let pipe = pipes[model] else { return nil }
         lastDecodeAt = Date()
+        await beginDecode(model)
+        defer { endDecode(model) }
         do {
             let results = try await pipe.transcribe(
                 audioPath: url.path,

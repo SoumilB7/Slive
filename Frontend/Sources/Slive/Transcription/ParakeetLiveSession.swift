@@ -24,10 +24,17 @@ final class ParakeetLiveSession {
         func append(_ chunk: [Float]) {
             lock.lock(); samples.append(contentsOf: chunk); lock.unlock()
         }
-        func snapshot() -> [Float] {
+        /// A fresh copy of every sample from `start` on. Never `samples`
+        /// itself: a handed-out array shares its storage, so the audio
+        /// thread's next append copied the WHOLE buffer (on the IO thread,
+        /// under the lock) whenever a live pass held a snapshot — megabytes
+        /// per pass on a long hold.
+        func copy(from start: Int = 0) -> [Float] {
             lock.lock(); defer { lock.unlock() }
-            return samples
+            guard start < samples.count else { return [] }
+            return samples.withUnsafeBufferPointer { Array(UnsafeBufferPointer(rebasing: $0[start...])) }
         }
+        func snapshot() -> [Float] { copy() }
     }
 
     /// New audio needed before another pass (0.25s).
@@ -74,11 +81,14 @@ final class ParakeetLiveSession {
 
     private func startLoop() {
         loop = Task { [weak self] in
+            // The loop's own copy, grown by just the new samples each poll —
+            // nothing it holds is shared with the buffer the mic appends to.
+            var audio: [Float] = []
             var decoded = 0
             var last = ""
             while !Task.isCancelled {
                 guard let self else { return }
-                let audio = self.buffer.snapshot()
+                audio.append(contentsOf: self.buffer.copy(from: audio.count))
                 guard audio.count - decoded >= Self.minNewSamples else {
                     try? await Task.sleep(nanoseconds: Self.pollNanoseconds)
                     continue

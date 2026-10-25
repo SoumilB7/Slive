@@ -14,8 +14,13 @@ import Foundation
 ///  - Short terms (≤4 letters: cos, ios, curl) only ever match one whole
 ///    word exactly, so "cause", "eyes" and "curls" can't turn into them.
 ///  - Only long terms (≥8 letters) tolerate a one-letter slip ("POSMP agent"),
-///    and only a substitution inside a word of 4+ letters — "in finance" or
-///    "compliances" never become a term.
+///    only when heard as several words, and only a substitution inside a word
+///    of 4+ letters — "in finance" or "compliances" never become a term, and
+///    neither does one real word a letter off a term ("internal" for the
+///    term "interval").
+///  - A trailing "s" counts as a plural only for identifier-shaped terms
+///    ("CosMP agents" → "cos-mp-agents"); after a plain term it's usually a
+///    different word ("on finances" is not onfinance).
 ///  - A term typed all-lowercase as plain words ("claude", "argo cd") says
 ///    nothing about casing, so a case-only difference is left alone: the
 ///    model's "Claude", "iOS" and "Argo CD" stay. Identifier-shaped terms
@@ -32,6 +37,8 @@ enum VocabularyCorrector {
         let key: String
         /// The form dictates casing too (has capitals or is identifier-shaped).
         let enforcesCase: Bool
+        /// Hyphens, dots or digits — a name ("cos-mp-agent"), not a word.
+        var isIdentifier: Bool { form.contains { $0 == "-" || $0 == "." || $0.isNumber } }
     }
 
     /// Longest run of words a single term can be heard as.
@@ -116,12 +123,16 @@ enum VocabularyCorrector {
         let key = span.map(\.key).joined()
         for term in terms where span.count == 1 || term.key.count > shortTermLength {
             if key == term.key { return (term.form, term) }
-            // Plural of a long term: "CosMP agents" → "cos-mp-agents".
-            if term.key.count >= fuzzyMinLength, !term.key.hasSuffix("s"),
+            // Plural of a long identifier: "CosMP agents" → "cos-mp-agents".
+            // Not plain terms: "focus on finances" became "focus onfinances".
+            if term.isIdentifier, term.key.count >= fuzzyMinLength, !term.key.hasSuffix("s"),
                key == term.key + "s" {
                 return (term.form + "s", term)
             }
         }
+        // The slip is for a term heard as SEVERAL words ("POSMP agent"); one
+        // word a letter off a term is a real word ("internal" ≠ "interval").
+        guard span.count > 1 else { return nil }
         for term in terms where term.key.count >= fuzzyMinLength && term.key.count == key.count {
             guard let slip = singleSubstitution(key, term.key) else { continue }
             // The slip must sit inside a real word, not flip a little one
