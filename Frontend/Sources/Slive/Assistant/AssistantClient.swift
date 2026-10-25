@@ -74,12 +74,26 @@ struct AssistantClient {
         let local_mem_gb: Double?
     }
     private struct OKPayload: Decodable { let text: String }
-    private struct ErrPayload: Decodable { let error: String }
     private struct ModelsPayload: Decodable { let models: [String] }
     private struct ModelsBody: Encodable {
         let provider: String
         let api_key: String
         let base_url: String?
+    }
+
+    /// The error a non-200 response carries: the server's own message when it
+    /// sent one — `{"error": …}` from our handlers, or FastAPI's `{"detail": …}`
+    /// (a string, or a list of validation items) — else the bare status.
+    private static func failure(status: Int, body: Data) -> AssistantError {
+        if let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            if let e = obj["error"] as? String, !e.isEmpty { return .server(e) }
+            if let d = obj["detail"] as? String, !d.isEmpty { return .server(d) }
+            if let items = obj["detail"] as? [[String: Any]],
+               let msg = items.first?["msg"] as? String, !msg.isEmpty {
+                return .server("Assistant: \(msg)")
+            }
+        }
+        return .badStatus(status)
     }
 
     /// Fetch the provider's LIVE list of model ids (via the backend `/models`).
@@ -106,10 +120,7 @@ struct AssistantClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AssistantError.notHTTP }
         guard http.statusCode == 200 else {
-            if let err = try? JSONDecoder().decode(ErrPayload.self, from: data) {
-                throw AssistantError.server(err.error)
-            }
-            throw AssistantError.badStatus(http.statusCode)
+            throw Self.failure(status: http.statusCode, body: data)
         }
         guard let payload = try? JSONDecoder().decode(ModelsPayload.self, from: data) else {
             throw AssistantError.decodeFailed
@@ -185,8 +196,19 @@ struct AssistantClient {
 
                     let (bytes, response) = try await session.bytes(for: request)
                     guard let http = response as? HTTPURLResponse else { throw AssistantError.notHTTP }
-                    guard http.statusCode == 200 else { throw AssistantError.badStatus(http.statusCode) }
+                    guard http.statusCode == 200 else {
+                        // Read the (small) error body so the server's message
+                        // shows instead of a bare "HTTP 422".
+                        var body = Data()
+                        for try await byte in bytes {
+                            body.append(byte)
+                            if body.count > 65_536 { break }
+                        }
+                        throw Self.failure(status: http.statusCode, body: body)
+                    }
 
+                    // Provider failures (overloaded, safety block, empty
+                    // answer) arrive as an {"error": …} line and throw below.
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
                         guard let data = line.data(using: .utf8),
@@ -237,10 +259,7 @@ struct AssistantClient {
 
         guard http.statusCode == 200 else {
             // Prefer the server's error message when present.
-            if let err = try? JSONDecoder().decode(ErrPayload.self, from: data) {
-                throw AssistantError.server(err.error)
-            }
-            throw AssistantError.badStatus(http.statusCode)
+            throw Self.failure(status: http.statusCode, body: data)
         }
         guard let payload = try? JSONDecoder().decode(OKPayload.self, from: data) else {
             throw AssistantError.decodeFailed

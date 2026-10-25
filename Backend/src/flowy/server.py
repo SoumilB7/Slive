@@ -18,6 +18,7 @@ import base64
 import binascii
 import json
 import logging
+import os
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
@@ -40,6 +41,45 @@ PORT = 50711
 logger = logging.getLogger("flowy.server")
 
 app = FastAPI(title="Slive Server", version="0.1.0")
+
+#: Hostnames the app reaches us by. Anything else is a DNS-rebinding page
+#: (evil.example resolved to 127.0.0.1) and must not drive /local/delete,
+#: /training/start, etc.
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _host_name(host: str) -> str:
+    """The hostname part of a Host header (port and IPv6 brackets dropped)."""
+    host = host.strip().lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+class _LocalOnlyMiddleware:
+    """Reject (403) requests not addressed to a loopback Host, and any request
+    carrying an Origin. The app's URLSession sends no Origin; a browser always
+    does on cross-origin POSTs (``null`` from sandboxed frames included), so
+    this blocks web pages from calling the local port at all."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            host = headers.get(b"host", b"").decode("latin-1")
+            origin = headers.get(b"origin", b"").decode("latin-1").strip()
+            if _host_name(host) not in _LOCAL_HOSTS or origin:
+                response = JSONResponse(
+                    status_code=403, content={"error": "Forbidden: local app requests only."}
+                )
+                await response(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(_LocalOnlyMiddleware)
 
 
 # NOTE: no model loading at startup. Dictation STT runs on-device (WhisperKit)
@@ -352,7 +392,9 @@ async def training_readiness_endpoint() -> JSONResponse:
 async def training_start_endpoint(req: TrainingStartRequest) -> JSONResponse:
     """Start LoRA training through merge, WhisperKit conversion, and install."""
     try:
-        job = training_jobs.start_job(
+        # start_job runs readiness(), which hashes every clip — off the loop.
+        job = await run_in_threadpool(
+            training_jobs.start_job,
             source_model=req.source_model,
             method=req.method,
             custom_name=req.name,
@@ -380,7 +422,19 @@ async def training_job_endpoint(job_id: str) -> JSONResponse:
 def main() -> None:
     import uvicorn
 
+    # Launched by the app: lead our own process group so the app's stop() can
+    # signal us AND our children (the training converter) as one unit.
+    if os.environ.get("SLIVE_PROCESS_GROUP") == "1":
+        try:
+            os.setpgid(0, 0)
+        except OSError:
+            pass
+
     logging.basicConfig(level=logging.INFO)
+    # httpx/httpcore log every request URL at INFO — keep provider traffic
+    # (and anything a URL could ever carry) out of the backend log.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 

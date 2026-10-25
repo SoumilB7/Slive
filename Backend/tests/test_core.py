@@ -76,7 +76,7 @@ def test_download_job_lifecycle():
 def test_download_endpoint_rejects_bad_id():
     from fastapi.testclient import TestClient
     from flowy.server import app
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:50711")
     r = client.post("/local/download", json={"repo_id": "not-valid"})
     assert r.status_code == 400
     assert "error" in r.json()

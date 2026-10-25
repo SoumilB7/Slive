@@ -35,6 +35,12 @@ DEFAULT_MODELS = {
 }
 
 
+def _gemini_headers(api_key: str) -> dict[str, str]:
+    """Gemini auth rides in a header, never the URL: httpx logs request URLs,
+    and a ``?key=`` would land the plaintext key in the backend log."""
+    return {"x-goog-api-key": api_key}
+
+
 def _truncate(text: str, limit: int = 500) -> str:
     """Clip a response body for error messages so logs stay readable."""
     if len(text) <= limit:
@@ -230,7 +236,9 @@ async def answer_stream(
 
     Uses each provider's server-sent-events streaming API. Raises ValueError on
     the same conditions as ``answer`` (missing key/text, bad status, unknown
-    provider); partial output already yielded stays yielded.
+    provider), on an error event the provider sends mid-stream (overloaded,
+    safety block, ...), and when the stream ends with no text at all; partial
+    output already yielded stays yielded.
     """
     if not text or not text.strip():
         raise ValueError("Empty prompt text")
@@ -241,41 +249,53 @@ async def answer_stream(
             history or [], text, [img.get("data", "") for img in (images or [])],
             max_tokens, local_quantized, local_mem_gb or local_infer.DEFAULT_MEM_GB,
         )
-        if reply:
-            yield reply
+        if not reply:
+            raise ValueError("The local model returned an empty answer — try again.")
+        yield reply
         return
     if not api_key:
         raise ValueError("Missing api_key")
 
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
         if provider == "anthropic":
-            async for d in _stream_anthropic(
+            label = "Anthropic"
+            stream = _stream_anthropic(
                 client, text, model, api_key, system_prompt, max_tokens,
                 images=images, history=history,
-            ):
-                yield d
+            )
         elif provider in ("openai", "openai_compatible"):
             if provider == "openai_compatible" and not base_url:
                 raise ValueError("base_url is required for openai_compatible")
             if provider == "openai":
+                label = "OpenAI"
                 url = "https://api.openai.com/v1/chat/completions"
                 token_field = "max_completion_tokens"
             else:
+                host = httpx.URL(base_url).host or "The provider"
+                label = "OpenRouter" if "openrouter" in host else host
                 url = f"{base_url.rstrip('/')}/chat/completions"
                 token_field = "max_tokens"
-            async for d in _stream_openai(
+            stream = _stream_openai(
                 client, text, model, api_key, system_prompt, max_tokens, url,
-                token_field=token_field, images=images, history=history,
-            ):
-                yield d
+                token_field=token_field, images=images, history=history, label=label,
+            )
         elif provider == "gemini":
-            async for d in _stream_gemini(
+            label = "Gemini"
+            stream = _stream_gemini(
                 client, text, model, api_key, system_prompt, max_tokens,
                 images=images, history=history,
-            ):
-                yield d
+            )
         else:
             raise ValueError(f"Unknown provider: {provider}")
+
+        got_text = False
+        async for d in stream:
+            got_text = True
+            yield d
+        # A stream that ends without a single token would make the overlay
+        # vanish with no answer — say so instead.
+        if not got_text:
+            raise ValueError(f"{label} returned an empty answer — try again.")
 
 
 def _sse_data(line: str) -> str | None:
@@ -283,6 +303,27 @@ def _sse_data(line: str) -> str | None:
     if line.startswith("data:"):
         return line[len("data:"):].strip()
     return None
+
+
+def _stream_error_message(label: str, err: Any) -> str:
+    """Readable text for an error event a provider sent mid-stream (Anthropic
+    ``type: error``, OpenAI/OpenRouter/Gemini ``{"error": ...}``)."""
+    if isinstance(err, dict):
+        kind = str(err.get("type") or err.get("status") or err.get("code") or "")
+        message = str(err.get("message") or kind or "unknown error")
+    else:
+        kind, message = "", str(err)
+    lowered = f"{kind} {message}".lower()
+    if any(k in lowered for k in ("overloaded", "unavailable", "503", "529")):
+        return f"{label} is overloaded — try again in a moment."
+    if any(k in lowered for k in ("rate_limit", "rate limit", "429", "resource_exhausted")):
+        return f"{label} rate limit hit — wait a moment and try again."
+    return f"{label} error: {_truncate(message, 300)}"
+
+
+#: Gemini finish reasons that mean "stopped normally" — anything else (SAFETY,
+#: RECITATION, PROHIBITED_CONTENT, ...) is a block the user should see.
+_GEMINI_OK_FINISH = {"STOP", "MAX_TOKENS", "FINISH_REASON_UNSPECIFIED"}
 
 
 async def _raise_for_stream_status(provider: str, r: httpx.Response) -> None:
@@ -334,6 +375,8 @@ async def _stream_anthropic(
                 piece = evt.get("delta", {}).get("text")
                 if piece:
                     yield piece
+            elif evt.get("type") == "error":
+                raise ValueError(_stream_error_message("Anthropic", evt.get("error")))
 
 
 async def _stream_openai(
@@ -347,6 +390,7 @@ async def _stream_openai(
     token_field: str = "max_completion_tokens",
     images: list[dict[str, str]] | None = None,
     history: list[dict[str, str]] | None = None,
+    label: str = "OpenAI",
 ) -> AsyncIterator[str]:
     messages = _openai_messages(text, system_prompt, images, history)
     body: dict[str, Any] = {
@@ -365,8 +409,14 @@ async def _stream_openai(
                 continue
             try:
                 evt = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            # OpenRouter (and OpenAI) report mid-stream failures as an event.
+            if isinstance(evt, dict) and evt.get("error"):
+                raise ValueError(_stream_error_message(label, evt["error"]))
+            try:
                 piece = evt["choices"][0]["delta"].get("content")
-            except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            except (KeyError, IndexError, TypeError, AttributeError):
                 continue
             if piece:
                 yield piece
@@ -390,9 +440,11 @@ async def _stream_gemini(
         body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:streamGenerateContent?alt=sse&key={api_key}"
+        f"{model}:streamGenerateContent?alt=sse"
     )
-    async with client.stream("POST", url, json=body) as r:
+    async with client.stream(
+        "POST", url, headers=_gemini_headers(api_key), json=body
+    ) as r:
         await _raise_for_stream_status("gemini", r)
         async for line in r.aiter_lines():
             data = _sse_data(line)
@@ -400,13 +452,27 @@ async def _stream_gemini(
                 continue
             try:
                 evt = json.loads(data)
-                parts = evt["candidates"][0]["content"]["parts"]
-            except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            except json.JSONDecodeError:
                 continue
-            for part in parts:
-                piece = part.get("text")
+            if not isinstance(evt, dict):
+                continue
+            if evt.get("error"):
+                raise ValueError(_stream_error_message("Gemini", evt["error"]))
+            # A blocked prompt comes back with no candidates, only feedback.
+            block = (evt.get("promptFeedback") or {}).get("blockReason")
+            if block:
+                raise ValueError(f"Gemini blocked this request ({block}) — try rephrasing.")
+            candidates = evt.get("candidates") or []
+            if not candidates or not isinstance(candidates[0], dict):
+                continue
+            cand = candidates[0]
+            for part in (cand.get("content") or {}).get("parts") or []:
+                piece = part.get("text") if isinstance(part, dict) else None
                 if piece:
                     yield piece
+            finish = cand.get("finishReason")
+            if finish and finish not in _GEMINI_OK_FINISH:
+                raise ValueError(f"Gemini stopped the answer ({finish}) — try rephrasing.")
 
 
 async def list_models(
@@ -458,7 +524,8 @@ async def list_models(
         if provider == "gemini":
             response = await client.get(
                 "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": api_key, "pageSize": 1000},
+                headers=_gemini_headers(api_key),
+                params={"pageSize": 1000},
             )
             _raise_for_status("gemini", response)
             out: list[str] = []
@@ -566,9 +633,9 @@ async def _answer_gemini(
         body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={api_key}"
+        f"{model}:generateContent"
     )
-    response = await client.post(url, json=body)
+    response = await client.post(url, headers=_gemini_headers(api_key), json=body)
     _raise_for_status("gemini", response)
     try:
         return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -816,7 +883,7 @@ async def transcribe_audio(
         if provider == "gemini":
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent?key={api_key}"
+                f"{model}:generateContent"
             )
             gemini_prompt = _with_vocab_hint(_effective_transcribe_prompt(prompt_override), vocab_hint)
             body = {
@@ -827,7 +894,7 @@ async def transcribe_audio(
                     ],
                 }],
             }
-            resp = await client.post(url, json=body)
+            resp = await client.post(url, headers=_gemini_headers(api_key), json=body)
             _raise_for_status("gemini", resp)
             data = resp.json()
             try:

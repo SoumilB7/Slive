@@ -20,6 +20,15 @@ final class BackendManager: ObservableObject {
     }
 
     @Published private(set) var status: Status = .offline
+    /// Why the last spawn couldn't even start (no backend dir, no venv,
+    /// exec failed). Retrying can't help, so `ensureHealthy` returns at once
+    /// and the UI can say what to fix instead of "still starting".
+    @Published private(set) var lastSpawnError: String?
+
+    /// `pgrep`/`pkill -f` regex for our server's argv (`… -m flowy.server`).
+    /// Escaped and anchored: a bare `flowy.server` (dot = any char) also
+    /// matched editors, `tail`s and dev servers that merely mention it.
+    nonisolated static let serverPattern = "[-]m flowy\\.server( |$)"
 
     private let port = 50711
     private let healthURL = URL(string: "http://127.0.0.1:50711/health")!
@@ -59,7 +68,7 @@ final class BackendManager: ObservableObject {
         Task.detached(priority: .utility) {
             let pgrep = Process()
             pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-            pgrep.arguments = ["-f", "flowy.server"]
+            pgrep.arguments = ["-f", BackendManager.serverPattern]
             let out = Pipe()
             pgrep.standardOutput = out
             guard (try? pgrep.run()) != nil else { return }
@@ -68,7 +77,7 @@ final class BackendManager: ObservableObject {
             let pids = String(data: data, encoding: .utf8)?
                 .split(whereSeparator: \.isNewline)
                 .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) } ?? []
-            for pid in pids where pid != ownPid { kill(pid, SIGTERM) }
+            for pid in pids where pid != ownPid { BackendManager.signal(pid, SIGTERM) }
             if !pids.isEmpty {
                 NSLog("Slive: reaped \(pids.count) orphan backend process(es).")
             }
@@ -76,13 +85,21 @@ final class BackendManager: ObservableObject {
     }
 
     /// Terminate the backend on quit — the one we started, plus any reused/orphan
-    /// `flowy.server`, so ⌘Q always leaves nothing on the port. SIGTERM first for
-    /// a clean uvicorn shutdown, then SIGKILL to guarantee nothing survives.
+    /// `flowy.server`, so ⌘Q always leaves nothing on the port. SIGTERM to the
+    /// server's whole process group (it leads one, so a running training
+    /// converter goes too), up to ~1.5s for a clean uvicorn shutdown, then
+    /// SIGKILL for anything left. Blocking is fine here: it runs at quit, and
+    /// the server must be gone before the app exits.
     func stop() {
-        if let p = process, p.isRunning { p.terminate() }
+        var pids = Set(Self.serverPIDs())
+        if let p = process, p.isRunning { pids.insert(p.processIdentifier) }
         process = nil
-        pkillServer(signal: "TERM")
-        pkillServer(signal: "KILL")
+        for pid in pids { Self.signal(pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(1.5)
+        while Date() < deadline, pids.contains(where: { kill($0, 0) == 0 }) {
+            usleep(50_000)
+        }
+        for pid in pids where kill(pid, 0) == 0 { Self.signal(pid, SIGKILL) }
         status = .offline
     }
 
@@ -93,6 +110,7 @@ final class BackendManager: ObservableObject {
         if await probeHealth() { status = .running; return true }
         status = .starting
         spawnIfNeeded()
+        if lastSpawnError != nil, process == nil { status = .offline; return false }
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -115,11 +133,13 @@ final class BackendManager: ObservableObject {
     private func spawn() {
         guard let dir = backendDir else {
             NSLog("Slive: backend dir not configured — cannot start the server.")
+            lastSpawnError = "The Slive Server isn't configured in this build — rebuild with build.sh."
             return
         }
         let python = dir.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             NSLog("Slive: venv python missing at \(python.path) — run `uv sync` in Backend/.")
+            lastSpawnError = "The Slive Server's Python environment is missing — run `uv sync` in Backend/."
             return
         }
 
@@ -132,11 +152,14 @@ final class BackendManager: ObservableObject {
         p.executableURL = launch.exe
         p.arguments = ["-m", "flowy.server"]
         p.currentDirectoryURL = dir
+        var env = ProcessInfo.processInfo.environment
         if let extraPath = launch.pythonPath {
-            var env = ProcessInfo.processInfo.environment
             env["PYTHONPATH"] = env["PYTHONPATH"].map { "\(extraPath):\($0)" } ?? extraPath
-            p.environment = env
         }
+        // The server makes itself a process-group leader, so stop() can signal
+        // it and its children (the training converter) together.
+        env["SLIVE_PROCESS_GROUP"] = "1"
+        p.environment = env
 
         let logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("slive-backend.log")
@@ -146,10 +169,12 @@ final class BackendManager: ObservableObject {
             p.standardError = handle
         }
 
-        p.terminationHandler = { [weak self] _ in
+        p.terminationHandler = { [weak self] ended in
             Task { @MainActor in
-                self?.process = nil
-                self?.status = .offline
+                // Only forget the process that ended — not a newer respawn.
+                guard let self, self.process === ended else { return }
+                self.process = nil
+                self.status = .offline
             }
         }
 
@@ -157,9 +182,11 @@ final class BackendManager: ObservableObject {
             try p.run()
             process = p
             status = .starting
+            lastSpawnError = nil
             NSLog("Slive: backend starting (pid \(p.processIdentifier)) as \(launch.exe.lastPathComponent).")
         } catch {
             NSLog("Slive: failed to start backend — \(error)")
+            lastSpawnError = "The Slive Server couldn't start: \(error.localizedDescription)"
         }
     }
 
@@ -225,13 +252,26 @@ final class BackendManager: ObservableObject {
         }
     }
 
-    /// Kill every `flowy.server` process with the given signal ("TERM"/"KILL").
-    /// Matches our own spawned server and any orphan/stale one on the port.
-    private func pkillServer(signal: String = "TERM") {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        task.arguments = ["-\(signal)", "-f", "flowy.server"]
-        try? task.run()
-        task.waitUntilExit()
+    /// PIDs of every running `flowy.server` (ours and any orphan on the port).
+    nonisolated private static func serverPIDs() -> [pid_t] {
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-f", serverPattern]
+        let out = Pipe()
+        pgrep.standardOutput = out
+        guard (try? pgrep.run()) != nil else { return [] }
+        pgrep.waitUntilExit()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?
+            .split(whereSeparator: \.isNewline)
+            .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) } ?? []
+    }
+
+    /// Signal a server and, when it leads its own process group (servers we
+    /// spawn do), every process in that group. A server from an older build
+    /// leads no group, so the group signal finds nothing and is harmless.
+    nonisolated static func signal(_ pid: pid_t, _ sig: Int32) {
+        kill(-pid, sig)
+        kill(pid, sig)
     }
 }

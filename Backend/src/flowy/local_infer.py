@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import functools
 import gc
 import tempfile
 import threading
@@ -66,7 +67,11 @@ class _Loaded:
 
 
 _current: _Loaded | None = None
-_lock = threading.Lock()
+#: Guards the resident model across load AND generation: chat/transcribe hold
+#: it end to end, so a concurrent request (or a model switch) waits instead of
+#: freeing the weights mid-generate. Re-entrant because they call _load, and
+#: an OOM inside _generate calls unload, while already holding it.
+_lock = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +315,16 @@ def _text_msg(role: str, text: str, loaded: _Loaded) -> dict:
 # Public entry points
 # ---------------------------------------------------------------------------
 
+def _holding_lock(fn):
+    """Run an entry point with ``_lock`` held from load through generation."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+@_holding_lock
 def chat(
     repo_id: str,
     token: str | None,
@@ -354,6 +369,7 @@ def chat(
             _remove(path)
 
 
+@_holding_lock
 def transcribe(
     repo_id: str,
     token: str | None,
