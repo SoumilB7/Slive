@@ -56,9 +56,14 @@ enum BenchSupport {
         return Array(e.suffix(3)) != Array(t.suffix(min(3, e.count)))
     }
 
+    /// The words WER counts: lowercased, split on anything but letters,
+    /// digits and apostrophes.
+    static func words(_ s: String) -> [Substring] {
+        s.lowercased().split { !($0.isLetter || $0.isNumber || $0 == "'") }
+    }
+
     /// Word error rate of `hyp` against `ref` (lowercased, punctuation-free).
     static func wer(_ hyp: String, _ ref: String) -> Double {
-        func words(_ s: String) -> [Substring] { s.lowercased().split { !($0.isLetter || $0.isNumber || $0 == "'") } }
         let h = words(hyp), r = words(ref)
         guard !r.isEmpty else { return h.isEmpty ? 0 : 1 }
         var prev = Array(0...h.count)

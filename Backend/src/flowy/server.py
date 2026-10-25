@@ -442,8 +442,13 @@ async def training_start_endpoint(req: TrainingStartRequest) -> JSONResponse:
             custom_name=req.name,
             max_ram_gb=req.max_ram_gb,
         )
-    except ValueError as exc:
+    except training_jobs.TrainingConflict as exc:
         return JSONResponse(status_code=409, content={"error": str(exc)})
+    except training_jobs.TrainingUnavailable as exc:
+        # A missing dependency (converter, CUDA, disk) — not the request's fault.
+        return JSONResponse(status_code=424, content={"error": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"error": str(exc)})
     return JSONResponse(status_code=202, content={"job": job.to_dict()})
 
 
@@ -473,6 +478,12 @@ def main() -> None:
             pass
 
     logging.basicConfig(level=logging.INFO)
+    # Jobs live in memory: mark runs a previous server died during as
+    # interrupted (and reload past jobs) before the app asks for them.
+    try:
+        training_jobs.recover_interrupted()
+    except OSError:
+        logging.getLogger(__name__).warning("Training-run recovery failed", exc_info=True)
     # httpx/httpcore log every request URL at INFO — keep provider traffic
     # (and anything a URL could ever carry) out of the backend log.
     logging.getLogger("httpx").setLevel(logging.WARNING)

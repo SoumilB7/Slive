@@ -156,6 +156,14 @@ final class BackendManager: ObservableObject {
         if let extraPath = launch.pythonPath {
             env["PYTHONPATH"] = env["PYTHONPATH"].map { "\(extraPath):\($0)" } ?? extraPath
         }
+        // A Dock-launched app inherits launchd's bare PATH (/usr/bin:/bin:…);
+        // the training pipeline shells out to tools (uv, the WhisperKit
+        // converter) that live in the venv, ~/.local/bin or Homebrew.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let toolDirs = [dir.appendingPathComponent(".venv/bin").path, "\(home)/.local/bin",
+                        "/opt/homebrew/bin", "/usr/local/bin"]
+        env["PATH"] = (toolDirs + [env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"])
+            .joined(separator: ":")
         // The server makes itself a process-group leader, so stop() can signal
         // it and its children (the training converter) together.
         env["SLIVE_PROCESS_GROUP"] = "1"

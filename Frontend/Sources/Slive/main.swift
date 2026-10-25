@@ -35,6 +35,15 @@ if CommandLine.arguments.contains("--bench-coldstart") {
     dispatchMain()
 }
 
+// `Slive --custom-model-check <folder>` — does a trained model the backend
+// installed load and transcribe on the app path? (CustomModelCheck.swift)
+if CommandLine.arguments.contains("--custom-model-check") {
+    Task { @MainActor in
+        exit(await CustomModelCheck.run(CommandLine.arguments))
+    }
+    dispatchMain()
+}
+
 // `Slive --bench-dump …` — Whisper's side of a model comparison (DumpBench.swift).
 if CommandLine.arguments.contains("--bench-dump") {
     Task { @MainActor in

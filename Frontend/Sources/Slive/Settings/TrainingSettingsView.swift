@@ -78,7 +78,7 @@ struct TrainingSettingsView: View {
         ]
     }
 
-    private enum StageState { case pending, active, done }
+    private enum StageState { case pending, active, done, failed }
 
     /// Index of the stage the job is currently in (5 = everything done).
     private var activeIndex: Int {
@@ -88,7 +88,17 @@ struct TrainingSettingsView: View {
         return stages.firstIndex { $0.keys.contains(job.stage) } ?? 0
     }
 
+    /// The stage a failed job stopped in (-1 when it didn't fail / unknown).
+    private var failedIndex: Int {
+        guard let job, job.state == "error", let stage = job.failedStage else { return -1 }
+        return stages.firstIndex { $0.keys.contains(stage) } ?? 0
+    }
+
     private func state(of index: Int) -> StageState {
+        let failed = failedIndex
+        if failed >= 0 {
+            return index < failed ? .done : index == failed ? .failed : .pending
+        }
         let active = activeIndex
         if active >= stages.count || index < active { return .done }
         if index == active { return .active }
@@ -141,12 +151,52 @@ struct TrainingSettingsView: View {
             trainButtonRow
 
             if let jobError {
-                Text(jobError)
-                    .font(SliveTheme.captionFont)
-                    .foregroundStyle(.orange.opacity(0.95))
-                    .fixedSize(horizontal: false, vertical: true)
+                errorBanner(jobError)
             }
         }
+    }
+
+    /// Why training didn't start or where it stopped — a real banner, not a
+    /// caption: Oct 29 a refused start rendered nothing at all.
+    private func errorBanner(_ message: String) -> some View {
+        let stopped = job?.state == "error" && job?.error == message
+        let stage = failedIndex >= 0 && failedIndex < stages.count ? stages[failedIndex].title : nil
+        let title = stopped
+            ? "Training stopped\(stage.map { " at \($0)" } ?? "")"
+            : "Training didn't start"
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.orange)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(SliveTheme.font(12, .semibold))
+                    .foregroundStyle(SliveTheme.textPrimary)
+                Text(message)
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textMid)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button {
+                jobError = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(SliveTheme.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.orange.opacity(0.08))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1))
+        )
     }
 
     private var selectedTrainingModel: WhisperTrainingModel? {
@@ -328,8 +378,7 @@ struct TrainingSettingsView: View {
             Text(timeText(estimate))
                 .font(SliveTheme.mono(11))
                 .foregroundStyle(SliveTheme.accent)
-            Text(String(format: "3 epochs · %.1f min audio · rough",
-                        readiness?.eligibleAudioMinutes ?? 0))
+            Text("3 epochs · \(readiness?.eligibleCount ?? 0) clips · rough")
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(SliveTheme.textTertiary)
         } else {
@@ -353,13 +402,15 @@ struct TrainingSettingsView: View {
 
     // MARK: - Time estimates
 
-    /// Minutes per minute of eligible audio, measured Oct 2026 on an M4 Air
-    /// with turbo (large family): the one-off encoding pass, then each epoch
-    /// of the method. Other families scale by rough model size — rough, not
-    /// a promise. The tail is merge + ANE conversion + install.
-    private static let encodeMinutesPerAudioMinute = 0.21
-    private static let epochMinutesPerAudioMinute: [String: Double] = [
-        TrainingMethod.hybrid: 0.24, TrainingMethod.decoder: 0.026,
+    /// Seconds per eligible CLIP (every clip pads to Whisper's 30 s window,
+    /// so cost barely depends on its length), measured on an M4 Air with
+    /// turbo (large family): Oct 12 — 3.1 hybrid / 0.33 decoder s/clip/epoch —
+    /// and Oct 29 under memory pressure — 5.5 / 0.8; the midpoint. Encoding is
+    /// the one-off frozen-encoder pass. Other families scale by rough model
+    /// size. The tail is merge + ANE conversion + install — rough, not a promise.
+    private static let encodeSecondsPerClip = 2.5
+    private static let epochSecondsPerClip: [String: Double] = [
+        TrainingMethod.hybrid: 4.3, TrainingMethod.decoder: 0.6,
     ]
     private static let familyScale: [String: Double] = [
         "tiny": 0.05, "base": 0.1, "small": 0.3, "medium": 0.6, "large": 1,
@@ -368,15 +419,15 @@ struct TrainingSettingsView: View {
         "tiny": 3, "base": 4, "small": 7, "medium": 14, "large": 26,
     ]
 
-    /// Pre-run whole-pipeline estimate for the local methods (nil when the
-    /// audio pool is empty or the family/method is unknown).
+    /// Pre-run whole-pipeline estimate for the local methods (nil when there
+    /// are no eligible clips or the family/method is unknown).
     private var estimatedMinutes: Double? {
         guard let model = selectedTrainingModel,
-              let audio = readiness?.eligibleAudioMinutes, audio > 0,
+              let clips = readiness?.eligibleCount, clips > 0,
               let scale = Self.familyScale[model.family],
-              let epoch = Self.epochMinutesPerAudioMinute[selectedMethod]
+              let epoch = Self.epochSecondsPerClip[selectedMethod]
         else { return nil }
-        let sft = audio * scale * (Self.encodeMinutesPerAudioMinute + epoch * 3)
+        let sft = Double(clips) * scale * (Self.encodeSecondsPerClip + epoch * 3) / 60
         return sft + (Self.tailMinutes[model.family] ?? 5)
     }
 
@@ -444,26 +495,29 @@ struct TrainingSettingsView: View {
                         .frame(width: 42, height: 42)
                         .rotationEffect(.radians(phase * 1.7))
                 }
+                let tint = state == .failed ? Color.orange : SliveTheme.accent
                 Circle()
                     .fill(state == .pending ? Color.white.opacity(0.05)
-                          : SliveTheme.accent.opacity(state == .done ? 0.2 : 0.3))
+                          : tint.opacity(state == .done ? 0.2 : 0.3))
                     .overlay(
                         Circle().strokeBorder(
                             state == .pending ? Color.white.opacity(0.15)
-                            : SliveTheme.accent.opacity(0.85),
+                            : tint.opacity(0.85),
                             lineWidth: 1)
                     )
                     .frame(width: 34, height: 34)
-                Image(systemName: state == .done ? "checkmark" : stage.icon)
+                Image(systemName: state == .done ? "checkmark"
+                      : state == .failed ? "xmark" : stage.icon)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(state == .pending ? Color.white.opacity(0.35) : SliveTheme.accent)
+                    .foregroundStyle(state == .pending ? Color.white.opacity(0.35) : tint)
                     .shadow(color: state == .active ? SliveTheme.accent.opacity(0.8) : .clear,
                             radius: 4)
             }
             .frame(width: 50, height: 50)
             Text(stage.title)
                 .font(SliveTheme.font(11, .semibold))
-                .foregroundStyle(state == .pending ? SliveTheme.textSecondary : SliveTheme.textPrimary)
+                .foregroundStyle(state == .failed ? Color.orange
+                                 : state == .pending ? SliveTheme.textSecondary : SliveTheme.textPrimary)
                 .multilineTextAlignment(.center)
             if layout != .compact {
                 Text(stage.detail)
@@ -721,6 +775,8 @@ struct TrainingSettingsView: View {
             infoRow("Base", job?.baseModel ?? selectedTrainingModel?.hfModel ?? "Loading models…")
             infoRow("Method", TrainingMethod.label(job?.method ?? selectedMethod))
             infoRow("RAM cap", "\(Int(job?.maxRamGB ?? maxRamGB)) GB")
+            infoRow("Held-out check", job?.evaluation?.summary
+                    ?? "Before installing, the model is tested on recordings it never trained on — it's only installed if it isn't worse")
             infoRow("Name", job?.modelName
                     ?? (customName.trimmingCharacters(in: .whitespaces).isEmpty
                         ? "balanced-ft-<date>-<time>"
@@ -768,10 +824,12 @@ struct TrainingSettingsView: View {
 
     // MARK: - Job state machine
 
-    private func refresh() {
+    /// `keepingError`: a failed start reports its own message — refreshing
+    /// must not wipe it in the same turn (Oct 29: the refusal never drew).
+    private func refresh(keepingError: Bool = false) {
         guard !checking else { return }
         checking = true
-        jobError = nil
+        if !keepingError { jobError = nil }
         Task { @MainActor in
             defer { checking = false }
             do {
@@ -793,9 +851,9 @@ struct TrainingSettingsView: View {
                 }
                 if let job, job.isActive { poll(job.id) }
                 if job?.state == "done" { transcription.refreshCustomModels() }
-                if job?.state == "error" { jobError = job?.error }
+                if job?.state == "error", !keepingError { jobError = job?.error }
             } catch {
-                jobError = error.localizedDescription
+                if !keepingError { jobError = error.localizedDescription }
             }
         }
     }
@@ -813,16 +871,18 @@ struct TrainingSettingsView: View {
                 poll(started.id)
             } catch {
                 jobError = error.localizedDescription
-                refresh()
+                refresh(keepingError: true)
             }
         }
     }
 
     private func poll(_ id: String) {
         Task { @MainActor in
+            var failures = 0
             while true {
                 do {
                     let latest = try await TrainingClient().status(id: id)
+                    failures = 0
                     job = latest
                     if !latest.isActive {
                         if latest.state == "done" {
@@ -835,8 +895,14 @@ struct TrainingSettingsView: View {
                     }
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                 } catch {
-                    jobError = error.localizedDescription
-                    return
+                    // One blip (server busy converting, a respawn) must not end
+                    // live updates for an hour-long run.
+                    failures += 1
+                    if failures >= 5 {
+                        jobError = error.localizedDescription
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
                 }
             }
         }
