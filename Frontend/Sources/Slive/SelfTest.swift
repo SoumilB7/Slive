@@ -33,6 +33,7 @@ enum SelfTest {
         wpmChecks()
         overlayMetricsChecks()
         sampleFormatChecks()
+        labelRunChecks()
         stitchChecks()
         liveTypingChecks()
         transcriptDiffChecks()
@@ -912,6 +913,134 @@ enum SelfTest {
         } else {
             check(false, "manual label round-trips", "encode/decode threw")
         }
+
+        // Agreement is additive: absent from rows that don't have one (so
+        // every older line is written back byte-for-byte the same).
+        if let data = try? encoder.encode(withLLM) {
+            check(!String(decoding: data, as: UTF8.self).contains("llmAgreement"),
+                  "nil agreement is omitted from the JSON line")
+        }
+        var agreed = withLLM
+        agreed.llmAgreement = 0.75
+        if let data = try? encoder.encode(agreed),
+           let back = try? decoder.decode(EditSample.self, from: data) {
+            equal(back.llmAgreement, 0.75, "consensus agreement round-trips")
+        } else {
+            check(false, "consensus agreement round-trips", "encode/decode threw")
+        }
+    }
+
+    // MARK: - Consensus labeling (scope, estimates, write coalescing)
+
+    private static func labelRunChecks() {
+        print("[Label run]")
+        func sample(_ id: String, model: String? = nil, label: String? = "x",
+                    human: String = "", agreement: Double? = nil) -> EditSample {
+            var s = EditSample(id: id, createdAt: Date(), app: nil, transcript: "typed",
+                               finalText: human, edited: !human.isEmpty, confidence: "audio",
+                               audioFile: "audio/\(id).wav")
+            s.llmTranscript = label
+            s.llmModel = model
+            s.llmAgreement = agreement
+            return s
+        }
+        // Scope: every model label gets upgraded once; humans and consensus don't.
+        check(LabelScope.needsConsensus(sample("a", label: nil), hasAudio: true),
+              "unlabeled clip is in scope")
+        check(LabelScope.needsConsensus(sample("b", model: "gpt-4o-transcribe"), hasAudio: true)
+                && LabelScope.needsConsensus(sample("c", model: "large-v3"), hasAudio: true)
+                && LabelScope.needsConsensus(sample("d", model: "gpt-audio"), hasAudio: true),
+              "older model labels are upgraded")
+        check(!LabelScope.needsConsensus(sample("e", model: "consensus · whisper-1"), hasAudio: true),
+              "consensus labels are skipped (re-click resumes)")
+        check(!LabelScope.needsConsensus(sample("f", human: "human fix"), hasAudio: true),
+              "human labels are never relabeled")
+        check(!LabelScope.needsConsensus(sample("g", label: nil), hasAudio: false),
+              "clips without audio are out of scope")
+        equal(LabelScope.modelTag(chosen: "gpt-transcribe"), "consensus · gpt-transcribe",
+              "consensus label tag names the winner")
+        check(LabelScope.isConsensus(sample("h", model: LabelScope.modelTag(chosen: ""))),
+              "a bare consensus tag still counts as consensus")
+        check(LabelScope.needsALook(sample("i", model: "consensus · typed", agreement: 0.7))
+                && !LabelScope.needsALook(sample("j", model: "consensus · typed", agreement: 0.9))
+                && !LabelScope.needsALook(sample("k", model: "consensus", human: "ok", agreement: 0.2))
+                && !LabelScope.needsALook(sample("l", model: "gemini-2.5-flash")),
+              "low-agreement consensus labels (and only those) need a look")
+
+        // Estimates.
+        equal(LabelEstimate.audioSeconds(fileBytes: 4_096 + 64_000 * 30), 30,
+              "audio seconds from a Float32 16 kHz capture's size")
+        equal(LabelEstimate.audioSeconds(fileBytes: 100), 0, "header-only file is no audio")
+        check(abs(LabelEstimate.dollars(audioSeconds: 600) - 0.105) < 1e-9,
+              "cost is $0.0105 per audio minute (gpt-transcribe + whisper-1)")
+        equal(LabelEstimate.runSeconds(clips: 8, audioSeconds: 0), 3,
+              "run time divides by 4 clips in flight")
+        equal(LabelEstimate.runSeconds(clips: 0, audioSeconds: 0), 0, "nothing to do takes no time")
+        check(LabelEstimate.eta(processed: 3, total: 30, elapsed: 10) == nil,
+              "no measured ETA until a full window is back")
+        equal(LabelEstimate.eta(processed: 10, total: 30, elapsed: 20), 40,
+              "ETA from observed throughput")
+        equal(LabelEstimate.dollarsText(0.004), "<$0.01", "tiny cost text")
+        equal(LabelEstimate.dollarsText(2.1), "~$2.10", "cost text")
+        equal(LabelEstimate.durationText(20), "<1 min", "short duration text")
+        equal(LabelEstimate.durationText(18 * 60), "~18 min", "minutes duration text")
+        equal(LabelEstimate.durationText(80 * 60), "~1 h 20 min", "hours duration text")
+
+        // The recipe lives outside AssistantProvider — it can't reach the
+        // Assistant's pickers.
+        check(AssistantProvider(rawValue: "consensus") == nil
+                && !GroundTruthSource.singleProviders.contains(.anthropic),
+              "consensus is a ground-truth recipe, never an assistant provider")
+        equal(GroundTruthSource.consensus.title, "Best — 3-way consensus", "recipe picker title")
+
+        // Response mapping: key problems stop the run, a bad clip doesn't.
+        let fatal = #"{"error":"OpenAI rejected the key (401)","fatal":"auth"}"#
+        do {
+            _ = try GroundTruthClient.decodeConsensus(Data(fatal.utf8))
+            check(false, "fatal reply stops the run", "no error thrown")
+        } catch let error as GroundTruthClient.GroundTruthError {
+            check(error.stopsRun, "fatal reply stops the run")
+        } catch {
+            check(false, "fatal reply stops the run", "\(error)")
+        }
+        do {
+            _ = try GroundTruthClient.decodeConsensus(Data(#"{"error":"Both transcribers failed"}"#.utf8))
+            check(false, "per-clip failure keeps the run going", "no error thrown")
+        } catch let error as GroundTruthClient.GroundTruthError {
+            check(!error.stopsRun, "per-clip failure keeps the run going")
+        } catch {
+            check(false, "per-clip failure keeps the run going", "\(error)")
+        }
+        let ok = #"{"text":" Ship it. ","chosen":"whisper-1","agreement":0.93,"candidates":{"whisper-1":"Ship it."},"prompt":"p"}"#
+        if let result = try? GroundTruthClient.decodeConsensus(Data(ok.utf8)) {
+            check(result.text == "Ship it." && result.chosen == "whisper-1"
+                    && result.agreement == 0.93 && result.prompt == "p",
+                  "consensus reply decodes")
+        } else {
+            check(false, "consensus reply decodes", "decode threw")
+        }
+
+        // Write coalescing: a burst of labels is one index rewrite.
+        var timers: [@MainActor () -> Void] = []
+        var writes = 0
+        let coalescer = IndexWriteCoalescer(schedule: { timers.append($0) }, write: { writes += 1 })
+        for _ in 0..<100 { coalescer.markDirty() }
+        check(writes == 0 && timers.count == 1 && coalescer.isPending,
+              "100 labels schedule one write")
+        timers[0]()
+        check(writes == 1 && !coalescer.isPending, "the scheduled flush writes once")
+        timers[0]()
+        equal(writes, 1, "a stale timer doesn't write again")
+        coalescer.markDirty()
+        coalescer.flushNow()
+        coalescer.flushNow()
+        equal(writes, 2, "flushNow writes once, then is a no-op")
+        timers[1]()
+        equal(writes, 2, "the timer after an explicit flush is a no-op")
+        coalescer.markDirty()
+        coalescer.cancel()
+        timers[2]()
+        equal(writes, 2, "a full rewrite (cancel) satisfies the pending flush")
     }
 
     // MARK: - Transcript word-diff (Training table highlighting)

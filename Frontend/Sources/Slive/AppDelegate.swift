@@ -161,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcribeTask?.cancel(); transcribeTask = nil
         waitingTasks.values.forEach { $0.cancel() }
         continuous.cancel()  // stop any live stream
+        TrainingStore.shared.flushPendingWrites()   // labels from a run in flight
         whisper.shutdown()   // release the WhisperKit (Neural Engine) model
         backend.stop()       // shut the Python server down with the app
         if let token = activityToken {

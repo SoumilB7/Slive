@@ -14,6 +14,7 @@ everything model-heavy. They speak plain JSON over localhost.
 ┌──────────────────── Slive Server (Python · lazy) ─────────────────────────┐
 │  /assistant[,/stream]  cloud providers + local_infer (transformers, MPS)  │
 │  /transcribe_llm       ground truth        /local/*   HF cache + download │
+│  /label_consensus      ground truth: gpt-transcribe + whisper-1 + typed   │
 │  /training/*           LoRA → merge → CoreML/ANE → install                │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
