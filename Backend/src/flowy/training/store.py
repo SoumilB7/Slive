@@ -13,10 +13,12 @@ audio, and ineligible labels are surfaced before any expensive model is loaded.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import math
 import os
+import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -35,6 +37,107 @@ class LabelPolicy(StrEnum):
     VERIFIED = "verified"
     LLM = "llm"
     BEST_AVAILABLE = "best-available"
+
+
+# ---------------------------------------------------------------------------
+# Label-quality gate — a cloud label must still describe the same audio.
+#
+# The on-device transcript is never a TARGET, but it is a good WITNESS: it is
+# Slive's own hearing of the clip, so a cloud label that disagrees with it
+# wildly is far more likely wrong than both being wrong together. Rows that
+# fail are excluded (not relabelled with the transcript — that would train on
+# Slive's own errors). Measured on Soumil's store (Oct 2026, 484 cloud labels):
+# truncations to the first sentence sat at word ratio 0.61–0.65 and below, one
+# meta reply, one Norwegian hallucination at similarity 0.0; legitimate
+# punctuation/casing/number-word differences stayed at ratio ≥ 0.8 and
+# similarity ≥ 0.5.
+# ---------------------------------------------------------------------------
+
+#: Label words / transcript words below this → the label dropped speech
+#: (typically cut after the first sentence). 0.7 rather than a looser 0.6: the
+#: real truncations clustered at 0.61–0.65.
+LABEL_MIN_WORD_RATIO = 0.7
+#: Above this → the label added speech that Slive never heard (preambles,
+#: invented continuations). Legitimate fills of words Whisper dropped peaked
+#: at 1.4 on real data.
+LABEL_MAX_WORD_RATIO = 1.6
+#: Normalized word-sequence similarity (difflib ratio over lowercase words,
+#: punctuation stripped, number words folded to digits) below this → the label
+#: is about different words entirely (hallucination, wrong language).
+LABEL_MIN_WORD_SIMILARITY = 0.5
+
+#: Phrases that mark a reply ABOUT transcribing rather than a transcript.
+#: Mirrors ``flowy.assistant._META_REPLY_MARKERS`` (duplicated so the store
+#: stays free of the assistant's HTTP stack; a test keeps them in sync) plus
+#: preamble variants seen in stored labels.
+LABEL_META_MARKERS = (
+    "provide the audio",
+    "share the audio",
+    "upload the audio",
+    "the audio file",
+    "i can transcribe",
+    "cannot transcribe",
+    "can't transcribe",
+    "ready to transcribe",
+    "transcribe it as requested",
+    "here is the transcription",
+    "here's the transcription",
+    "here is the transcript",
+    "here's the transcript",
+    "transcription of the audio",
+)
+
+#: Rejection reasons the gate can emit — ``summary_dict`` counts rows that hit
+#: any of them so the UI can say "N labels rejected".
+LABEL_QUALITY_REASONS = (
+    "label-meta-reply",
+    "label-length-mismatch",
+    "label-low-similarity",
+)
+
+_WORD_RE = re.compile(r"[\w']+")
+_NUMBER_WORDS = {
+    word: str(value)
+    for value, word in enumerate((
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+        "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+    ))
+}
+
+
+def _label_words(text: str) -> list[str]:
+    lowered = text.lower().replace("’", "'")
+    return [_NUMBER_WORDS.get(word, word) for word in _WORD_RE.findall(lowered)]
+
+
+def label_quality_issues(label: str, transcript: str) -> tuple[str, ...]:
+    """Reasons a cloud label should not be trusted for this clip (empty = fine).
+
+    ``transcript`` is the on-device hearing of the same audio, used only as a
+    sanity witness. A meta phrase the speaker actually said (it is in the
+    transcript too) is speech, not a meta reply.
+    """
+
+    reasons: list[str] = []
+    head = label.strip().lower().replace("’", "'")[:200]
+    heard = transcript.lower().replace("’", "'")
+    if any(marker in head and marker not in heard for marker in LABEL_META_MARKERS):
+        reasons.append("label-meta-reply")
+
+    label_words = _label_words(label)
+    heard_words = _label_words(transcript)
+    if not heard_words:
+        # Nothing to compare against — Slive heard silence, the label did not.
+        reasons.append("label-length-mismatch")
+        return tuple(reasons)
+    ratio = len(label_words) / len(heard_words)
+    if not LABEL_MIN_WORD_RATIO <= ratio <= LABEL_MAX_WORD_RATIO:
+        reasons.append("label-length-mismatch")
+    similarity = difflib.SequenceMatcher(None, label_words, heard_words, autojunk=False).ratio()
+    if similarity < LABEL_MIN_WORD_SIMILARITY:
+        reasons.append("label-low-similarity")
+    return tuple(reasons)
 
 
 @dataclass(frozen=True)
@@ -113,9 +216,12 @@ class StoreReport:
 
     def summary_dict(self) -> dict[str, Any]:
         reason_counts: dict[str, int] = {}
+        label_rejections = 0
         for item in self.rejected_samples:
             for reason in item.reasons:
                 reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            if any(reason in LABEL_QUALITY_REASONS for reason in item.reasons):
+                label_rejections += 1
         return {
             "store_root": self.store_root,
             "index_file": self.index_file,
@@ -126,6 +232,9 @@ class StoreReport:
             "eligible_audio_seconds": round(self.total_audio_seconds, 3),
             "eligible_audio_minutes": round(self.total_audio_seconds / 60, 3),
             "rejection_reason_counts": reason_counts,
+            # Rows whose cloud label failed the quality gate (any reason) —
+            # the UI's "N labels rejected".
+            "label_rejected_count": label_rejections,
         }
 
     def to_dict(self, *, include_samples: bool = True) -> dict[str, Any]:
@@ -222,6 +331,10 @@ class TrainingStore:
                     reasons.append(f"no-{label_policy.value}-label")
                 elif len(label.split()) < min_label_words:
                     reasons.append("label-too-short")
+                elif label_source == "llmTranscript":
+                    # Human-corrected finalText is trusted as-is; only cloud
+                    # labels must agree with what Slive heard.
+                    reasons.extend(label_quality_issues(label, sample.transcript))
 
                 audio_path, path_error = self._resolve_audio(sample.audio_file)
                 if path_error:

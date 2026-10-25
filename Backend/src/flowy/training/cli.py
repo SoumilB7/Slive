@@ -102,6 +102,7 @@ def _print_human_report(report, *, show_rejections: bool) -> None:
     print(f"Rows: {summary['total_rows']}")
     print(f"Eligible: {summary['eligible_count']}")
     print(f"Rejected: {summary['rejected_count']}")
+    print(f"Labels rejected by quality gate: {summary['label_rejected_count']}")
     print(
         "Eligible audio: "
         f"{summary['eligible_audio_seconds']:.3f}s "

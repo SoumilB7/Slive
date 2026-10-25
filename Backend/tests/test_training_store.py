@@ -6,7 +6,13 @@ import wave
 from pathlib import Path
 
 from flowy.training.cli import main
-from flowy.training.store import LabelPolicy, TrainingStore, write_manifest
+from flowy.training.store import (
+    LABEL_META_MARKERS,
+    LabelPolicy,
+    TrainingStore,
+    label_quality_issues,
+    write_manifest,
+)
 
 
 def _write_wav(path: Path, *, seconds: float = 1.0, sample_rate: int = 16_000) -> None:
@@ -72,6 +78,7 @@ def test_best_available_prefers_final_text_then_llm(tmp_path: Path) -> None:
             ),
             _row(
                 "llm",
+                transcript="llm reference text",
                 llmTranscript="LLM reference text",
                 llmModel="provider/model",
             ),
@@ -160,6 +167,84 @@ def test_manifest_contains_only_eligible_samples(tmp_path: Path) -> None:
     assert payload["original_transcript"] == "raw model prediction"
     assert payload["audio"]["sample_rate"] == 16_000
     assert len(payload["audio"]["sha256"]) == 64
+
+
+SPOKEN = (
+    "Can you push this to the branch we are working on? Or the PR basically, "
+    "PR fourteen I guess, and then run the release."
+)
+
+
+def test_label_gate_rejects_first_sentence_truncation() -> None:
+    issues = label_quality_issues("Can you push this to the branch we are working on?", SPOKEN)
+    assert "label-length-mismatch" in issues
+
+
+def test_label_gate_rejects_meta_reply_preamble() -> None:
+    label = (
+        "Sure, here’s the transcription of the audio you requested:\n\n" + SPOKEN
+    )
+    assert "label-meta-reply" in label_quality_issues(label, SPOKEN)
+
+
+def test_label_gate_rejects_foreign_language_hallucination() -> None:
+    issues = label_quality_issues(
+        "Altså, da kingen hadde vist.",
+        "Can you run a few and four inch to check? I hope you can bring your own actions.",
+    )
+    assert "label-low-similarity" in issues
+
+
+def test_label_gate_passes_punctuation_casing_and_number_word_fixes() -> None:
+    cases = [
+        ("Can you push this to the branch we are working on? Or the PR, basically — "
+         "PR 14, I guess. And then run the release.", SPOKEN),
+        ("What other problems do you think a 120-billion-parameter model is facing?",
+         "what other problems do you think a 120 billion parameter model is facing"),
+        ("test one test two test three test four test five",
+         "test 1 test 2 test 3 test 4 test 5."),
+        ("I was okay with the transcript, here's the transcription I wanted.",
+         "i was okay with the transcript here's the transcription i wanted"),
+    ]
+    for label, transcript in cases:
+        assert label_quality_issues(label, transcript) == (), label
+
+
+def test_label_gate_markers_cover_the_assistant_guard() -> None:
+    from flowy.assistant import _META_REPLY_MARKERS
+
+    assert set(_META_REPLY_MARKERS) <= set(LABEL_META_MARKERS)
+
+
+def test_rejected_cloud_labels_are_excluded_and_counted(tmp_path: Path) -> None:
+    root = tmp_path / "training"
+    for name in ("good", "cut", "meta", "human"):
+        _write_wav(root / "audio" / f"{name}.wav", seconds=1.0 + len(name) / 10)
+    _write_rows(
+        root,
+        [
+            _row("good", transcript=SPOKEN, llmTranscript=SPOKEN.upper()),
+            _row("cut", transcript=SPOKEN,
+                 llmTranscript="Can you push this to the branch we are working on?"),
+            _row("meta", transcript=SPOKEN,
+                 llmTranscript="Here is the transcription: " + SPOKEN),
+            # A human correction is trusted even when it rewrites heavily.
+            _row("human", transcript=SPOKEN, finalText="Push it.", confidence="manual",
+                 llmTranscript="Altså, da kingen hadde vist."),
+        ],
+    )
+
+    report = TrainingStore(root).inspect(label_policy=LabelPolicy.BEST_AVAILABLE)
+    summary = report.summary_dict()
+
+    # "human" is rejected only for being one word short of three, not by the gate.
+    assert [item.id for item in report.eligible_samples] == ["good"]
+    reasons = {item.id: item.reasons for item in report.rejected_samples}
+    assert reasons["cut"] == ("label-length-mismatch",)
+    assert "label-meta-reply" in reasons["meta"]
+    assert reasons["human"] == ("label-too-short",)
+    assert summary["label_rejected_count"] == 2
+    assert summary["rejection_reason_counts"]["label-length-mismatch"] == 1
 
 
 def test_cli_inspect_and_empty_manifest_failure(tmp_path: Path, capsys) -> None:

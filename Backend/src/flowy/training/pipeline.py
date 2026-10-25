@@ -117,6 +117,59 @@ def pad_label_batch(
     return inputs, labels
 
 
+def teacher_forcing_pair(sequence: list[int], forced: int) -> tuple[list[int], list[int]]:
+    """One sample's (decoder_input_ids, labels) in `pad_label_batch`'s
+    convention. Passing explicit decoder inputs stops Transformers from
+    right-shifting labels that already begin with SOT (a doubled SOT), and the
+    forced prefix is masked as in the cached trainer."""
+    inputs, labels = pad_label_batch([sequence], pad_id=0, forced=forced)
+    return inputs[0], labels[0]
+
+
+def configure_prefix_tokens(tokenizer, model) -> int:
+    """Set the English/transcribe/no-timestamps prefix WhisperKit forces at
+    inference and return how many prefix tokens follow SOT (masked in labels)."""
+    if getattr(model.generation_config, "is_multilingual", True):
+        tokenizer.set_prefix_tokens(language="en", task="transcribe", predict_timestamps=False)
+    else:
+        tokenizer.set_prefix_tokens(predict_timestamps=False)
+    return len(tokenizer.prefix_tokens) - 1
+
+
+def require_finite_loss(where: str, **values: float) -> None:
+    """Abort on NaN/inf instead of training garbage for the rest of the run."""
+    bad = {name: value for name, value in values.items() if not math.isfinite(value)}
+    if bad:
+        detail = ", ".join(f"{name}={value}" for name, value in bad.items())
+        raise RuntimeError(
+            f"Training diverged at {where}: {detail}. Nothing was installed — "
+            f"try a lower learning rate, the Decoder method, or remove odd samples."
+        )
+
+
+def whisperkit_converter() -> str:
+    """Resolve the WhisperKit converter (WHISPERKIT_GENERATE_MODEL, else PATH)
+    or raise ValueError — checked BEFORE training so a missing tool doesn't
+    surface only after tens of minutes of work."""
+    configured = os.environ.get("WHISPERKIT_GENERATE_MODEL")
+    if configured:
+        executable = shutil.which(configured)
+        if not executable:
+            raise ValueError(
+                f"WHISPERKIT_GENERATE_MODEL points to “{configured}”, which is not "
+                f"an executable file. Fix the path before training."
+            )
+        return executable
+    executable = shutil.which("whisperkit-generate-model")
+    if not executable:
+        raise ValueError(
+            "whisperkit-generate-model is not installed, so a trained model "
+            "could not be converted for WhisperKit. Install the pinned "
+            "WhisperKit tools (or set WHISPERKIT_GENERATE_MODEL) before training."
+        )
+    return executable
+
+
 Progress = Callable[..., None]
 
 
@@ -137,6 +190,7 @@ def custom_models_root() -> Path:
 def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     """Run all stages and return the atomically installed custom-model folder."""
 
+    converter = whisperkit_converter()
     memory = MemoryGuard(config.max_ram_gb)
     memory.check("dataset preparation")
     report = TrainingStore(config.store_root).inspect(label_policy=LabelPolicy.BEST_AVAILABLE)
@@ -161,14 +215,19 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
     if config.method == "qlora":
         _train_lora(config, report.eligible_samples, adapter_dir, progress, memory)
     else:
-        _train_cached(config, report.eligible_samples, adapter_dir, run_dir / "encoder-cache",
-                      progress, memory)
+        cache_dir = run_dir / "encoder-cache"
+        try:
+            _train_cached(config, report.eligible_samples, adapter_dir, cache_dir,
+                          progress, memory)
+        finally:
+            # ~3.8 MB per clip — never left behind by a failed or aborted run.
+            shutil.rmtree(cache_dir, ignore_errors=True)
     memory.check("adapter merge")
     progress(stage="merging", message="Merging LoRA into Balanced Whisper", value=0.76)
     _merge_adapter(config, adapter_dir, merged_dir)
     memory.check("WhisperKit conversion")
     progress(stage="converting", message="Converting merged model for WhisperKit", value=0.84)
-    model_folder = _convert_whisperkit(merged_dir, converted_dir)
+    model_folder = _convert_whisperkit(merged_dir, converted_dir, converter)
     progress(stage="installing", message="Installing fine-tuned model", value=0.96)
     installed = _install_model(config, model_folder, merged_dir, run_dir, manifest_path)
     return installed
@@ -230,7 +289,7 @@ def _train_lora(
 ) -> None:
     torch, LoraConfig, _, get_peft_model, prepare_kbit, Model, Processor = _training_imports()
     device = _device(torch)
-    processor = Processor.from_pretrained(config.base_model, language="en", task="transcribe")
+    processor = Processor.from_pretrained(config.base_model)
     if config.method == "qlora":
         if device.type != "cuda":
             raise RuntimeError(
@@ -260,6 +319,7 @@ def _train_lora(
         model = Model.from_pretrained(config.base_model).to(device)
     memory.check("model loading")
     model.config.use_cache = False
+    forced = configure_prefix_tokens(processor.tokenizer, model)
     lora = LoraConfig(
         r=config.lora_rank,
         lora_alpha=config.lora_rank * 2,
@@ -282,15 +342,20 @@ def _train_lora(
         for index, sample in enumerate(epoch_samples):
             memory.check(f"epoch {epoch + 1} sample {index + 1}")
             audio, rate = _load_audio(sample.audio.path)
-            batch = processor(
-                audio=audio,
-                sampling_rate=rate,
-                text=sample.reference_text,
-                return_tensors="pt",
-            )
-            inputs = {key: value.to(device) for key, value in batch.items()}
+            features = processor.feature_extractor(
+                audio, sampling_rate=rate, return_tensors="pt"
+            ).input_features
+            decoder_ids, labels = teacher_forcing_pair(
+                processor.tokenizer(sample.reference_text).input_ids, forced)
+            inputs = {
+                "input_features": features.to(device),
+                "decoder_input_ids": torch.tensor([decoder_ids], device=device),
+                "labels": torch.tensor([labels], device=device),
+            }
             outputs = model(**inputs)
             memory.check(f"epoch {epoch + 1} forward pass")
+            loss_value = outputs.loss.item()
+            require_finite_loss(f"epoch {epoch + 1} sample {index + 1}", loss=loss_value)
             loss = outputs.loss / config.gradient_accumulation_steps
             loss.backward()
             if ((index + 1) % config.gradient_accumulation_steps == 0
@@ -310,6 +375,7 @@ def _train_lora(
                 log_p = torch.log_softmax(outputs.logits.detach(), dim=-1)
                 log_q = torch.log_softmax(base_logits, dim=-1)
                 kl = (log_p.exp() * (log_p - log_q)).sum(-1).mean().item()
+                require_finite_loss(f"epoch {epoch + 1} sample {index + 1}", kl=kl)
             progress(
                 stage="training",
                 message=f"Epoch {epoch + 1}/{config.epochs} · sample {index + 1}/{len(samples)}",
@@ -318,7 +384,7 @@ def _train_lora(
                 metric={
                     "update": update,
                     "epoch": epoch + 1,
-                    "loss": round(outputs.loss.item(), 4),
+                    "loss": round(loss_value, 4),
                     "kl": round(kl, 5) if kl is not None else None,
                 },
             )
@@ -353,11 +419,7 @@ def _train_cached(
     memory.check("model loading")
 
     tokenizer = processor.tokenizer
-    if getattr(model.generation_config, "is_multilingual", True):
-        tokenizer.set_prefix_tokens(language="en", task="transcribe", predict_timestamps=False)
-    else:
-        tokenizer.set_prefix_tokens(predict_timestamps=False)
-    forced = len(tokenizer.prefix_tokens) - 1
+    forced = configure_prefix_tokens(tokenizer, model)
     sequences = [tokenizer(sample.reference_text).input_ids for sample in samples]
 
     # 1. Cache — the frozen encoder runs once per clip.
@@ -450,10 +512,12 @@ def _train_cached(
             log_p = torch.log_softmax(tuned, dim=-1)
             log_q = torch.log_softmax(base, dim=-1)
             kl = (log_q.exp() * (log_q - log_p)).sum(-1).mean()
+            ce_value, kl_value = ce.item(), kl.item()
+            require_finite_loss(f"epoch {epoch + 1} step {index + 1}", loss=ce_value, kl=kl_value)
             loss = ce + config.kl_weight * kl
             (loss / accumulation).backward()
-            window_loss.append(ce.item())
-            window_kl.append(kl.item())
+            window_loss.append(ce_value)
+            window_kl.append(kl_value)
             del tuned, base, log_p, log_q, loss
             if device.type == "mps":
                 torch.mps.empty_cache()
@@ -480,7 +544,6 @@ def _train_cached(
     model.save_pretrained(adapter_dir)
     processor.save_pretrained(adapter_dir)
     del cache, model
-    shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) -> None:
@@ -491,15 +554,7 @@ def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) 
     Processor.from_pretrained(config.base_model).save_pretrained(merged_dir)
 
 
-def _convert_whisperkit(merged_dir: Path, output_dir: Path) -> Path:
-    executable = os.environ.get("WHISPERKIT_GENERATE_MODEL") or shutil.which(
-        "whisperkit-generate-model"
-    )
-    if not executable:
-        raise RuntimeError(
-            "whisperkit-generate-model is not installed. Install the pinned "
-            "WhisperKit tools and set WHISPERKIT_GENERATE_MODEL."
-        )
+def _convert_whisperkit(merged_dir: Path, output_dir: Path, executable: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     command = [
         executable,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -11,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from flowy.training import pipeline
 from flowy.training.pipeline import TRAINING_METHODS, PipelineConfig, run_pipeline
 from flowy.training.models import DEFAULT_TRAINING_MODEL, get_training_model
 from flowy.training.store import LabelPolicy, TrainingStore
@@ -116,13 +118,17 @@ def start_job(
     # the picker id, so collisions must fail here, not after an hour of
     # training when the installer refuses to overwrite.
     model_name = sanitize_model_name(custom_name or "") or fine_tuned_model_name()
-    from flowy.training.pipeline import custom_models_root
-
-    if (custom_models_root() / model_name).exists():
+    if (pipeline.custom_models_root() / model_name).exists():
         raise ValueError(
             f"A personal model named “{model_name}” already exists — pick a "
             f"different name."
         )
+
+    # The real pipeline converts for WhisperKit only after training — make a
+    # missing converter fail now, not after tens of minutes. Injected test
+    # runners don't convert, so they skip the check.
+    if runner is run_pipeline:
+        pipeline.whisperkit_converter()
 
     ready = readiness(store_root)
     if not ready["ready"]:
@@ -137,6 +143,13 @@ def start_job(
         active = next((j for j in _jobs.values() if j.state in {"queued", "running"}), None)
         if active is not None:
             raise ValueError(f"Training job {active.id} is already running")
+
+        # No job is running, so any leftover run folder for this name is a
+        # failed run (the installed-model check above rules out a success).
+        # run_pipeline refuses an existing run dir, so move it aside — kept
+        # for its logs — instead of failing the retry inside the thread.
+        run_root = Path(output_root).expanduser() if output_root else pipeline.default_output_root()
+        _set_aside_failed_run(run_root / model_name, pipeline.custom_models_root(), model_name)
 
         job = TrainingJob(
             id=str(uuid.uuid4()),
@@ -165,6 +178,20 @@ def start_job(
     )
     thread.start()
     return job
+
+
+def _set_aside_failed_run(run_dir: Path, models_root: Path, model_name: str) -> None:
+    if run_dir.exists():
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        aside = run_dir.with_name(f"{run_dir.name}.failed-{stamp}")
+        suffix = 1
+        while aside.exists():
+            aside = run_dir.with_name(f"{run_dir.name}.failed-{stamp}-{suffix}")
+            suffix += 1
+        run_dir.rename(aside)
+    # An install interrupted mid-copy leaves a staging folder that would make
+    # the installer refuse this name; it is incomplete by definition.
+    shutil.rmtree(models_root / f".{model_name}.staging", ignore_errors=True)
 
 
 def get_job(job_id: str) -> TrainingJob | None:
@@ -204,14 +231,29 @@ def _run_job(job_id: str, config: PipelineConfig, runner) -> None:
     )
 
 
+def _non_finite(value) -> bool:
+    return isinstance(value, float) and not math.isfinite(value)
+
+
+def _clean_metric(metric: dict) -> dict | None:
+    """Job dicts go through Starlette's JSONResponse (allow_nan=False): one
+    NaN would 500 every /training/jobs/* poll for the server's lifetime. The
+    Swift chart decodes ``loss`` as a number and ``kl`` as optional, so a
+    non-finite loss drops the point and a non-finite kl becomes null."""
+    if _non_finite(metric.get("loss")):
+        return None
+    return {key: None if _non_finite(value) else value for key, value in metric.items()}
+
+
 def _update(job_id: str, **changes) -> None:
     metric = changes.pop("metric", None)
     with _lock:
         job = _jobs[job_id]
-        if metric is not None:
+        if metric is not None and (metric := _clean_metric(metric)) is not None:
             job.metrics.append(metric)
         for key, value in changes.items():
-            if hasattr(job, key):
+            # Non-finite scalars (progress) keep the last good value.
+            if hasattr(job, key) and not _non_finite(value):
                 setattr(job, key, value)
         if job.run_dir:
             path = Path(job.run_dir) / "job.json"

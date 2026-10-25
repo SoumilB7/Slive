@@ -128,6 +128,7 @@ def test_start_job_rejects_name_collisions(monkeypatch, tmp_path) -> None:
 
 
 def test_start_job_requires_fifty_eligible_samples(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "whisperkit_converter", lambda: "/usr/bin/true")
     monkeypatch.setattr(
         jobs,
         "readiness",
@@ -206,3 +207,156 @@ def test_job_runs_pipeline_and_records_installed_model(tmp_path: Path, monkeypat
     assert current.state == "done"
     assert current.installed_model_dir == str(installed)
     assert current.progress == 1.0
+
+
+def _ready(monkeypatch) -> None:
+    monkeypatch.setattr(
+        jobs,
+        "readiness",
+        lambda _=None: {
+            "ready": True,
+            "eligible_count": 50,
+            "remaining_samples": 0,
+            "eligible_audio_minutes": 7.5,
+        },
+    )
+
+
+def _wait_for_state(job_id: str, *states: str):
+    import time
+
+    for _ in range(400):
+        current = jobs.get_job(job_id)
+        if current is not None and current.state in states:
+            return current
+        time.sleep(0.005)
+    raise AssertionError(f"job never reached {states}")
+
+
+def test_missing_whisperkit_converter_fails_before_any_work(monkeypatch) -> None:
+    monkeypatch.delenv("WHISPERKIT_GENERATE_MODEL", raising=False)
+    monkeypatch.setattr(pipeline.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        jobs, "readiness", lambda _=None: pytest.fail("readiness ran before the preflight"))
+
+    with pytest.raises(ValueError, match="whisperkit-generate-model is not installed"):
+        jobs.start_job(source_model="tiny")
+
+
+def test_whisperkit_converter_env_must_be_executable(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("WHISPERKIT_GENERATE_MODEL", str(tmp_path / "nope"))
+    with pytest.raises(ValueError, match="not an executable file"):
+        pipeline.whisperkit_converter()
+
+    tool = tmp_path / "whisperkit-generate-model"
+    tool.write_text("#!/bin/sh\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("WHISPERKIT_GENERATE_MODEL", str(tool))
+    assert pipeline.whisperkit_converter() == str(tool)
+
+
+def test_run_pipeline_checks_converter_before_reading_the_store(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("WHISPERKIT_GENERATE_MODEL", raising=False)
+    monkeypatch.setattr(pipeline.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        pipeline, "TrainingStore", lambda *_a, **_k: pytest.fail("store read before preflight"))
+    config = PipelineConfig.for_model(model_name="x", source_model="tiny", output_root=tmp_path)
+
+    with pytest.raises(ValueError, match="not installed"):
+        pipeline.run_pipeline(config, lambda **_: None)
+    assert not (tmp_path / "x").exists()
+
+
+def test_retry_after_failed_run_sets_old_run_dir_aside(monkeypatch, tmp_path) -> None:
+    jobs._jobs.clear()
+    _ready(monkeypatch)
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path / "Custom")
+    runs = tmp_path / "runs"
+    (runs / "my-voice" / "merged-hf").mkdir(parents=True)
+    (runs / "my-voice" / "conversion.log").write_text("failed", encoding="utf-8")
+    (tmp_path / "Custom" / ".my-voice.staging").mkdir(parents=True)
+
+    def runner(config: PipelineConfig, progress):
+        run_dir = runs / config.model_name
+        run_dir.mkdir(parents=True, exist_ok=False)  # as run_pipeline does
+        progress(stage="training", message="Training", value=0.5, run_dir=str(run_dir))
+        return tmp_path / "Custom" / config.model_name
+
+    job = jobs.start_job(custom_name="my voice", output_root=runs, runner=runner)
+
+    assert _wait_for_state(job.id, "done", "error").state == "done"
+    aside = [p for p in runs.iterdir() if p.name.startswith("my-voice.failed-")]
+    assert len(aside) == 1
+    assert (aside[0] / "conversion.log").read_text(encoding="utf-8") == "failed"
+    assert not (tmp_path / "Custom" / ".my-voice.staging").exists()
+
+
+def test_installed_model_name_still_collides_even_with_run_dir(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path / "Custom")
+    (tmp_path / "Custom" / "my-voice").mkdir(parents=True)
+    (tmp_path / "runs" / "my-voice").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="already exists"):
+        jobs.start_job(custom_name="my voice", output_root=tmp_path / "runs",
+                       runner=lambda *_: None)
+    assert (tmp_path / "runs" / "my-voice").is_dir()
+
+
+def test_non_finite_metrics_are_stored_as_null_and_serialize(monkeypatch, tmp_path) -> None:
+    import json
+
+    jobs._jobs.clear()
+    _ready(monkeypatch)
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path / "Custom")
+
+    def runner(config: PipelineConfig, progress):
+        progress(stage="training", message="Training", value=0.3,
+                 metric={"update": 1, "loss": 2.0, "kl": float("inf")})
+        progress(stage="training", message="Training", value=float("nan"),
+                 metric={"update": 2, "loss": float("nan"), "kl": 0.1})
+        raise RuntimeError("diverged")
+
+    job = jobs.start_job(output_root=tmp_path / "runs", runner=runner)
+    current = _wait_for_state(job.id, "error")
+
+    # Swift decodes loss/progress as numbers and kl as optional.
+    assert current.metrics == [{"update": 1, "loss": 2.0, "kl": None}]
+    assert current.progress == 0.3
+    json.dumps(current.to_dict(), allow_nan=False)  # what JSONResponse does
+
+
+def test_require_finite_loss_aborts_on_nan_and_inf() -> None:
+    pipeline.require_finite_loss("epoch 1 step 1", loss=2.5, kl=0.01)
+    with pytest.raises(RuntimeError, match="diverged at epoch 1 step 3: loss=nan"):
+        pipeline.require_finite_loss("epoch 1 step 3", loss=float("nan"), kl=0.1)
+    with pytest.raises(RuntimeError, match="kl=inf"):
+        pipeline.require_finite_loss("epoch 2 step 1", loss=1.0, kl=float("inf"))
+
+
+def test_qlora_teacher_forcing_has_single_sot_and_masks_prefix() -> None:
+    # tokenizer(text).input_ids with prefix: SOT en transcribe notimestamps w1 w2 EOT
+    sot, en, transcribe, notimestamps, eot = 50258, 50259, 50360, 50364, 50257
+    sequence = [sot, en, transcribe, notimestamps, 11, 12, eot]
+
+    decoder_ids, labels = pipeline.teacher_forcing_pair(sequence, forced=3)
+
+    assert decoder_ids == [sot, en, transcribe, notimestamps, 11, 12]
+    assert decoder_ids.count(sot) == 1
+    assert labels == [-100, -100, -100, 11, 12, eot]
+    assert len(labels) == len(decoder_ids)
+
+
+def test_configure_prefix_tokens_counts_tokens_after_sot() -> None:
+    class Tokenizer:
+        def set_prefix_tokens(self, **kwargs):
+            self.kwargs = kwargs
+            self.prefix_tokens = [1, 2, 3, 4] if "language" in kwargs else [1, 4]
+
+    def model(multilingual):
+        config = type("G", (), {"is_multilingual": multilingual})()
+        return type("M", (), {"generation_config": config})()
+
+    tok = Tokenizer()
+    assert pipeline.configure_prefix_tokens(tok, model(True)) == 3
+    assert tok.kwargs == {"language": "en", "task": "transcribe", "predict_timestamps": False}
+    assert pipeline.configure_prefix_tokens(tok, model(False)) == 1
