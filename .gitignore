@@ -26,6 +26,7 @@ z-docs
 
 # Claude Code (local only)
 .claude/
+.agents/
 
 # Editor settings (local only)
 .vscode/
