@@ -12,8 +12,9 @@ import AVFoundation
 /// - `.assist`: ~128→72 Hz, ~300 ms — a deeper, longer "dhummm".
 ///
 /// Playback routes through a single persistent `AVAudioEngine` + player node.
-/// If engine setup or playback ever fails, we fall back to a system `NSSound`
-/// so the app never crashes and the user always gets some cue.
+/// If starting the engine fails for a cue, that cue falls back to a system
+/// `NSSound` so the app never crashes and the user always gets some cue — the
+/// next cue tries the engine again.
 final class FeedbackPlayer {
     static let shared = FeedbackPlayer()
 
@@ -22,14 +23,19 @@ final class FeedbackPlayer {
     private let sampleRate: Double = 44_100
     private let gain: Float = 0.25
 
-    // MARK: - Engine (built lazily, started once, reused)
+    // MARK: - Engine (built once, started on demand, reused)
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let format: AVAudioFormat
 
-    /// Whether the engine is running and ready to schedule buffers.
-    private var engineReady = false
+    /// Set when the graph must be re-wired + re-prepared before the next cue:
+    /// after an `AVAudioEngineConfigurationChange` (output device switched,
+    /// e.g. a Bluetooth HFP↔A2DP flip) or a failed start. Never latches the
+    /// engine off — a transient failure must not cost every later cue the
+    /// fallback sound until relaunch. Main thread only.
+    private var needsRebuild = false
+    private var configObserver: NSObjectProtocol?
 
     // MARK: - Cached tone buffers
 
@@ -73,6 +79,16 @@ final class FeedbackPlayer {
         )
 
         setupEngine()
+
+        // The engine stops itself on a route change; rebuild lazily on the
+        // next cue rather than spinning audio hardware up here.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in self?.needsRebuild = true }
+    }
+
+    deinit {
+        if let o = configObserver { NotificationCenter.default.removeObserver(o) }
     }
 
     // MARK: - Public API
@@ -88,17 +104,23 @@ final class FeedbackPlayer {
         case .stream:  buffer = dictateBuffer   // shares the dictation "dhum"
         }
 
-        guard engineReady, let buffer else {
+        guard let buffer else {
             playFallback(for: action)
             return
         }
 
-        // The engine can stop after audio-route changes; restart if needed.
+        if needsRebuild {
+            needsRebuild = false
+            rebuildGraph()
+        }
+        // Not running: never started yet, idled by auto-shutdown, or stopped
+        // by a route change. Start on demand; a failure costs THIS cue only.
         if !engine.isRunning {
             do {
                 try engine.start()
             } catch {
-                engineReady = false
+                NSLog("Slive: feedback engine start failed — fallback cue: \(error)")
+                needsRebuild = true
                 playFallback(for: action)
                 return
             }
@@ -129,7 +151,17 @@ final class FeedbackPlayer {
         engine.prepare()
         // Don't start here: playActivation's `!engine.isRunning` path starts it
         // on first use, so launch never spins up audio hardware at all.
-        engineReady = true
+    }
+
+    /// Re-wire the player after a route change or failed start: the old
+    /// connection may hold stale render resources for the previous device.
+    /// Cheap while stopped, and still doesn't start the engine.
+    private func rebuildGraph() {
+        player.stop()
+        engine.stop()
+        engine.disconnectNodeOutput(player)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.prepare()
     }
 
     // MARK: - Fallback

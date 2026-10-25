@@ -152,8 +152,14 @@ final class Settings: ObservableObject {
     }
 
     @Published var launchAtLogin: Bool {
-        didSet { applyLaunchAtLogin(launchAtLogin) }
+        didSet {
+            guard !syncingLaunchAtLogin else { return }
+            applyLaunchAtLogin(launchAtLogin)
+        }
     }
+    /// True while a failed toggle snaps the switch back to the real state,
+    /// so the revert doesn't re-run register()/unregister().
+    private var syncingLaunchAtLogin = false
 
     /// When enabled, transcripts are inserted straight into the focused editable
     /// text field (when possible) instead of surfacing the copy box.
@@ -468,6 +474,10 @@ final class Settings: ObservableObject {
             }
         } catch {
             NSLog("Slive: launch-at-login toggle failed: \(error)")
+            // Otherwise the switch shows the new value while nothing changed.
+            syncingLaunchAtLogin = true
+            launchAtLogin = (SMAppService.mainApp.status == .enabled)
+            syncingLaunchAtLogin = false
         }
     }
 }

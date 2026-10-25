@@ -42,5 +42,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        // The window is kept (not released) on close, so SwiftUI's onAppear
+        // doesn't reliably fire again on reopen — restart polling here.
+        permissions.startWatching()
+    }
+
+    /// A plain close doesn't fire SwiftUI's onDisappear either; without this
+    /// the 1 Hz permission poll ran for the rest of the app's lifetime.
+    func windowWillClose(_ notification: Notification) {
+        permissions.stopWatching()
     }
 }

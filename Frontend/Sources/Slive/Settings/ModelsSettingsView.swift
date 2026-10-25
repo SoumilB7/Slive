@@ -125,7 +125,9 @@ private struct ProviderRow: View {
     @ObservedObject private var settings = Settings.shared
     @State private var keyDraft = ""
 
-    private var connected: Bool { !keyDraft.isEmpty }
+    /// What's actually in the keychain, not the draft: a failed write must
+    /// not read as "Connected". (Re-renders on ProviderStore's keyEdition.)
+    private var connected: Bool { providers.hasKey(provider) }
     private var modelCount: Int { providers.models(for: provider).count }
 
     var body: some View {
@@ -423,7 +425,7 @@ private struct LocalProviderRow: View {
                         .font(SliveTheme.rowFont)
                         .foregroundStyle(SliveTheme.textPrimary)
                     Spacer()
-                    KeyStatusPill(hasKey: !tokenDraft.isEmpty)
+                    KeyStatusPill(hasKey: !providers.huggingFaceToken.isEmpty)
                 }
                 SecureField("hf_…  (huggingface.co/settings/tokens)", text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)

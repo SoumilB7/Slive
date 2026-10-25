@@ -211,13 +211,18 @@ final class AudioRecorder {
             tempURL = tmp
         } catch {
             NSLog("Slive: could not open temp file: \(error)")
+            try? FileManager.default.removeItem(at: tmp)   // a half-created file, if any
             return false
         }
 
         let started = usingEngine ? runEngine() : runDirect()
         guard started else {
+            // Nobody will ever stop() this hold, so nobody would ever clean up
+            // its (empty) WAV — close it and delete it here, or every failed
+            // hold leaks a flowy-*.wav into the temp directory.
             file = nil
             tempURL = nil
+            try? FileManager.default.removeItem(at: tmp)
             return false
         }
         isRecording = true

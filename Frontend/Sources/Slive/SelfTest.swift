@@ -34,7 +34,10 @@ enum SelfTest {
         overlayMetricsChecks()
         sampleFormatChecks()
         stitchChecks()
+        liveTypingChecks()
         transcriptDiffChecks()
+        dictationRoutingChecks()
+        captureAndHistoryChecks()
         print("===============\n\(passed) passed, \(failed) failed")
         exit(failed == 0 ? 0 : 1)
     }
@@ -459,6 +462,39 @@ enum SelfTest {
         check(queue.isEmpty, "finishing an unknown dictation is harmless")
     }
 
+    private static func liveTypingChecks() {
+        print("[Live typing]")
+        // Apply LiveTypist's plan the way reconcile does: keep old[0..<keep], type desired[from...].
+        func field(_ old: String, _ desired: String, frozen: Int) -> String {
+            let o = Array(old), d = Array(desired)
+            let (keep, from) = LiveTypist.plan(old: o, desired: d, frozen: frozen)
+            return String(o[0..<keep]) + (from < d.count ? String(d[from...]) : "")
+        }
+        let head = "we spent a lot of time on this and now the rest of it "
+        equal(field(head + "is here", head + "is here and more", frozen: 40),
+              head + "is here and more", "plain append past the freeze")
+        equal(field(head + "is hear", head + "is here", frozen: 40),
+              head + "is here", "a correction in the editable tail")
+        // Revision BEHIND the freeze that shortens it ("a lot" → "allot"):
+        // the frozen text stays, and the tail lines up — no dropped character.
+        let revised = head.replacingOccurrences(of: "a lot", with: "allot")
+        equal(field(head + "is", revised + "is here", frozen: 40),
+              head + "is here", "a shorter revision behind the freeze doesn't eat a character")
+        let longer = head.replacingOccurrences(of: "a lot", with: "a whole lot")
+        equal(field(head + "is", longer + "is here", frozen: 40),
+              head + "is here", "a longer revision behind the freeze doesn't double one")
+        equal(field("", "hello", frozen: 0), "hello", "an empty field just types")
+
+        let chunks = PasteEngine.unicodeChunks(String(repeating: "a", count: 45))
+        equal(chunks.map { $0.utf16.count }, [20, 20, 5], "ASCII splits at 20 UTF-16 units")
+        let emoji = String(repeating: "👍", count: 11)   // 2 units each
+        check(PasteEngine.unicodeChunks(emoji).allSatisfy { $0.utf16.count <= 20 }
+              && PasteEngine.unicodeChunks(emoji).joined() == emoji, "emoji never split across events")
+        let accents = String(repeating: "e\u{301}", count: 15)  // base + combining mark
+        check(PasteEngine.unicodeChunks(accents).allSatisfy { $0.utf16.count <= 20 && $0.count * 2 == $0.utf16.count },
+              "a combining mark stays with its letter")
+    }
+
     private static func vocabularyCorrectorChecks() {
         print("[Vocabulary corrector]")
         // Soumil's real list (stored lowercase) plus z-docs.
@@ -501,6 +537,13 @@ enum SelfTest {
         equal(fix("Z, docs"), "Z, docs", "punctuation between words breaks a match")
         equal(fix("Z — docs"), "Z — docs", "bare punctuation between words breaks a match")
         equal(fix("I/O's"), "I/O's", "symbols inside a word never match a short term")
+        // A plain term's "+s" is another word; only identifiers pluralise.
+        equal(fix("focus on finances"), "focus on finances", "on finances never becomes onfinances")
+        equal(fix("two cos AI agents"), "two cos-ai-agents", "identifier plural still applied")
+        // The one-letter slip needs a multi-word span: one real word stays.
+        equal(fix("the internal docs", "interval"), "the internal docs",
+              "a single real word a letter off a term is untouched")
+        equal(fix("the inter val docs", "interval"), "the interval docs", "a split term still matches exactly")
         // A plain lowercase term never lowercases what the model capitalised.
         equal(fix("Claude on iOS via Argo CD and COS"), "Claude on iOS via Argo CD and COS",
               "case-only differences of plain lowercase terms left alone")
@@ -1003,5 +1046,91 @@ enum SelfTest {
         equal(ContinuousDictation.stitchTranscripts(
                 confirmed: "again and again", tail: "and again and again we tried"),
               "again and again and again we tried", "repeat phrase not over-trimmed")
+    }
+
+    // MARK: - Dictation routing (who queues, early hand-off)
+
+    private static func dictationRoutingChecks() {
+        print("[Dictation routing]")
+        // Oct 29: a dictation released with the model READY was cancelled by
+        // the next hold — every dictation queues now.
+        check(DictationQueue.queues(.dictate, modelReady: true, queueEmpty: true),
+              "a dictation queues even with the model ready")
+        check(DictationQueue.queues(.dictate, modelReady: false, queueEmpty: false),
+              "a dictation queues behind a loading model")
+        check(!DictationQueue.queues(.assist, modelReady: true, queueEmpty: true),
+              "an assistant request with nothing in line stays supersedable")
+        check(DictationQueue.queues(.assist, modelReady: false, queueEmpty: true),
+              "an assistant request waits for a loading model")
+        check(DictationQueue.queues(.assist, modelReady: true, queueEmpty: false),
+              "an assistant request waits behind queued dictations")
+
+        // A queued assistant hands its turn on as soon as its question is in
+        // hand, then its task's defer finishes it again — must be a no-op.
+        let queue = DictationQueue()
+        let dictation = queue.enqueue(), assist = queue.enqueue(), later = queue.enqueue()
+        queue.finish(dictation)
+        check(queue.isTurn(assist), "the assistant request gets its turn")
+        queue.finish(assist)   // early hand-off, before the LLM stream
+        check(queue.isTurn(later) && queue.isLast(later), "the later dictation types without waiting on the answer")
+        queue.finish(assist)   // the task's defer, after the stream
+        check(queue.isTurn(later) && queue.count == 1, "finishing the assistant twice is harmless")
+        queue.finish(later)
+        check(queue.isEmpty, "the queue drains after an early hand-off")
+    }
+
+    // MARK: - Mic format revalidation + history sequencing
+
+    private static func captureAndHistoryChecks() {
+        print("[Mic format / history]")
+        // A kept mic unit is rebuilt only when the live hardware differs.
+        let mono48 = MicCapture.HardwareShape(sampleRate: 48_000, channels: 1)
+        check(!MicCapture.needsRebuild(built: mono48, current: mono48), "same shape keeps the unit")
+        check(MicCapture.needsRebuild(
+                built: mono48, current: .init(sampleRate: 24_000, channels: 1)),
+              "sample-rate switch between holds rebuilds")
+        check(MicCapture.needsRebuild(
+                built: mono48, current: .init(sampleRate: 48_000, channels: 2)),
+              "channel-count change rebuilds")
+        check(!MicCapture.needsRebuild(built: mono48, current: nil),
+              "unreadable device keeps the unit (start-failure path handles it)")
+        check(MicCapture.needsRebuild(built: nil, current: mono48), "unknown built shape rebuilds")
+
+        // Bounds: TTL first, then the count cap keeps the newest.
+        let now = Date()
+        var list = (0..<(HistoryStore.maxEntries + 5)).map {
+            HistoryEntry(id: UUID(), text: "e\($0)", createdAt: now.addingTimeInterval(-Double($0)))
+        }
+        list.append(HistoryEntry(id: UUID(), text: "old",
+                                 createdAt: now.addingTimeInterval(-HistoryStore.ttl - 1)))
+        HistoryStore.applyBounds(&list, now: now)
+        check(list.count == HistoryStore.maxEntries && list.first?.text == "e0"
+                && !list.contains { $0.text == "old" },
+              "bounds drop expired + cap at max, newest kept")
+
+        // Back-to-back mutations must build on each other, not on the
+        // main-thread mirror (which can't update while we block here).
+        let store = HistoryStore(fileURL: nil)
+        store.add("first")
+        store.add("second")
+        store.add("   ")   // whitespace-only is ignored
+        let two = store.syncedEntries()
+        equal(two.map(\.text), ["second", "first"], "back-to-back adds both survive, newest first")
+        if let firstID = two.last?.id {
+            store.remove(firstID)
+            store.add("third")
+            equal(store.syncedEntries().map(\.text), ["third", "second"],
+                  "remove then add sequence on the source of truth")
+        }
+        store.add(String(repeating: "x", count: HistoryStore.maxTextLength + 50))
+        equal(store.syncedEntries().first?.text.count, HistoryStore.maxTextLength,
+              "entry text capped")
+        store.clearAll()
+        check(store.syncedEntries().isEmpty, "clearAll empties the store")
+
+        // Unreadable history is moved aside next to the original, not overwritten.
+        let url = URL(fileURLWithPath: "/Slive/history.json")
+        equal(HistoryStore.corruptBackupURL(for: url, at: Date(timeIntervalSince1970: 1_700_000_000)).path,
+              "/Slive/history.json.corrupt-1700000000", "corrupt file backup name")
     }
 }

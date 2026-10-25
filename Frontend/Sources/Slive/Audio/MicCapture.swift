@@ -1,5 +1,6 @@
 import AudioToolbox
 import AVFoundation
+import CoreAudio
 import Foundation
 
 /// Input-only microphone capture on ONE explicit device, driving the HAL
@@ -35,8 +36,17 @@ final class MicCapture {
         var errorDescription: String? { "\(stage) failed (\(status))" }
     }
 
+    /// The device-side input format a unit was built against, read straight
+    /// from the device (not the AUHAL) so build-time and start-time readings
+    /// are the same measurement.
+    struct HardwareShape: Equatable {
+        let sampleRate: Double
+        let channels: UInt32
+    }
+
     private var unit: AudioUnit?
     private var boundDevice: AudioDeviceID = 0
+    private var builtShape: HardwareShape?
     private(set) var deviceFormat: AVAudioFormat?
     private var renderBuffer: AVAudioPCMBuffer?
     private var converter: AVAudioConverter?
@@ -48,14 +58,25 @@ final class MicCapture {
     deinit { dispose() }
 
     /// Start IO on `device`, rebuilding the unit if it was built for another
-    /// device (or never). Throws with the failing stage + OSStatus.
+    /// device (or never), or the device's format changed since. Throws with
+    /// the failing stage + OSStatus.
     func start(device: AudioDeviceID, onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws {
         if isRunning { return }
         self.onBuffer = onBuffer
-        if unit == nil || boundDevice != device {
+        // A kept unit only knows the format it was built with. Another app (a
+        // call joining, Audio MIDI Setup) can retune the device between holds;
+        // rendering with the stale client format fails every callback and the
+        // hold records nothing — so check the live hardware on every start.
+        if unit == nil || boundDevice != device
+            || Self.needsRebuild(built: builtShape, current: Self.inputShape(of: device)) {
             dispose()
             try build(device: device)
         }
+        // Fresh session: drop the resampler's tail from the previous hold so
+        // it can't bleed into this hold's first buffer, and let a render
+        // failure be logged again (once per hold, not once per unit).
+        converter?.reset()
+        loggedRenderError = false
         guard let unit else { return }
         let status = AudioOutputUnitStart(unit)
         guard status == noErr else {
@@ -89,6 +110,7 @@ final class MicCapture {
         unit = nil
         isRunning = false
         boundDevice = 0
+        builtShape = nil
         deviceFormat = nil
         renderBuffer = nil
         converter = nil
@@ -123,6 +145,7 @@ final class MicCapture {
         try check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
                                        kAudioUnitScope_Global, 0, &dev, 4), "CurrentDevice")
         boundDevice = device
+        builtShape = Self.inputShape(of: device)
 
         // The device's own input format (rate is fixed by hardware; the AUHAL
         // can't resample) → ask for it as Float32 non-interleaved.
@@ -161,6 +184,44 @@ final class MicCapture {
                                        UInt32(MemoryLayout<AURenderCallbackStruct>.size)), "SetInputCallback")
         try check(AudioUnitInitialize(unit), "AudioUnitInitialize")
         loggedRenderError = false
+    }
+
+    /// Whether a kept unit must be rebuilt for the device's current format.
+    /// An unreadable current shape keeps the unit (a dead device still gets
+    /// the rebuild-on-start-failure path); an unknown built shape rebuilds.
+    static func needsRebuild(built: HardwareShape?, current: HardwareShape?) -> Bool {
+        guard let current else { return false }
+        guard let built else { return true }
+        return built.channels != current.channels
+            || abs(built.sampleRate - current.sampleRate) >= 1
+    }
+
+    /// The device's input sample rate + total input channels right now, or
+    /// nil if either can't be read.
+    static func inputShape(of device: AudioDeviceID) -> HardwareShape? {
+        var rateAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain)
+        var rate: Double = 0
+        var rateSize = UInt32(MemoryLayout<Double>.size)
+        guard AudioObjectGetPropertyData(device, &rateAddress, 0, nil, &rateSize, &rate) == noErr,
+              rate > 0 else { return nil }
+
+        var configAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &configAddress, 0, nil, &size) == noErr,
+              size > 0 else { return nil }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size),
+                                                   alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        let list = raw.bindMemory(to: AudioBufferList.self, capacity: 1)
+        guard AudioObjectGetPropertyData(device, &configAddress, 0, nil, &size, list) == noErr else { return nil }
+        let channels = UnsafeMutableAudioBufferListPointer(list).reduce(UInt32(0)) { $0 + $1.mNumberChannels }
+        return HardwareShape(sampleRate: rate, channels: channels)
     }
 
     private func check(_ status: OSStatus, _ stage: String) throws {

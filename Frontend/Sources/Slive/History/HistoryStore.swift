@@ -18,8 +18,9 @@ struct HistoryEntry: Codable, Identifiable {
 /// burst of long dictations within the window stays under ~400 KB on disk.
 ///
 /// Persisted as atomic JSON at
-/// `~/Library/Application Support/Slive/history.json`. Corrupt or missing
-/// files degrade to an empty catalogue rather than crashing.
+/// `~/Library/Application Support/Slive/history.json`. A missing file is an
+/// empty catalogue; an unreadable one is moved aside (never overwritten) and
+/// the catalogue starts fresh rather than crashing.
 final class HistoryStore: ObservableObject {
     static let shared = HistoryStore()
 
@@ -36,23 +37,34 @@ final class HistoryStore: ObservableObject {
 
     // MARK: State
 
+    /// Main-thread mirror for SwiftUI. Never the basis of a mutation: it
+    /// trails `store` by a main-queue hop, so building the next list from it
+    /// let two back-to-back dictations race and drop the first one.
     @Published private(set) var entries: [HistoryEntry] = []
+
+    /// The source of truth. Read and written ONLY on `queue` (and once in
+    /// init, before the queue has any work).
+    private var store: [HistoryEntry] = []
 
     /// Serialises all mutation + persistence off the main thread; `@Published`
     /// writes are always hopped back to main.
     private let queue = DispatchQueue(label: "com.slive.history")
     private var pruneTimer: DispatchSourceTimer?
 
-    private let fileURL: URL
+    /// nil = in-memory only (the self-test): nothing touches disk.
+    private let fileURL: URL?
 
-    private init() {
+    private convenience init() {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let dir = base.appendingPathComponent("Slive", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appendingPathComponent("history.json")
+        self.init(fileURL: dir.appendingPathComponent("history.json"))
+    }
 
+    init(fileURL: URL?) {
+        self.fileURL = fileURL
         load()
         startPruneTimer()
     }
@@ -68,42 +80,48 @@ final class HistoryStore: ObservableObject {
         let capped = String(trimmed.prefix(Self.maxTextLength))
         let entry = HistoryEntry(id: UUID(), text: capped, createdAt: Date())
 
-        queue.async {
-            var next = self.entries
-            next.insert(entry, at: 0)
-            self.applyBounds(&next)
-            self.persist(next)
-            self.publish(next)
+        mutate { list in
+            list.insert(entry, at: 0)
+            Self.applyBounds(&list)
         }
     }
 
     /// Remove a single entry by id.
     func remove(_ id: UUID) {
-        queue.async {
-            var next = self.entries
-            next.removeAll { $0.id == id }
-            self.persist(next)
-            self.publish(next)
-        }
+        mutate { list in list.removeAll { $0.id == id } }
     }
 
     /// Drop everything.
     func clearAll() {
+        mutate { list in list.removeAll() }
+    }
+
+    /// The catalogue after every mutation queued so far has applied — unlike
+    /// `entries`, which may still be waiting on its main-thread hop.
+    func syncedEntries() -> [HistoryEntry] {
+        queue.sync { store }
+    }
+
+    /// Apply `change` to the source of truth, then persist + mirror it.
+    private func mutate(_ change: @escaping (inout [HistoryEntry]) -> Void) {
         queue.async {
-            self.persist([])
-            self.publish([])
+            var next = self.store
+            change(&next)
+            self.store = next
+            self.persist(next)
+            self.publish(next)
         }
     }
 
     // MARK: Pruning + bounds
 
     /// Apply TTL then count cap. Order matters: expire first so the freshest
-    /// 200 survive the count cap.
-    private func applyBounds(_ list: inout [HistoryEntry]) {
-        let cutoff = Date().addingTimeInterval(-Self.ttl)
+    /// 200 survive the count cap. Expects newest-first order.
+    static func applyBounds(_ list: inout [HistoryEntry], now: Date = Date()) {
+        let cutoff = now.addingTimeInterval(-ttl)
         list.removeAll { $0.createdAt < cutoff }
-        if list.count > Self.maxEntries {
-            list.removeLast(list.count - Self.maxEntries)
+        if list.count > maxEntries {
+            list.removeLast(list.count - maxEntries)
         }
     }
 
@@ -114,10 +132,11 @@ final class HistoryStore: ObservableObject {
                        leeway: .seconds(30))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            var next = self.entries
+            var next = self.store
             let before = next.count
-            self.applyBounds(&next)
+            Self.applyBounds(&next)
             guard next.count != before else { return }   // nothing expired
+            self.store = next
             self.persist(next)
             self.publish(next)
         }
@@ -127,20 +146,32 @@ final class HistoryStore: ObservableObject {
 
     // MARK: Persistence
 
+    /// Where an unreadable history file is moved before starting fresh.
+    static func corruptBackupURL(for url: URL, at date: Date) -> URL {
+        url.deletingLastPathComponent().appendingPathComponent(
+            "\(url.lastPathComponent).corrupt-\(Int(date.timeIntervalSince1970))")
+    }
+
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else {
-            entries = []
-            return
-        }
+        guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard var decoded = try? decoder.decode([HistoryEntry].self, from: data) else {
-            entries = []   // corrupt file -> start clean, never crash
+            // Start clean, never crash — but keep the bytes: the next add()
+            // would otherwise overwrite the only copy of the user's history.
+            let aside = Self.corruptBackupURL(for: fileURL, at: Date())
+            do {
+                try FileManager.default.moveItem(at: fileURL, to: aside)
+                NSLog("Slive: history unreadable — moved aside to \(aside.lastPathComponent)")
+            } catch {
+                NSLog("Slive: history unreadable and could not be moved aside: \(error)")
+            }
             return
         }
         decoded.sort { $0.createdAt > $1.createdAt }   // newest first
         let rawCount = decoded.count
-        applyBounds(&decoded)
+        Self.applyBounds(&decoded)
+        store = decoded
         entries = decoded
         // If load-time pruning trimmed anything, rewrite the smaller file.
         if decoded.count != rawCount {
@@ -152,6 +183,7 @@ final class HistoryStore: ObservableObject {
     /// Atomic write. Never throws out to callers — persistence failures are
     /// logged, not fatal.
     private func persist(_ list: [HistoryEntry]) {
+        guard let fileURL else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         do {

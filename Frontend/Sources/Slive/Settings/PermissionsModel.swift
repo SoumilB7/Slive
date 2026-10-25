@@ -12,8 +12,11 @@ final class PermissionsModel: ObservableObject {
 
     private var timer: Timer?
 
+    /// Idempotent: the window controller (every show) and SettingsView's
+    /// onAppear both call this — a second timer would never be invalidated.
     func startWatching() {
         refresh()
+        guard timer == nil else { return }
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.refresh() }
         t.tolerance = 0.3   // let macOS coalesce the wakeup (battery)
         RunLoop.main.add(t, forMode: .common)

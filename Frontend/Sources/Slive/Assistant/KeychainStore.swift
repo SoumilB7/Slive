@@ -10,22 +10,34 @@ enum KeychainStore {
     private static let service = "com.slive.app.apikeys"
 
     /// Store (or clear, when `value` is empty/nil) the secret for `account`.
-    static func set(_ value: String?, for account: String) {
-        // Always delete first so we never hit a duplicate-item error and so an
-        // empty value simply removes the entry.
+    /// Returns whether the keychain now holds exactly that (cleared = no item).
+    @discardableResult
+    static func set(_ value: String?, for account: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
-
-        guard let value, !value.isEmpty, let data = value.data(using: .utf8) else { return }
-        var add = query
-        add[kSecValueData as String] = data
-        // Available whenever the Mac is unlocked; not synced to iCloud.
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-        SecItemAdd(add as CFDictionary, nil)
+        guard let value, !value.isEmpty, let data = value.data(using: .utf8) else {
+            let status = SecItemDelete(query as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+        // Update in place, add only when absent. Delete-then-add (the old
+        // path, run per keystroke) left NO key behind whenever the add failed
+        // — and the failure was silently ignored.
+        var status = SecItemUpdate(query as CFDictionary,
+                                   [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = query
+            add[kSecValueData as String] = data
+            // Available whenever the Mac is unlocked; not synced to iCloud.
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        if status != errSecSuccess {
+            NSLog("Slive: keychain write for \(account) failed (\(status))")
+        }
+        return status == errSecSuccess
     }
 
     /// Read the secret for `account`, or nil if none is stored.
