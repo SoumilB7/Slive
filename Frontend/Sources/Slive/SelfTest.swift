@@ -25,6 +25,7 @@ enum SelfTest {
         speedTierChecks()
         vocabHintChecks()
         vocabularyCorrectorChecks()
+        dictationQueueChecks()
         silenceTrimChecks()
         textHygieneChecks()
         pasteFocusChecks()
@@ -439,6 +440,24 @@ enum SelfTest {
     }
 
     // MARK: - Vocabulary corrector (post-decode spelling)
+
+    private static func dictationQueueChecks() {
+        print("[Dictation queue]")
+        let queue = DictationQueue()
+        check(queue.isEmpty, "a new queue is empty")
+        let a = queue.enqueue(), b = queue.enqueue(), c = queue.enqueue()
+        equal(queue.count, 3, "three waiting dictations are queued")
+        check(queue.isTurn(a) && !queue.isTurn(b) && !queue.isTurn(c), "the oldest dictation types first")
+        check(queue.isLast(c) && !queue.isLast(a), "the newest dictation owns the overlay")
+        queue.finish(b)
+        check(queue.isTurn(a), "a later one finishing early (empty) doesn't jump the line")
+        queue.finish(a)
+        check(queue.isTurn(c), "finishing the oldest hands the turn to the next")
+        queue.finish(c)
+        check(queue.isEmpty, "the queue drains")
+        queue.finish(UUID())
+        check(queue.isEmpty, "finishing an unknown dictation is harmless")
+    }
 
     private static func vocabularyCorrectorChecks() {
         print("[Vocabulary corrector]")

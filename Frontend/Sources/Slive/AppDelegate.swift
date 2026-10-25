@@ -55,6 +55,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingStop: DispatchWorkItem?
     /// When the hotkey lifted — anchor for the always-on release→typed log.
     private var releasedAt: Date?
+    /// Dictations released while the model was loading: never cancelled by a
+    /// newer hold, typed in the order they were spoken (see DictationQueue).
+    private let waitingDictations = DictationQueue()
+    private var waitingTasks: [UUID: Task<Void, Never>] = [:]
     /// Latency-critical activity assertion held for hold→type, so P-cores stay
     /// clocked and App Nap/timer coalescing can't stretch the pipeline.
     private var dictationActivity: NSObjectProtocol?
@@ -154,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         hotkey.stop()
         transcribeTask?.cancel(); transcribeTask = nil
+        waitingTasks.values.forEach { $0.cancel() }
         continuous.cancel()  // stop any live stream
         whisper.shutdown()   // release the WhisperKit (Neural Engine) model
         backend.stop()       // shut the Python server down with the app
@@ -447,6 +452,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let whisperModel = whisper.servingModel(wanted: Settings.shared.whisperModel,
                                                 fallback: servingDictationModel)
         let vocabulary = Settings.shared.hotwords
+        // Queued: released while the model isn't ready, or behind dictations
+        // that are still waiting. A queued dictation is never cancelled by a
+        // newer hold and types in turn (it times its own release→typed).
+        let queueID: UUID? = (!whisper.isReady(whisperModel) || !waitingDictations.isEmpty)
+            ? waitingDictations.enqueue() : nil
+        let releaseTime = releasedAt
+        if queueID != nil { releasedAt = nil }
         // Released while the model is still being prepared (first launch, or
         // macOS purged its compiled-model cache — a minute or two): say so
         // instead of silent "processing" dots. The dictation is kept and
@@ -458,10 +470,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         transcribeTask?.cancel()
-        // Strong `self` capture: the task always returns (breaking any cycle),
-        // and a new recording cancels it so a stale UI update never lands.
-        transcribeTask = Task {
+        transcribeTask = nil
+        // Strong `self` capture: the task always returns (breaking any cycle).
+        // An unqueued one is cancelled by a new recording so a stale UI update
+        // never lands; a queued one runs to the end.
+        let task = Task {
             defer { try? FileManager.default.removeItem(at: wavURL) }   // never persisted
+            defer { if let queueID { self.finishWaiting(queueID) } }
             Log.event(String(format: "captured %.1fs of audio (%@)", duration, action == .assist ? "assistant" : "dictation"))
             if Task.isCancelled { return }
 
@@ -499,7 +514,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
                 // The first decode on a freshly compiled model gets one retry.
-                if waitedForModel, (transcript ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+                if waitedForModel, !Task.isCancelled,
+                   (transcript ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
                     Log.event("decode after waiting came back empty — retrying once")
                     transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
                 }
@@ -525,12 +541,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if Task.isCancelled { Log.event("dictation cancelled after decode (a newer hold or ✕)"); return }
             guard let decoded = transcript, !decoded.isEmpty else {
                 let hadSpeech = voiced.count > 16_000 / 3
+                if let queueID, !self.ownsOverlay(queueID) {
+                    Log.event("queued dictation came back empty (overlay busy, nothing shown)")
+                    return
+                }
                 await MainActor.run { self.handleNoTranscript(afterWaiting: waitedForModel && hadSpeech) }
                 return
             }
             // Spell the user's Vocabulary terms the way they typed them
             // (both engines; a no-op when the list is empty).
             let text = VocabularyCorrector.correct(decoded, hotwords: vocabulary)
+            // Older waiting dictations type first.
+            if let queueID { await self.waitingDictations.turn(queueID) }
 
             // 2. Route the transcript: plain dictation types/shows it; the
             //    assistant shortcut needs the (always-on) Python backend to reach
@@ -539,7 +561,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .dictate, .stream:
                 // `.stream` never reaches here (it uses the live path), but the
                 // file path falls back to plain dictation if it ever did.
-                await MainActor.run { self.finishTranscription(text: text, audioURL: wavURL) }
+                if let queueID {
+                    self.deliverWaiting(text, audioURL: wavURL, releasedAt: releaseTime,
+                                        seconds: duration, ownsOverlay: self.ownsOverlay(queueID))
+                } else {
+                    await MainActor.run { self.finishTranscription(text: text, audioURL: wavURL) }
+                }
             case .assist:
                 if await self.backend.ensureHealthy() {
                     if Task.isCancelled { return }
@@ -550,6 +577,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if let queueID { waitingTasks[queueID] = task } else { transcribeTask = task }
+    }
+
+    /// A queued dictation is done (typed, empty, failed or cancelled on quit).
+    private func finishWaiting(_ id: UUID) {
+        waitingDictations.finish(id)
+        waitingTasks[id] = nil
+    }
+
+    /// The overlay is this queued dictation's to update: it's the newest one
+    /// waiting and no newer hold is live.
+    private func ownsOverlay(_ id: UUID) -> Bool {
+        waitingDictations.isLast(id) && !isSessionLive
     }
 
     // MARK: - Live streaming dictation
@@ -820,13 +860,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // ---- Bookkeeping, strictly after the typeout dispatch ----
+        recordDictation(trimmed, audioURL: audioURL, seconds: lastSpeechDuration)
+    }
+
+    /// Type a dictation that waited for the model. Unlike `finishTranscription`
+    /// there is no phase guard: by now the overlay shows the "Preparing" box or
+    /// a newer hold, and that guard dropped every waited dictation (Oct 29:
+    /// decoded "→ 18 chars", never typed). The overlay is only touched when
+    /// this dictation owns it; otherwise the text still types and lands in
+    /// history.
+    @MainActor private func deliverWaiting(_ text: String, audioURL: URL, releasedAt: Date?,
+                                           seconds: TimeInterval, ownsOverlay: Bool) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed) { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.model.phase == .idle else { return }
+                self.showDictationCopyBox(trimmed)
+            }
+        }
+        if let releasedAt {
+            Log.event(String(format: "waited dictation release→%@ %.2fs", typed ? "typed" : "copy box",
+                             Date().timeIntervalSince(releasedAt)))
+        }
+        if ownsOverlay {
+            endDictationActivity()
+            if typed { model.finishListening(); hideOverlaySoon() } else { showDictationCopyBox(trimmed) }
+        } else if !typed {
+            Log.event("waited dictation not typed (overlay busy) — kept in history")
+        }
+        recordDictation(trimmed, audioURL: audioURL, seconds: seconds)
+    }
+
+    /// History, training pair and speaking stats for one delivered dictation.
+    @MainActor private func recordDictation(_ trimmed: String, audioURL: URL?, seconds: TimeInterval) {
         HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
         // Training pair (audio + transcript) — only while saving is toggled on
         // and under the size cap. Records regardless of where the text landed.
         if Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
             TrainingStore.shared.addRecording(transcript: trimmed, audioURL: audioURL)
         }
-        SpeakingStats.shared.record(text: trimmed, seconds: lastSpeechDuration)
+        SpeakingStats.shared.record(text: trimmed, seconds: seconds)
     }
 
     @MainActor private func showDictationCopyBox(_ text: String) {
