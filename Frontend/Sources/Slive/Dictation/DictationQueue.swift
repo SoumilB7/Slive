@@ -1,16 +1,25 @@
 import Foundation
 
-/// Dictations released while the speech model was still loading (launch, a
-/// purged Neural Engine cache, Feather's idle unload). They type in the order
-/// they were spoken: each waits for its turn, and finishing one — typed, empty
-/// or failed — hands the turn to the next. Oct 28–29: a newer hold cancelled
-/// the waiting ones and the words were lost.
+/// Released dictations — including those released while the speech model was
+/// still loading (launch, a purged Neural Engine cache, Feather's idle
+/// unload). They type in the order they were spoken: each waits for its turn,
+/// and finishing one — typed, empty or failed — hands the turn to the next.
+/// Oct 28–29: a newer hold cancelled the waiting ones and the words were lost.
 @MainActor final class DictationQueue {
     private var order: [UUID] = []
     private var waiting: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     var isEmpty: Bool { order.isEmpty }
     var count: Int { order.count }
+
+    /// Does a release join the queue? Every dictation does, model ready or
+    /// not — Oct 29: released one, held the next within a second, and the
+    /// first was "cancelled after decode", never typed. An assistant request
+    /// joins only behind a loading model or dictations still in line;
+    /// otherwise a newer hold (or ✕) may still supersede it.
+    static func queues(_ action: HotkeyAction, modelReady: Bool, queueEmpty: Bool) -> Bool {
+        action != .assist || !modelReady || !queueEmpty
+    }
 
     /// Join the back of the queue.
     func enqueue() -> UUID {
