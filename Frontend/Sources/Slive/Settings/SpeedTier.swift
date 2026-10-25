@@ -29,8 +29,11 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
 
     /// Model pipes stay resident in RAM/ANE forever (vs idle release).
     var pinsModels: Bool { self != .feather }
-    /// Release idle models after this long (nil = never).
-    var idleUnloadAfter: TimeInterval? { self == .feather ? 600 : nil }
+    /// Release idle models when macOS reports memory pressure (Feather). Was a
+    /// fixed 10-minute idle timer — on a nearly full disk macOS also discards
+    /// the compiled model, so every reload after a break was a 80–95s
+    /// recompile (Oct 29: 3.5s at launch, 83s half an hour later).
+    var releasesUnderPressure: Bool { self == .feather }
     /// Cold-prime the ANE graph at hold-start when minutes have passed.
     var primesOnHold: Bool { self == .instant }
     /// Hold a `.latencyCritical` activity for hold→type (P-cores clocked).
@@ -112,7 +115,7 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
     func costLines(modelResidentGB: Double, batteryWh: Double?) -> [(String, String)] {
         let ram = pinsModels
             ? String(format: "≈%.1f GB always resident", modelResidentGB)
-            : "freed after 10 idle minutes"
+            : "freed when macOS runs low on memory"
         let clocks = holdsLatencyAssertion
             ? "held at full speed while dictating"
             : "system-managed (may downclock on battery)"
@@ -121,7 +124,7 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
             : (warmsAfterLoad ? "warmed once per model load" : "no warmups")
         let idle = pinsModels
             ? "instant, always"
-            : "reloads on first hold after a break (seconds)"
+            : "reloads on the next hold after memory pressure frees it"
 
         let pace = Int(Self.assumedDictationsPerHour)
         let battery: String

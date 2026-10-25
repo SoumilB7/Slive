@@ -343,7 +343,7 @@ enum SelfTest {
         check(SpeedTier.instant.pinsModels && SpeedTier.instant.primesOnHold
                 && SpeedTier.instant.holdsLatencyAssertion && SpeedTier.instant.warmsAfterLoad,
               "Instant spends everything for speed")
-        check(!SpeedTier.feather.pinsModels && SpeedTier.feather.idleUnloadAfter != nil
+        check(!SpeedTier.feather.pinsModels && SpeedTier.feather.releasesUnderPressure
                 && !SpeedTier.feather.warmsAfterLoad && !SpeedTier.feather.primesOnHold,
               "Feather spends nothing while idle")
         check(SpeedTier.snappy.pinsModels && !SpeedTier.snappy.primesOnHold

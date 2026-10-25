@@ -94,6 +94,10 @@ final class TranscriptionModel: ObservableObject {
     @Published private(set) var statuses: [String: Status] = [:]
     /// Fine-tuned models installed by the Python pipeline.
     @Published private(set) var customModels: [CustomWhisperModel] = []
+    /// Set once a Feather reload proved slow (a full Neural Engine recompile):
+    /// Feather then stops releasing models, and the speed graph says why.
+    /// Cleared when the user picks a tier again.
+    @Published private(set) var featherKeepsModelsReason: String?
 
     /// Loaded WhisperKit instances, keyed by model name. One entry == one resident
     /// model in RAM.
@@ -647,7 +651,13 @@ final class TranscriptionModel: ObservableObject {
     private var warmUps: [String: Task<Void, Never>] = [:]
     /// Real decodes running per model (absent = none).
     private var decodesInFlight: [String: Int] = [:]
-    private var idleUnloadTimer: Timer?
+    private var memoryPressure: DispatchSourceMemoryPressure?
+    /// Models Feather released; the next load of one is timed as a reload.
+    private var releasedByFeather: Set<String> = []
+    /// A release must not land mid-session: the model has been idle this long.
+    nonisolated static let pressureReleaseIdleSeconds: TimeInterval = 60
+    /// A reload slower than this was a recompile, not a cache hit (~3s).
+    nonisolated static let slowReloadSeconds: TimeInterval = 10
 
     /// Mark a real decode of `model` running, then wait out its in-flight
     /// warm-up: one WhisperKit instance isn't built for concurrent
@@ -729,31 +739,38 @@ final class TranscriptionModel: ObservableObject {
     }
 
     /// Apply the residency side of the selected SpeedTier. Pinned tiers just
-    /// disarm the timer; Feather arms a 60s check that releases every pipe
-    /// after the tier's idle window — `primeIfCold` reloads on the next hold,
-    /// overlapped with the user speaking, and the file path self-heals
-    /// regardless.
-    func applySpeedTier() {
-        idleUnloadTimer?.invalidate()
-        idleUnloadTimer = nil
-        guard Settings.shared.resolvedSpeedTier.idleUnloadAfter != nil else { return }
-        let timer = Timer(timeInterval: 60, repeats: true) { _ in
-            Task { @MainActor in TranscriptionModel.shared.unloadIfIdle() }
+    /// disarm the listener; Feather listens for macOS memory pressure and
+    /// releases idle models when it comes — `primeIfCold` reloads on the next
+    /// hold, overlapped with the user speaking, and the file path self-heals
+    /// regardless. `tierPicked`: the user just chose a tier, so a previous
+    /// "reloads are slow here" verdict is re-tested.
+    func applySpeedTier(tierPicked: Bool = false) {
+        if tierPicked { featherKeepsModelsReason = nil }
+        guard Settings.shared.resolvedSpeedTier.releasesUnderPressure else {
+            memoryPressure?.cancel()
+            memoryPressure = nil
+            return
         }
-        timer.tolerance = 10
-        RunLoop.main.add(timer, forMode: .common)
-        idleUnloadTimer = timer
+        guard memoryPressure == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical],
+                                                             queue: .main)
+        source.setEventHandler {
+            Task { @MainActor in TranscriptionModel.shared.releaseUnderPressure() }
+        }
+        source.resume()
+        memoryPressure = source
     }
 
-    private func unloadIfIdle() {
-        guard let after = Settings.shared.resolvedSpeedTier.idleUnloadAfter,
-              Date().timeIntervalSince(lastDecodeAt) > after,
+    private func releaseUnderPressure() {
+        guard Settings.shared.resolvedSpeedTier.releasesUnderPressure,
+              featherKeepsModelsReason == nil,
+              Date().timeIntervalSince(lastDecodeAt) > Self.pressureReleaseIdleSeconds,
               liveTranscriber == nil, parakeetLive == nil else { return }
         // Never pull a model out from under its own load, warm-up or decode.
         let busy = loadingModels.union(warmUps.keys).union(decodesInFlight.keys)
         let idle = Set(pipes.keys).union(parakeets.keys).subtracting(busy)
         guard !idle.isEmpty else { return }
-        NSLog("Slive: Feather tier — released idle transcription model(s)")
+        Log.event("Feather: memory pressure — released \(idle.sorted().joined(separator: ", "))")
         // Statuses stay .ready on purpose: the models are still downloaded and
         // one hold away — every decode path load-on-demands through
         // `primeIfCold` / `transcribe(url:)`.
@@ -761,6 +778,18 @@ final class TranscriptionModel: ObservableObject {
             pipes.removeValue(forKey: key)
             parakeets.removeValue(forKey: key)
         }
+        releasedByFeather.formUnion(idle)
+    }
+
+    /// A model finished loading in `seconds`. If Feather had released it and
+    /// the reload was a recompile, stop releasing: on this Mac every release
+    /// would cost that wait again.
+    private func noteLoaded(_ model: String, seconds: Double) {
+        guard releasedByFeather.remove(model) != nil, seconds > Self.slowReloadSeconds else { return }
+        featherKeepsModelsReason = String(
+            format: "Feather is keeping models loaded: reloading one took %.0fs on this Mac — macOS "
+                + "discarded its compiled copy (it does that when disk space runs low).", seconds)
+        Log.event(String(format: "Feather: reload of %@ took %.0fs — no longer releasing models", model, seconds))
     }
 
     // MARK: - Selection / loading
@@ -885,6 +914,7 @@ final class TranscriptionModel: ObservableObject {
             pipes[model] = p
             loadingModels.remove(model)
             lastDecodeAt = Date()   // a fresh load is use — Feather keeps it its full window
+            noteLoaded(model, seconds: Date().timeIntervalSince(t0))
             statuses[model] = .ready
             onModelReady?(model)
             Log.stt(String(format: "READY \(model) in %.1fs (resident: \(pipes.keys.sorted()))", Date().timeIntervalSince(t0)))
@@ -921,6 +951,7 @@ final class TranscriptionModel: ObservableObject {
             parakeets[model] = engine
             loadingModels.remove(model)
             lastDecodeAt = Date()
+            noteLoaded(model, seconds: Date().timeIntervalSince(t0))
             statuses[model] = .ready
             onModelReady?(model)
             Log.event(String(format: "model ready: %@ in %.1fs", model, Date().timeIntervalSince(t0)))
