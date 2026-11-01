@@ -50,12 +50,51 @@ cp "$BIN" "$CONTENTS/MacOS/Slive"
 
 # Bake absolute paths into Info.plist: the Backend/ dir whose .venv runs the
 # transcription server (auto-launched by the app), and the prompts folder.
+# Release builds (`./build.sh release lite|full`, used by scripts/make-dmg.sh)
+# carry everything inside the app — no paths into this repo. Dev builds keep
+# using the repo's Backend/.venv and prompts.
+VERSION="$(<"$REPO_DIR/VERSION")"
+BUILD_SHA="$(git -C "$REPO_DIR" rev-parse --short HEAD)"
+EDITION="full"; BUNDLED="0"
 BACKEND_DIR="$REPO_DIR/Backend"
 PROMPTS_DIR="$REPO_DIR/Backend/prompts"
-mkdir -p "$PROMPTS_DIR"
+if [[ "${1:-}" == "release" ]]; then
+    EDITION="${2:?usage: build.sh release lite|full}"
+    [[ "$EDITION" == lite || "$EDITION" == full ]] || { echo "✗ edition must be lite or full" >&2; exit 1; }
+    [[ "$EDITION" == full ]] && BUNDLED="1"
+    BACKEND_DIR=""; PROMPTS_DIR=""
+else
+    mkdir -p "$PROMPTS_DIR"
+fi
 sed -e "s|__BACKEND_DIR__|$BACKEND_DIR|g" \
     -e "s|__PROMPTS_DIR__|$PROMPTS_DIR|g" \
+    -e "s|__VERSION__|$VERSION|g" \
+    -e "s|__EDITION__|$EDITION|g" \
+    -e "s|__BUNDLED__|$BUNDLED|g" \
+    -e "s|__BUILD__|$BUILD_SHA|g" \
     Resources/Info.plist.template > "$CONTENTS/Info.plist"
+
+if [[ "$BUNDLED" == "1" ]]; then
+    # The Python server, self-contained: uv's standalone CPython (the one the
+    # repo venv is built on), the venv's installed packages, and the server
+    # source. The interpreter ships pre-named "Slive Server" (Activity Monitor).
+    echo "▸ Bundling the Python server…"
+    PY_HOME="$(sed -n 's/^home = //p' "$REPO_DIR/Backend/.venv/pyvenv.cfg")"
+    PY_ROOT="$(dirname "$PY_HOME")"
+    PY_VER="$(sed -n 's/^version_info = \([0-9]*\.[0-9]*\).*/\1/p' "$REPO_DIR/Backend/.venv/pyvenv.cfg")"
+    B="$CONTENTS/Resources/backend"
+    mkdir -p "$B/python" "$B/site-packages" "$B/src"
+    rsync -a --exclude "include/" --exclude "share/" --exclude "lib/python$PY_VER/test/" \
+        --exclude "lib/python$PY_VER/idlelib/" --exclude "lib/python$PY_VER/tkinter/" \
+        "$PY_ROOT/" "$B/python/"
+    cp "$B/python/bin/python$PY_VER" "$B/python/bin/Slive Server"
+    rsync -a --exclude "_editable_impl_flowy.pth" --exclude "_virtualenv.pth" \
+        --exclude "pytest*" --exclude "_pytest/" --exclude "ruff*" \
+        "$REPO_DIR/Backend/.venv/lib/python$PY_VER/site-packages/" "$B/site-packages/"
+    rsync -a --exclude "__pycache__/" "$REPO_DIR/Backend/src/" "$B/src/"
+    mkdir -p "$CONTENTS/Resources/prompts"
+    cp "$REPO_DIR"/Backend/prompts/*.md "$CONTENTS/Resources/prompts/" 2>/dev/null || true
+fi
 
 # App icon.
 if [[ -f Resources/AppIcon.icns ]]; then
@@ -82,6 +121,7 @@ fi
 # relaunches. Falls back to ad-hoc otherwise (grants reset on each rebuild).
 # To create the identity, see: Frontend/setup-signing.sh
 SIGN_ID="Slive Local Signing"
+[[ "${1:-}" == "release" ]] && SIGN_ID="(ad-hoc for release)"   # never a local identity in a DMG
 ENTITLEMENTS="Slive.entitlements"   # audio-input entitlement (mic under Hardened Runtime)
 # Detect by certificate presence, not `find-identity -p codesigning` — the
 # latter hides untrusted self-signed certs even though codesign can use them.
@@ -96,9 +136,22 @@ else
 fi
 # --options runtime = Hardened Runtime (blocks code injection). The entitlements
 # file grants microphone access under that runtime — without it the mic is silent.
-codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
-    echo "  (codesign warning ignored)"
-}
+if [[ "${1:-}" == "release" ]]; then
+    # Bundled Python first: every Mach-O, ad-hoc and WITHOUT the hardened
+    # runtime (library validation would refuse its extension modules), then
+    # the app itself, which seals all of it — no --deep, so nested code keeps
+    # its own signature.
+    if [[ -d "$CONTENTS/Resources/backend" ]]; then
+        echo "▸ Signing the bundled Python…"
+        find "$CONTENTS/Resources/backend" -type f \( -name "*.so" -o -name "*.dylib" -o -perm -u+x \) -print0 \
+            | xargs -0 -n 64 -P 8 codesign --force --sign - >/dev/null 2>&1 || true
+    fi
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$APP"
+else
+    codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
+        echo "  (codesign warning ignored)"
+    }
+fi
 
 echo "✓ Built: $APP"
 

@@ -103,7 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Settings window + live hotkey switching.
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         Settings.shared.onHotkeyChange = { [weak self] hk in self?.hotkey.hotkey = hk }
-        Settings.shared.onAssistantHotkeyChange = { [weak self] hk in self?.hotkey.assistantHotkey = hk }
+        Settings.shared.onAssistantHotkeyChange = { [weak self] hk in
+            self?.hotkey.assistantHotkey = Edition.hasServer ? hk : nil   // Lite: no assistant
+        }
         Settings.shared.onStreamHotkeyChange = { [weak self] _ in
             self?.syncBindings()
             // Recording/removing the continuous shortcut also decides whether its
@@ -115,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshModelResidency()   // a stream toggle also earns the model RAM
         }
         hotkey.hotkey = Settings.shared.hotkey
-        hotkey.assistantHotkey = Settings.shared.assistantHotkey
+        hotkey.assistantHotkey = Edition.hasServer ? Settings.shared.assistantHotkey : nil
         syncBindings()
 
         // Preload the on-device transcription model IF it's already downloaded
@@ -964,7 +966,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
         // Training pair (audio + transcript) — only while saving is toggled on
         // and under the size cap. Records regardless of where the text landed.
-        if Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
+        if Edition.hasServer, Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
             TrainingStore.shared.addRecording(transcript: trimmed, audioURL: audioURL)
         }
         SpeakingStats.shared.record(text: trimmed, seconds: seconds)
@@ -1080,11 +1082,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
 
         // Live backend status (updated via the Combine subscription).
-        let statusLine = NSMenuItem(title: "Backend: …", action: nil, keyEquivalent: "")
-        statusLine.isEnabled = false
-        menu.addItem(statusLine)
-        backendStatusItem = statusLine
-        updateBackendStatusUI(backend.status)
+        if Edition.hasServer {
+            let statusLine = NSMenuItem(title: "Backend: …", action: nil, keyEquivalent: "")
+            statusLine.isEnabled = false
+            menu.addItem(statusLine)
+            backendStatusItem = statusLine
+            updateBackendStatusUI(backend.status)
+        }
 
         menu.addItem(.separator())
 

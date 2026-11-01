@@ -28,7 +28,16 @@
 
 Transcription happens on your Mac. Local models run on your Mac. Fine-tuning happens on your Mac. The only bytes that ever leave are the ones you deliberately send to a cloud AI.
 
-## Quick start
+## Install
+
+Download a DMG from [Releases](../../releases) and drag Slive to Applications:
+
+- **Slive** — dictation and live typing with on-device speech (WhisperKit, Parakeet). Small, no Python.
+- **Slive Full** — the same plus the bundled Python server: Ask, local models, correct-answer labeling and training.
+
+On first launch, allow it under System Settings → Privacy & Security. Needs an Apple silicon Mac on macOS 14+.
+
+## Quick start (from source)
 
 ```bash
 git clone https://github.com/SoumilB7/Slive.git

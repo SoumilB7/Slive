@@ -13,9 +13,18 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>__VERSION__</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>__VERSION__</string>
+    <!-- lite = Swift app + on-device speech only; full = with the Python server. -->
+    <key>SliveEdition</key>
+    <string>__EDITION__</string>
+    <!-- 1 = the server runs from Python bundled in Resources/backend. -->
+    <key>SliveBundledBackend</key>
+    <string>__BUNDLED__</string>
+    <!-- The commit this app was built from. -->
+    <key>SliveBuild</key>
+    <string>__BUILD__</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <!-- Normal app: Dock icon, appears in Cmd-Tab, standard window controls. -->

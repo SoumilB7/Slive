@@ -43,6 +43,9 @@ final class BackendManager: ObservableObject {
 
     /// Absolute path to the repo's Backend/ dir (baked at build time).
     private var backendDir: URL? {
+        if Edition.bundledServer {
+            return Bundle.main.resourceURL?.appendingPathComponent("backend", isDirectory: true)
+        }
         if let env = ProcessInfo.processInfo.environment["FLOWY_BACKEND_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: env)
         }
@@ -114,6 +117,7 @@ final class BackendManager: ObservableObject {
     /// does (up to `timeout`). Returns whether it came up. Async sleeps between
     /// probes, so the main thread stays responsive (the overlay keeps its dots).
     func ensureHealthy(timeout: TimeInterval = 25) async -> Bool {
+        guard Edition.hasServer else { return false }   // Lite ships no server
         lastUsed = Date()
         if await probeHealth() { status = .running; return true }
         status = .starting
@@ -144,6 +148,7 @@ final class BackendManager: ObservableObject {
             lastSpawnError = "Server missing from this build."
             return
         }
+        if Edition.bundledServer { spawnBundled(dir); return }
         let python = dir.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             NSLog("Slive: venv python missing at \(python.path) — run `uv sync` in Backend/.")
@@ -156,10 +161,6 @@ final class BackendManager: ObservableObject {
         // plain venv python if the rename can't be set up.
         let launch = namedInterpreter(dir: dir, venvPython: python)
 
-        let p = Process()
-        p.executableURL = launch.exe
-        p.arguments = ["-m", "flowy.server"]
-        p.currentDirectoryURL = dir
         var env = ProcessInfo.processInfo.environment
         if let extraPath = launch.pythonPath {
             env["PYTHONPATH"] = env["PYTHONPATH"].map { "\(extraPath):\($0)" } ?? extraPath
@@ -175,7 +176,17 @@ final class BackendManager: ObservableObject {
         // The server makes itself a process-group leader, so stop() can signal
         // it and its children (the training converter) together.
         env["SLIVE_PROCESS_GROUP"] = "1"
-        p.environment = env
+        startServer(launch.exe, arguments: ["-m", "flowy.server"], directory: dir, environment: env)
+
+    }
+
+    /// Start the server process (shared by the dev and bundled paths).
+    private func startServer(_ exe: URL, arguments: [String], directory: URL, environment: [String: String]) {
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = arguments
+        p.currentDirectoryURL = directory
+        p.environment = environment
 
         let logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("slive-backend.log")
@@ -201,11 +212,34 @@ final class BackendManager: ObservableObject {
             lastSpawnError = nil
             lastUsed = Date()
             armIdleShutdown()
-            NSLog("Slive: backend starting (pid \(p.processIdentifier)) as \(launch.exe.lastPathComponent).")
+            NSLog("Slive: backend starting (pid \(p.processIdentifier)) as \(exe.lastPathComponent).")
         } catch {
             NSLog("Slive: failed to start backend — \(error)")
             lastSpawnError = "Server didn't start: \(error.localizedDescription)"
         }
+    }
+
+    /// Release Full build: Python, its packages and the server source live in
+    /// Contents/Resources/backend (python/, site-packages/, src/). The
+    /// interpreter ships pre-named "Slive Server", and nothing is written into
+    /// the signed app — no bytecode, and it runs from Application Support.
+    private func spawnBundled(_ dir: URL) {
+        let python = dir.appendingPathComponent("python/bin/Slive Server")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            lastSpawnError = "The bundled Slive Server is missing — reinstall Slive."
+            return
+        }
+        let work = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Slive", isDirectory: true)
+        try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = [dir.appendingPathComponent("site-packages").path,
+                             dir.appendingPathComponent("src").path].joined(separator: ":")
+        env["PYTHONHOME"] = dir.appendingPathComponent("python").path
+        env["PYTHONNOUSERSITE"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["SLIVE_PROCESS_GROUP"] = "1"
+        startServer(python, arguments: ["-m", "flowy.server"], directory: work, environment: env)
     }
 
     /// Resolve the venv's real interpreter and expose it under a "Slive Server"

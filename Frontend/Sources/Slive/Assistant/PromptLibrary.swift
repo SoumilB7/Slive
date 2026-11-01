@@ -17,7 +17,8 @@ enum PromptLibrary {
            !baked.isEmpty, !baked.contains("__PROMPTS_DIR__") {
             return URL(fileURLWithPath: baked, isDirectory: true)
         }
-        return nil
+        // Release builds carry the prompts inside the app.
+        return Bundle.main.resourceURL?.appendingPathComponent("prompts", isDirectory: true)
     }
 
     /// Names of available prompt files (sans extension), sorted, excluding the

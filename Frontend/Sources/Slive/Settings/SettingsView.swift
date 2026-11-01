@@ -73,16 +73,18 @@ struct SettingsView: View {
             .padding(.top, 16)
             .padding(.bottom, 10)
 
-            Picker("", selection: sectionBinding) {
-                ForEach(SettingsSection.allCases) { s in
-                    Text(s.rawValue).tag(s)
+            if SettingsSection.available.count > 1 {
+                Picker("", selection: sectionBinding) {
+                    ForEach(SettingsSection.available) { s in
+                        Text(s.rawValue).tag(s)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.large)
+                .padding(.horizontal, SliveTheme.gutter)
+                .padding(.bottom, 10)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.large)
-            .padding(.horizontal, SliveTheme.gutter)
-            .padding(.bottom, 10)
 
             if page.section == .dictation {
                 Picker("", selection: $page) {

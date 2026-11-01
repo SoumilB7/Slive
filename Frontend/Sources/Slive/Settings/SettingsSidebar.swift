@@ -16,6 +16,11 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 /// (replaces the old Section/Tab/ATab trio). Dictation has five pages;
 /// Training splits into Data (capture + ground truth + samples) and Training
 /// (the fine-tuning pipeline).
+extension SettingsSection {
+    /// The sections this edition has — Lite only has Dictation.
+    static var available: [SettingsSection] { Edition.hasServer ? allCases : [.dictation] }
+}
+
 enum SettingsPage: String, CaseIterable, Identifiable {
     case general = "General"
     case continuous = "Continuous"
@@ -88,7 +93,7 @@ struct SettingsSidebar: View {
             .padding(.horizontal, 6)
             .padding(.bottom, 12)
 
-            ForEach(SettingsSection.allCases) { section in
+            ForEach(SettingsSection.available) { section in
                 Text(section.rawValue.uppercased())
                     .font(SliveTheme.font(10, .bold))
                     .foregroundStyle(SliveTheme.textTertiary)
