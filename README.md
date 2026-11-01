@@ -32,12 +32,21 @@ Transcription happens on your Mac. Local models run on your Mac. Fine-tuning hap
 
 ## Install
 
-Download a DMG from [Releases](../../releases) and drag Slive to Applications:
+Paste one line into Terminal. It builds Slive on your Mac, installs it in Applications and opens it ready to dictate. Run it again to update.
 
-- **Slive** — dictation and live typing with on-device speech (WhisperKit, Parakeet). Small, no Python.
-- **Slive Full** — the same plus the bundled Python server: Ask, local models, correct-answer labeling and training.
+**Slive**: dictation and live typing with on-device speech (WhisperKit, Parakeet), no Python:
 
-On first launch, allow it under System Settings → Privacy & Security. Needs an Apple silicon Mac on macOS 14+.
+```bash
+curl -fsSL https://raw.githubusercontent.com/SoumilB7/Slive/main/install.sh | bash
+```
+
+**Slive Full**: the same plus the Python server for Ask, local models, correct-answer labeling and training (~1.2 GB more):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SoumilB7/Slive/main/install-full.sh | bash
+```
+
+Needs an Apple silicon Mac on macOS 14+. The first run installs Apple's Command Line Tools if they're missing. Grant Microphone, Input Monitoring and Accessibility when Slive asks; they stay granted across updates.
 
 ## Quick start (from source)
 

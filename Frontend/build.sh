@@ -55,7 +55,7 @@ cp "$BIN" "$CONTENTS/MacOS/Slive"
 # using the repo's Backend/.venv and prompts.
 VERSION="$(<"$REPO_DIR/VERSION")"
 BUILD_SHA="$(git -C "$REPO_DIR" rev-parse --short HEAD)"
-EDITION="full"; BUNDLED="0"
+EDITION="${SLIVE_EDITION:-full}"; BUNDLED="0"   # SLIVE_EDITION=lite: no Python features
 BACKEND_DIR="$REPO_DIR/Backend"
 PROMPTS_DIR="$REPO_DIR/Backend/prompts"
 if [[ "${1:-}" == "release" ]]; then
