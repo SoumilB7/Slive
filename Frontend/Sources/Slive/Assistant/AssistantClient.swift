@@ -38,7 +38,7 @@ struct AssistantClient {
 
         var description: String {
             switch self {
-            case .missingKey(let p):  return "No \(p) key. Add one in Models."
+            case .missingKey(let p):  return "No \(p) key. Add one in Providers."
             case .notHTTP:            return "No response."
             case .server(let m):      return m
             case .badStatus(let c):   return "Server error \(c)."

@@ -3,70 +3,69 @@ import SwiftUI
 
 // MARK: - Navigation model
 
-/// Top-level groups of the settings window.
+/// Sidebar groups, by what you're doing rather than by subsystem.
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case dictation = "Dictation"
-    case assistant = "Assistant"
-    case models = "Models"
-    case training = "Training"
+    case app = "App"
+    case modes = "Modes"
+    case library = "Library"
+    case lab = "Lab"
     var id: String { rawValue }
 }
 
-/// Every page the window can show — the single source of truth for navigation
-/// (replaces the old Section/Tab/ATab trio). Dictation has five pages;
-/// Training splits into Data (capture + ground truth + samples) and Training
-/// (the fine-tuning pipeline).
 extension SettingsSection {
-    /// The sections this edition has — Lite only has Dictation.
-    static var available: [SettingsSection] { Edition.hasServer ? allCases : [.dictation] }
+    /// The sections this edition has — Lite has no Lab (it needs the server).
+    static var available: [SettingsSection] {
+        allCases.filter { !SettingsPage.pages(in: $0).isEmpty }
+    }
 }
 
+/// Every page the window can show — the single source of truth for navigation.
 enum SettingsPage: String, CaseIterable, Identifiable {
     case general = "General"
-    case continuous = "Continuous"
     case permissions = "Permissions"
+    case continuous = "Live typing"
+    case assistant = "Ask"
     case vocabulary = "Vocabulary"
     case history = "History"
-    case assistant = "Assistant"
-    case models = "Models"
+    case models = "Providers"
     case data = "Data"
     case training = "Training"
     var id: String { rawValue }
 
     var section: SettingsSection {
         switch self {
-        case .general, .continuous, .permissions, .vocabulary, .history: return .dictation
-        case .assistant: return .assistant
-        case .models: return .models
-        case .data, .training: return .training
+        case .general, .permissions: return .app
+        case .continuous, .assistant: return .modes
+        case .vocabulary, .history: return .library
+        case .models, .data, .training: return .lab
+        }
+    }
+
+    /// Pages that talk to the Python server — absent from the Lite edition.
+    var needsServer: Bool {
+        switch self {
+        case .assistant, .models, .data, .training: return true
+        default: return false
         }
     }
 
     var icon: String {
         switch self {
         case .general: return "gearshape.fill"
-        case .continuous: return "text.cursor"
+        case .continuous: return "pencil.line"
         case .permissions: return "lock.shield.fill"
         case .vocabulary: return "character.book.closed.fill"
         case .history: return "clock.fill"
-        case .assistant: return "sparkles"
-        case .models: return "cpu.fill"
+        case .assistant: return "smallcircle.filled.circle"
+        case .models: return "key.fill"
         case .data: return "tray.full.fill"
         case .training: return "waveform.path.ecg"
         }
     }
 
-    static func first(in section: SettingsSection) -> SettingsPage {
-        switch section {
-        case .dictation: return .general
-        case .assistant: return .assistant
-        case .models: return .models
-        case .training: return .data
-        }
-    }
-
+    /// The pages of a section that this edition shows.
     static func pages(in section: SettingsSection) -> [SettingsPage] {
-        allCases.filter { $0.section == section }
+        allCases.filter { $0.section == section && (Edition.hasServer || !$0.needsServer) }
     }
 }
 
@@ -77,6 +76,8 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 /// NavigationSplitView) so it stays on the charcoal gradient.
 struct SettingsSidebar: View {
     @Binding var page: SettingsPage
+    /// Pages that need attention get an orange dot (missing permissions).
+    var attention: Set<SettingsPage> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -103,7 +104,7 @@ struct SettingsSidebar: View {
                     .padding(.bottom, 6)
                 VStack(spacing: 2) {
                     ForEach(SettingsPage.pages(in: section)) { p in
-                        SidebarRow(page: p, selected: page == p) { page = p }
+                        SidebarRow(page: p, selected: page == p, attention: attention.contains(p)) { page = p }
                     }
                 }
             }
@@ -130,6 +131,7 @@ struct SettingsSidebar: View {
 private struct SidebarRow: View {
     let page: SettingsPage
     let selected: Bool
+    var attention = false
     let action: () -> Void
 
     @State private var hovering = false
@@ -145,6 +147,9 @@ private struct SidebarRow: View {
                     .font(SliveTheme.rowFont)
                     .foregroundStyle(selected ? Color.white.opacity(0.95) : SliveTheme.textMid)
                 Spacer(minLength: 0)
+                if attention {
+                    Circle().fill(Color.orange).frame(width: 6, height: 6)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)

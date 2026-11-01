@@ -21,7 +21,6 @@ struct SettingsView: View {
     @State private var page: SettingsPage = .general
     /// Remembered so compact-mode section switching restores the last-visited
     /// Dictation sub-tab.
-    @State private var lastDictationPage: SettingsPage = .general
     @State private var confirmClearHistory = false
     /// Seeded from the autosaved window frame so the first frame renders in the
     /// right tier (a compact-restored window shouldn't flash one sidebar frame
@@ -51,9 +50,6 @@ struct SettingsView: View {
         .background(SliveTheme.background.ignoresSafeArea())
         .environment(\.sliveLayout, layout)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
-        .onChange(of: page) { _, p in
-            if p.section == .dictation { lastDictationPage = p }
-        }
         .onAppear { permissions.startWatching() }
         .onDisappear { permissions.stopWatching() }
     }
@@ -74,30 +70,32 @@ struct SettingsView: View {
             .padding(.top, 16)
             .padding(.bottom, 10)
 
-            if SettingsSection.available.count > 1 {
-                Picker("", selection: sectionBinding) {
-                    ForEach(SettingsSection.available) { s in
-                        Text(s.rawValue).tag(s)
+            // One page picker, grouped like the sidebar.
+            HStack {
+                Menu {
+                    ForEach(SettingsSection.available) { section in
+                        Section(section.rawValue) {
+                            ForEach(SettingsPage.pages(in: section)) { p in
+                                Button {
+                                    page = p
+                                } label: {
+                                    Label(p.rawValue + (p == .permissions && grantedCount < 3 ? " •" : ""),
+                                          systemImage: p.icon)
+                                }
+                            }
+                        }
                     }
+                } label: {
+                    Label(page.rawValue, systemImage: page.icon)
+                        .font(SliveTheme.rowFont)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.large)
-                .padding(.horizontal, SliveTheme.gutter)
-                .padding(.bottom, 10)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .tint(SliveTheme.accent)
+                Spacer()
             }
-
-            if page.section == .dictation {
-                Picker("", selection: $page) {
-                    ForEach(SettingsPage.pages(in: .dictation)) { p in
-                        Text(p.rawValue).tag(p)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, SliveTheme.gutter)
-                .padding(.bottom, 4)
-            }
+            .padding(.horizontal, SliveTheme.gutter)
+            .padding(.bottom, 4)
 
             scrollContainer
 
@@ -109,21 +107,11 @@ struct SettingsView: View {
         }
     }
 
-    /// Compact section switch: entering Dictation restores the last sub-tab.
-    private var sectionBinding: Binding<SettingsSection> {
-        Binding(
-            get: { page.section },
-            set: { s in
-                page = s == .dictation ? lastDictationPage : SettingsPage.first(in: s)
-            }
-        )
-    }
-
     // MARK: - Sidebar chrome (≥ 700pt)
 
     private var sidebarBody: some View {
         HStack(spacing: 0) {
-            SettingsSidebar(page: $page)
+            SettingsSidebar(page: $page, attention: grantedCount < 3 ? [.permissions] : [])
             scrollContainer
         }
     }
