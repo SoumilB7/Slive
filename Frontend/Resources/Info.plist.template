@@ -22,9 +22,11 @@
     <!-- 1 = the server runs from Python bundled in Resources/backend. -->
     <key>SliveBundledBackend</key>
     <string>__BUNDLED__</string>
-    <!-- The commit this app was built from. -->
+    <!-- The commit this app was built from ("-dirty" = with local changes), and its date. -->
     <key>SliveBuild</key>
     <string>__BUILD__</string>
+    <key>SliveBuildDate</key>
+    <string>__BUILD_DATE__</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <!-- Normal app: Dock icon, appears in Cmd-Tab, standard window controls. -->

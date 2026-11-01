@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/SoumilB7/Slive/main/install.sh | ba
 curl -fsSL https://raw.githubusercontent.com/SoumilB7/Slive/main/install-full.sh | bash
 ```
 
-Needs an Apple silicon Mac on macOS 14+. The first run installs Apple's Command Line Tools if they're missing. Grant Microphone, Input Monitoring and Accessibility when Slive asks; they stay granted across updates.
+Needs an Apple silicon Mac on macOS 14+, with about 1 GB free (3 GB for Full). The first run installs Apple's Command Line Tools if they're missing. Grant Microphone, Input Monitoring and Accessibility when Slive asks; they stay granted across updates.
 
 ## Quick start (from source)
 

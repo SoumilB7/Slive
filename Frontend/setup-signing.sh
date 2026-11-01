@@ -60,11 +60,12 @@ security import "$TMP/flowy.p12" -k "$KEYCHAIN" -P flowy -T /usr/bin/codesign
 # hides untrusted self-signed certs, so testing real signing is the honest check.)
 echo "▸ Verifying the identity can sign…"
 cp /bin/echo "$TMP/echo-test"
-if codesign --force --options runtime --sign "$CN" "$TMP/echo-test" >/dev/null 2>&1; then
+if sign_out="$(codesign --force --options runtime --sign "$CN" "$TMP/echo-test" 2>&1)"; then
     echo ""
     echo "✓ Done. '$CN' is ready and can sign."
     echo "  Next:  ./build.sh install   (should say 'Signing with stable identity')"
 else
+    printf '%s\n' "$sign_out" | sed 's/^/  /'
     echo ""
     echo "✗ Imported, but codesign couldn't use it (likely a keychain prompt was"
     echo "  denied, or leftover duplicates). Open Keychain Access ▸ login, delete"

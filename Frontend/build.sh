@@ -2,7 +2,7 @@
 # Build Slive.app from the Swift package and assemble a proper macOS app bundle.
 # Usage: ./build.sh            (build + bundle)
 #        ./build.sh run        (build + bundle + launch from build/)
-#        ./build.sh install    (build + bundle + copy to /Applications + launch)
+#        ./build.sh install    (build + bundle + copy to /Applications, or ~/Applications for non-admins + launch)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -10,30 +10,15 @@ FRONTEND_DIR="$(pwd)"
 REPO_DIR="$(cd .. && pwd)"
 CONFIG="release"
 
-# SDK pin (Command Line Tools only — no Xcode). From the macOS 27 SDK on,
-# SwiftUI's @State/@Observable are compiler MACROS whose plugin
-# (SwiftUIMacros) ships only with Xcode, so the default CLT SDK can't build
-# this app ("plugin for module 'SwiftUIMacros' not found"). When the plugin
-# is missing, build against the newest installed SDK older than 27.
-# Override with SLIVE_SDKROOT=/path/to/MacOSX…sdk.
+# Swift 6+ and an SDK this app can build against — see toolchain.sh (shared
+# with install.sh). Override the SDK with SLIVE_SDKROOT=/path/to/MacOSX…sdk.
+source "$FRONTEND_DIR/toolchain.sh"
+slive_toolchain_check || { echo "✗ $SLIVE_TOOLCHAIN_ERROR" >&2; exit 1; }
 if [[ -n "${SLIVE_SDKROOT:-}" ]]; then
     export SDKROOT="$SLIVE_SDKROOT"
-elif [[ -z "${SDKROOT:-}" ]]; then
-    TOOLCHAIN_PLUGINS="$(dirname "$(xcrun --find swift)")/../lib/swift/host/plugins"
-    SDK_MAJOR="$(xcrun --show-sdk-version | cut -d. -f1)"
-    if (( SDK_MAJOR >= 27 )) && ! ls "$TOOLCHAIN_PLUGINS" 2>/dev/null | grep -q SwiftUIMacros; then
-        SDK_DIR="$(dirname "$(xcrun --show-sdk-path)")"
-        PINNED="$(ls -d "$SDK_DIR"/MacOSX[0-9]*.[0-9]*.sdk 2>/dev/null \
-            | sed -E 's|.*/MacOSX([0-9]+)\.([0-9]+)\.sdk$|\1 \2 &|' \
-            | awk '$1 < 27' | sort -k1,1n -k2,2n | tail -1 | cut -d' ' -f3)"
-        if [[ -n "$PINNED" ]]; then
-            export SDKROOT="$PINNED"
-            echo "▸ SDK $SDK_MAJOR needs Xcode's SwiftUI macros — building against $(basename "$PINNED")"
-        else
-            echo "✗ No pre-27 macOS SDK found and SwiftUIMacros is missing — install Xcode or an older CLT SDK." >&2
-            exit 1
-        fi
-    fi
+elif [[ -n "$SLIVE_PINNED_SDK" ]]; then
+    echo "▸ SDK $(xcrun --show-sdk-version | cut -d. -f1) needs Xcode's SwiftUI macros — building against $(basename "$SLIVE_PINNED_SDK")"
+    export SDKROOT="$SLIVE_PINNED_SDK"
 fi
 
 echo "▸ Compiling (swift build -c $CONFIG)…"
@@ -54,7 +39,11 @@ cp "$BIN" "$CONTENTS/MacOS/Slive"
 # carry everything inside the app — no paths into this repo. Dev builds keep
 # using the repo's Backend/.venv and prompts.
 VERSION="$(<"$REPO_DIR/VERSION")"
+# The commit, "-dirty" when tracked files differ from it (so a local hack never
+# passes for that commit in a bug report), and the commit's date.
 BUILD_SHA="$(git -C "$REPO_DIR" rev-parse --short HEAD)"
+git -C "$REPO_DIR" diff --quiet HEAD -- || BUILD_SHA="$BUILD_SHA-dirty"
+BUILD_DATE="$(git -C "$REPO_DIR" log -1 --format=%cI)"
 EDITION="${SLIVE_EDITION:-full}"; BUNDLED="0"   # SLIVE_EDITION=lite: no Python features
 BACKEND_DIR="$REPO_DIR/Backend"
 PROMPTS_DIR="$REPO_DIR/Backend/prompts"
@@ -66,12 +55,18 @@ if [[ "${1:-}" == "release" ]]; then
 else
     mkdir -p "$PROMPTS_DIR"
 fi
-sed -e "s|__BACKEND_DIR__|$BACKEND_DIR|g" \
-    -e "s|__PROMPTS_DIR__|$PROMPTS_DIR|g" \
-    -e "s|__VERSION__|$VERSION|g" \
-    -e "s|__EDITION__|$EDITION|g" \
-    -e "s|__BUNDLED__|$BUNDLED|g" \
-    -e "s|__BUILD__|$BUILD_SHA|g" \
+# Values land as XML text via sed replacements — escape for both, so a repo
+# path holding &, <, | or \ can't corrupt the plist or the sed command.
+plist_value() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/[\\&|]/\\&/g'
+}
+sed -e "s|__BACKEND_DIR__|$(plist_value "$BACKEND_DIR")|g" \
+    -e "s|__PROMPTS_DIR__|$(plist_value "$PROMPTS_DIR")|g" \
+    -e "s|__VERSION__|$(plist_value "$VERSION")|g" \
+    -e "s|__EDITION__|$(plist_value "$EDITION")|g" \
+    -e "s|__BUNDLED__|$(plist_value "$BUNDLED")|g" \
+    -e "s|__BUILD_DATE__|$(plist_value "$BUILD_DATE")|g" \
+    -e "s|__BUILD__|$(plist_value "$BUILD_SHA")|g" \
     Resources/Info.plist.template > "$CONTENTS/Info.plist"
 
 if [[ "$BUNDLED" == "1" ]]; then
@@ -134,6 +129,20 @@ else
     SIGN_ARGS=(--sign -)
     echo "▸ Signing (ad-hoc — grants reset on rebuild; run setup-signing.sh for persistence)"
 fi
+# A bad signature means macOS may silence the mic or re-ask for every
+# permission, so codesign's complaints are shown, not swallowed.
+verify_signature() {
+    local out
+    out="$(codesign --verify --strict "$1" 2>&1)" && return 0
+    printf '%s\n' "$out" | sed 's/^/  /'
+    echo "⚠ $1 didn't pass codesign --verify — macOS may block the mic or re-ask for permissions. Run ./setup-signing.sh and build again."
+}
+sign_app() {
+    local out
+    out="$(codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN_ARGS[@]}" "$1" 2>&1)" \
+        || printf '%s\n' "$out" | sed 's/^/  /'
+    verify_signature "$1"
+}
 # --options runtime = Hardened Runtime (blocks code injection). The entitlements
 # file grants microphone access under that runtime — without it the mic is silent.
 if [[ "${1:-}" == "release" ]]; then
@@ -147,10 +156,9 @@ if [[ "${1:-}" == "release" ]]; then
             | xargs -0 -n 64 -P 8 codesign --force --sign - >/dev/null 2>&1 || true
     fi
     codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$APP"
+    verify_signature "$APP"
 else
-    codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN_ARGS[@]}" "$APP" >/dev/null 2>&1 || {
-        echo "  (codesign warning ignored)"
-    }
+    sign_app "$APP"
 fi
 
 echo "✓ Built: $APP"
@@ -158,14 +166,42 @@ echo "✓ Built: $APP"
 LAUNCH_TARGET="$APP"
 
 if [[ "${1:-}" == "install" ]]; then
-    DEST="/Applications/Slive.app"
+    # /Applications when this account may write there; a standard (non-admin)
+    # account gets ~/Applications, which needs no password.
+    APPS_DIR="/Applications"
+    if [[ ! -w "$APPS_DIR" ]]; then
+        APPS_DIR="$HOME/Applications"
+        mkdir -p "$APPS_DIR"
+        echo "▸ /Applications needs an admin account — installing to ~/Applications instead."
+    fi
+    DEST="$APPS_DIR/Slive.app"
+    # Copy in beside the installed app, then swap: a copy that fails (full
+    # disk, Ctrl-C) leaves the working Slive untouched. The temp names don't
+    # end in .app, so LaunchServices never lists them as a second Slive.
+    NEW="$DEST.new"; OLD="$DEST.old"
     echo "▸ Installing to $DEST …"
+    rm -rf "$NEW" "$OLD"
+    cp -R "$APP" "$NEW" || {
+        rm -rf "$NEW"
+        echo "✗ Couldn't copy Slive into $APPS_DIR — the installed app is untouched." >&2
+        exit 1
+    }
     pkill -x Slive 2>/dev/null || true
     sleep 0.3
-    rm -rf "$DEST"
-    cp -R "$APP" "$DEST"
+    if [[ -e "$DEST" ]] && ! mv "$DEST" "$OLD"; then
+        rm -rf "$NEW"
+        echo "✗ Couldn't replace $DEST — the installed app is untouched." >&2
+        exit 1
+    fi
+    if ! mv "$NEW" "$DEST"; then
+        [[ -e "$OLD" ]] && mv "$OLD" "$DEST"
+        rm -rf "$NEW"
+        echo "✗ Couldn't move the new Slive into place — the installed app is untouched." >&2
+        exit 1
+    fi
+    rm -rf "$OLD"
     # Re-sign the installed copy with the same identity + runtime + entitlements.
-    codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" "${SIGN_ARGS[@]}" "$DEST" >/dev/null 2>&1 || true
+    sign_app "$DEST"
     # Remove the throwaway build/ bundle entirely so it can never appear as a
     # duplicate app. (LaunchServices re-discovers any .app bundle on disk, so
     # unregistering isn't enough — the bundle itself must go.)
@@ -183,9 +219,33 @@ fi
 if [[ ( "${1:-}" == "run" || "${1:-}" == "install" ) && -z "${SLIVE_SKIP_PREPARE:-}" ]]; then
     echo "▸ Preparing the speech model for this build (Neural Engine compile, ~1–2 min when the code changed)…"
     pkill -x Slive 2>/dev/null || true
+    # Time-boxed by a watchdog (macOS has no `timeout`), and never fatal: if
+    # it fails or hangs, the app still works and compiles on first launch.
+    PREP_LIMIT=600
+    PREP_LOG="${TMPDIR:-/tmp}/slive-prepare.log"
+    PREP_OUT="$(mktemp -t slive-prepare)"
     PREP_START=$(date +%s)
-    "$LAUNCH_TARGET/Contents/MacOS/Slive" --prepare-models 2>/dev/null | grep -E "^  " || true
-    echo "✓ Model ready in $(( $(date +%s) - PREP_START ))s — the first dictation will be instant."
+    "$LAUNCH_TARGET/Contents/MacOS/Slive" --prepare-models >"$PREP_OUT" 2>"$PREP_LOG" &
+    PREP_PID=$!
+    ( for (( i = 0; i < PREP_LIMIT; i++ )); do
+          sleep 1; kill -0 "$PREP_PID" 2>/dev/null || exit 0
+      done
+      kill "$PREP_PID" 2>/dev/null ) &
+    WATCHDOG=$!
+    PREP_STATUS=0; wait "$PREP_PID" || PREP_STATUS=$?
+    kill "$WATCHDOG" 2>/dev/null || true
+    PREP_SECS=$(( $(date +%s) - PREP_START ))
+    grep -E "^  " "$PREP_OUT" || true
+    rm -f "$PREP_OUT"
+    if (( PREP_STATUS == 0 )); then
+        rm -f "$PREP_LOG"
+        echo "✓ Model ready in ${PREP_SECS}s — the first dictation will be instant."
+    elif (( PREP_SECS >= PREP_LIMIT )); then
+        echo "⚠ Model prep passed 10 min and was stopped — Slive compiles it on first launch instead (log: $PREP_LOG)."
+    else
+        tail -n 5 "$PREP_LOG" | sed 's/^/  /'
+        echo "⚠ Model prep failed (exit $PREP_STATUS) — Slive still works and compiles it on first launch (log: $PREP_LOG)."
+    fi
 fi
 
 if [[ "${1:-}" == "run" || "${1:-}" == "install" ]]; then
