@@ -21,8 +21,8 @@ cd ../Frontend
 ./build.sh install                  # build → sign → copy to /Applications → launch
 ```
 
-`./build.sh` also has `run` (launch from `build/`, don't install) and no-arg
-(build + bundle only). Nothing is hardcoded to one machine — `build.sh` bakes
+`./build.sh` also has `run` (launch from `build/`, don't install), `test`
+(build + run `Slive --self-test`) and no-arg (build + bundle only). Nothing is hardcoded to one machine — `build.sh` bakes
 each checkout's own paths into `Info.plist` at build time.
 
 **Requires:** Xcode Command Line Tools (`swift`). Swift 5 language mode, macOS 14+.
