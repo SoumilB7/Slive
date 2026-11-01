@@ -5,6 +5,9 @@ import WhisperKit
 
 private struct TimeoutError: Error {}
 
+/// Set when a model load finishes (MainActor-only).
+@MainActor private final class LoadFlag { var done = false }
+
 /// Resumes a continuation exactly once, from whichever side finishes first.
 private final class TimeoutRace<T>: @unchecked Sendable {
     private let lock = NSLock()
@@ -514,7 +517,13 @@ final class TranscriptionModel: ObservableObject {
         guard isDownloaded(model) else { select(model); return false }
         dictationsWaiting[model, default: 0] += 1
         defer { dictationsWaiting[model, default: 1] -= 1 }
-        await loadShared(model)
+        // Start (or join) the load, but return the moment the model can serve:
+        // a CPU copy can land long before a slow Neural Engine compile ends.
+        let loading = LoadFlag()
+        Task { await self.loadShared(model); loading.done = true }
+        while !isResident(model), !loading.done {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
         return isResident(model)
     }
     private var dictationsWaiting: [String: Int] = [:]
@@ -878,21 +887,35 @@ final class TranscriptionModel: ObservableObject {
         // every rebuild/reinstall then recompiled it for ~1–2 minutes before
         // ANY dictation could run. On CPU: load 100.6s → 10.8s on a fresh
         // binary, and the stage itself is faster (4ms vs 16ms per clip).
-        let compute = ModelComputeOptions(melCompute: .cpuOnly)
-        let config: WhisperKitConfig
-        if let custom {
-            config = WhisperKitConfig(model: model, modelFolder: custom.modelFolder.path,
-                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
-                                      prewarm: false, load: false, download: false)
-        } else if let bundled {
-            config = WhisperKitConfig(model: model, modelFolder: bundled.path,
-                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
-                                      prewarm: false, load: false, download: false)
-        } else {
-            config = WhisperKitConfig(model: model, downloadBase: basket,
-                                      tokenizerFolder: tokenizerRoot, computeOptions: compute,
-                                      prewarm: false, load: false, download: true)
+        func makeConfig(_ compute: ModelComputeOptions) -> WhisperKitConfig {
+            if let custom {
+                return WhisperKitConfig(model: model, modelFolder: custom.modelFolder.path,
+                                          tokenizerFolder: tokenizerRoot, computeOptions: compute,
+                                          prewarm: false, load: false, download: false)
+            } else if let bundled {
+                return WhisperKitConfig(model: model, modelFolder: bundled.path,
+                                          tokenizerFolder: tokenizerRoot, computeOptions: compute,
+                                          prewarm: false, load: false, download: false)
+            } else {
+                return WhisperKitConfig(model: model, downloadBase: basket,
+                                          tokenizerFolder: tokenizerRoot, computeOptions: compute,
+                                          prewarm: false, load: false, download: true)
+            }
         }
+        let config = makeConfig(ModelComputeOptions(melCompute: .cpuOnly))
+
+        // A slow Neural Engine compile (memory pressure, a busy compiler —
+        // Nov 5: a fresh install sat on "Loading…" ~20 min) shouldn't block
+        // dictation: after a grace period, load a CPU copy (no compile, ready
+        // in seconds) and serve from it; the Neural Engine copy replaces it.
+        let cpuCopy = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.cpuCopyAfterSeconds * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            await self.loadCPUCopy(model, config: makeConfig(ModelComputeOptions(
+                melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly,
+                textDecoderCompute: .cpuOnly, prefillCompute: .cpuOnly)), since: t0)
+        }
+        defer { cpuCopy.cancel() }
 
         do {
             // 600s: a cold Neural Engine compile after a macOS update or a
@@ -902,7 +925,8 @@ final class TranscriptionModel: ObservableObject {
                 let kit = try await WhisperKit(config)           // setup only — fast
                 kit.modelStateCallback = { _, new in
                     Task { @MainActor in
-                        guard let self, self.loadingModels.contains(model) else { return }
+                        guard let self, self.loadingModels.contains(model),
+                              self.pipes[model] == nil else { return }   // a CPU copy is serving
                         self.statuses[model] = .preparing(new.description)  // live stage
                         Log.stt("stage \(model): \(new.description)")
                     }
@@ -910,8 +934,10 @@ final class TranscriptionModel: ObservableObject {
                 try await kit.loadModels()                        // Neural Engine load — the work
                 return kit
             }
+            let replacedCPUCopy = pipes[model] != nil
             pipes[model] = p
             loadingModels.remove(model)
+            if replacedCPUCopy { Log.event("\(model): Neural Engine copy ready — replaced the CPU copy") }
             lastDecodeAt = Date()   // a fresh load is use — Feather keeps it its full window
             noteLoaded(model, seconds: Date().timeIntervalSince(t0))
             statuses[model] = .ready
@@ -926,15 +952,46 @@ final class TranscriptionModel: ObservableObject {
                dictationsWaiting[model, default: 0] == 0 { warmUp(model) }
         } catch is TimeoutError {
             loadingModels.remove(model)
+            if pipes[model] != nil {
+                Log.event("\(model): Neural Engine load timed out — staying on the CPU copy")
+                statuses[model] = .ready
+                return
+            }
             Log.event("model load TIMED OUT: \(model)")
             statuses[model] = .failed("Timed out. Re-download or pick smaller.")
             Log.stt("TIMEOUT loading \(model)")
         } catch {
             loadingModels.remove(model)
+            if pipes[model] != nil {
+                Log.event("\(model): Neural Engine load failed — staying on the CPU copy")
+                statuses[model] = .ready
+                return
+            }
             statuses[model] = .failed(error.localizedDescription)
             Log.stt("FAILED loading \(model) — \(error)")
             NSLog("Slive: WhisperKit load failed — \(error)")
         }
+    }
+
+    /// Seconds a Neural Engine load may take before a CPU copy is loaded to
+    /// serve meanwhile. A cached load takes ~1–3s and a cold tiny.en ~10s; a
+    /// healthy cold large-v3 turbo compile (~80s) gets the CPU copy too.
+    nonisolated static var cpuCopyAfterSeconds: Double {
+        ProcessInfo.processInfo.environment["SLIVE_CPU_COPY_AFTER"].flatMap(Double.init) ?? 20
+    }
+
+    /// Load `model` CPU-only and serve from it while its Neural Engine load is
+    /// still compiling. Dropped if the Neural Engine copy lands first.
+    private func loadCPUCopy(_ model: String, config: WhisperKitConfig, since t0: Date) async {
+        guard loadingModels.contains(model), pipes[model] == nil else { return }
+        Log.event("\(model): Neural Engine still compiling — loading a CPU copy meanwhile")
+        guard let kit = try? await WhisperKit(config), (try? await kit.loadModels()) != nil,
+              loadingModels.contains(model), pipes[model] == nil else { return }
+        pipes[model] = kit
+        statuses[model] = .ready
+        onModelReady?(model)
+        Log.event(String(format: "model ready on CPU: %@ in %.1fs (Neural Engine still compiling)",
+                         model, Date().timeIntervalSince(t0)))
     }
 
     /// Parakeet's load: compile + load onto the Neural Engine from Slive's
