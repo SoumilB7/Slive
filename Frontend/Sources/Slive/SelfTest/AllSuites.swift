@@ -10,6 +10,7 @@ enum AllSuites {
         SpeedTierTests.suite,
         VocabHintTests.suite,
         BackendErrorTests.suite,
+        LocalServerTests.suite,
         VocabularyCorrectorTests.suite,
         DictationQueueTests.suite,
         DefaultShortcutTests.suite,

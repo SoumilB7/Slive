@@ -15,37 +15,12 @@ final class AssistantPromptLog: ObservableObject {
     }
 }
 
-/// Talks to the local backend's `/assistant` endpoint: sends the transcribed
+/// Talks to the local backend's assistant proxy: sends the transcribed
 /// prompt plus the chosen provider/model/key and returns the LLM's answer.
-///
-/// Wire format:
-///   POST http://127.0.0.1:50711/assistant
-///   Content-Type: application/json
-///   body: { text, provider, model, api_key, base_url?, system_prompt?, max_tokens? }
-///   200 → { "text": "<answer>" }
-///   non-200 → { "error": "<message>" }
+/// The routes and wire format are `AssistantAPI`.
 struct AssistantClient {
 
-    var endpoint: URL = URL(string: "http://127.0.0.1:50711/assistant")!
     var timeout: TimeInterval = 90   // LLMs can take a while
-
-    enum AssistantError: Error, CustomStringConvertible {
-        case missingKey(String)
-        case notHTTP
-        case server(String)
-        case badStatus(Int)
-        case decodeFailed
-
-        var description: String {
-            switch self {
-            case .missingKey(let p):  return "No \(p) key. Add one in Providers."
-            case .notHTTP:            return "No response."
-            case .server(let m):      return m
-            case .badStatus(let c):   return "Server error \(c)."
-            case .decodeFailed:       return "Unreadable response."
-            }
-        }
-    }
 
     /// One image attached to a request (base64 PNG/JPEG bytes + media type).
     struct ImageInput: Encodable {
@@ -59,91 +34,21 @@ struct AssistantClient {
         let content: String
     }
 
-    private struct RequestBody: Encodable {
-        let text: String
-        let provider: String
-        let model: String
-        let api_key: String
-        let base_url: String?
-        let system_prompt: String?
-        let max_tokens: Int
-        let images: [ImageInput]?
-        let history: [HistoryItem]?
-        // Local-provider knobs; nil (omitted) for cloud providers.
-        let local_quantized: Bool?
-        let local_mem_gb: Double?
-    }
-    private struct OKPayload: Decodable { let text: String }
-    private struct ModelsPayload: Decodable { let models: [String] }
-    private struct ModelsBody: Encodable {
-        let provider: String
-        let api_key: String
-        let base_url: String?
-    }
-
-    /// The error a non-200 response carries: the server's own message when it
-    /// sent one — `{"error": …}` from our handlers, or FastAPI's `{"detail": …}`
-    /// (a string, or a list of validation items) — else the bare status.
-    private static func failure(status: Int, body: Data) -> AssistantError {
-        serverMessage(in: body).map { .server($0) } ?? .badStatus(status)
-    }
-
-    /// The message in a backend error body, or nil. Shared by every client of
-    /// the local server (ground truth, local models, training).
-    static func serverMessage(in body: Data) -> String? {
-        guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-            return nil
-        }
-        if let e = obj["error"] as? String, !e.isEmpty { return e }
-        if let d = obj["detail"] as? String, !d.isEmpty { return d }
-        if let items = obj["detail"] as? [[String: Any]],
-           let msg = items.first?["msg"] as? String, !msg.isEmpty {
-            return msg
-        }
-        return nil
-    }
-
     /// Fetch the provider's LIVE list of model ids (via the backend `/models`).
     func listModels(config: AssistantConfig, apiKey: String) async throws -> [String] {
         let provider = config.provider
-        guard !apiKey.isEmpty || !provider.needsAPIKey else { throw AssistantError.missingKey(provider.displayName) }
-
-        let body = ModelsBody(
+        try Self.requireKey(apiKey, for: provider)
+        let body = AssistantAPI.Models.Body(
             provider: provider.wire,
             api_key: apiKey,
             base_url: provider.needsBaseURL ? config.baseURL : nil
         )
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:50711/models")!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(body)
-        request.timeoutInterval = 30
-
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.timeoutIntervalForRequest = 30
-        sessionConfig.waitsForConnectivity = false
-        let session = URLSession(configuration: sessionConfig)
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AssistantError.notHTTP }
-        guard http.statusCode == 200 else {
-            throw Self.failure(status: http.statusCode, body: data)
-        }
-        guard let payload = try? JSONDecoder().decode(ModelsPayload.self, from: data) else {
-            throw AssistantError.decodeFailed
-        }
-        return payload.models
-    }
-
-    private struct StreamChunk: Decodable {
-        let delta: String?
-        let error: String?
-        let done: Bool?
+        return try await LocalServer.send(AssistantAPI.Models(request: body)).models
     }
 
     /// Build the shared POST body for a prompt.
     private func makeBody(_ text: String, config: AssistantConfig, apiKey: String,
-                          images: [ImageInput]?, history: [HistoryItem]?) -> RequestBody {
+                          images: [ImageInput]?, history: [HistoryItem]?) -> AssistantAPI.Request {
         let provider = config.provider
         let localOpts = provider.isLocal ? Settings.localInferenceOptions() : nil
         let systemPrompt = PromptLibrary.resolvedSystemPrompt(for: config)
@@ -152,7 +57,7 @@ struct AssistantClient {
             AssistantPromptLog.shared.record(
                 prompt: systemPrompt, provider: provider.displayName, model: model)
         }
-        return RequestBody(
+        return AssistantAPI.Request(
             text: text,
             provider: provider.wire,
             model: model,
@@ -167,6 +72,24 @@ struct AssistantClient {
         )
     }
 
+    /// The checks every ask makes before anything is sent, and its timeout:
+    /// a local model may need its first-use load (multi-GB weights) before
+    /// any tokens appear — far more slack than a cloud call.
+    private func prepare(_ config: AssistantConfig, apiKey: String) throws -> TimeInterval {
+        let provider = config.provider
+        try Self.requireKey(apiKey, for: provider)
+        if provider.isLocal && config.model(for: .local).isEmpty {
+            throw SliveError.local("No local model chosen.")
+        }
+        return provider.isLocal ? max(timeout, 600) : timeout
+    }
+
+    private static func requireKey(_ apiKey: String, for provider: AssistantProvider) throws {
+        guard !apiKey.isEmpty || !provider.needsAPIKey else {
+            throw SliveError.missingKey("No \(provider.displayName) key. Add one in Providers.")
+        }
+    }
+
     /// Stream the assistant's reply as it's generated, yielding text deltas.
     /// The consumer accumulates them. Finishes (throwing) on any failure.
     func askStream(_ text: String, config: AssistantConfig, apiKey: String,
@@ -176,52 +99,19 @@ struct AssistantClient {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard !apiKey.isEmpty || !config.provider.needsAPIKey else {
-                        throw AssistantError.missingKey(config.provider.displayName)
-                    }
-                    if config.provider.isLocal && config.model(for: .local).isEmpty {
-                        throw AssistantError.server(
-                            "No local model chosen.")
-                    }
-                    // A local model may need its first-use load (multi-GB
-                    // weights) before any tokens appear — allow far more
-                    // slack than a cloud call.
-                    let timeout = config.provider.isLocal ? max(self.timeout, 600) : self.timeout
-                    var request = URLRequest(
-                        url: URL(string: "http://127.0.0.1:50711/assistant/stream")!)
-                    request.httpMethod = "POST"
-                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.httpBody = try JSONEncoder().encode(
-                        makeBody(text, config: config, apiKey: apiKey, images: images, history: history))
-                    request.timeoutInterval = timeout
-
-                    let cfg = URLSessionConfiguration.ephemeral
-                    cfg.timeoutIntervalForRequest = timeout
-                    cfg.timeoutIntervalForResource = timeout
-                    cfg.waitsForConnectivity = false
-                    let session = URLSession(configuration: cfg)
-
-                    let (bytes, response) = try await session.bytes(for: request)
-                    guard let http = response as? HTTPURLResponse else { throw AssistantError.notHTTP }
-                    guard http.statusCode == 200 else {
-                        // Read the (small) error body so the server's message
-                        // shows instead of a bare "HTTP 422".
-                        var body = Data()
-                        for try await byte in bytes {
-                            body.append(byte)
-                            if body.count > 65_536 { break }
-                        }
-                        throw Self.failure(status: http.statusCode, body: body)
-                    }
+                    let timeout = try prepare(config, apiKey: apiKey)
+                    let lines = try await LocalServer.lines(AssistantAPI.Stream(
+                        request: makeBody(text, config: config, apiKey: apiKey, images: images, history: history),
+                        timeout: timeout))
 
                     // Provider failures (overloaded, safety block, empty
                     // answer) arrive as an {"error": …} line and throw below.
-                    for try await line in bytes.lines {
+                    for try await line in lines {
                         if Task.isCancelled { break }
                         guard let data = line.data(using: .utf8),
-                              let chunk = try? JSONDecoder().decode(StreamChunk.self, from: data)
+                              let chunk = try? JSONDecoder().decode(AssistantAPI.Chunk.self, from: data)
                         else { continue }
-                        if let err = chunk.error { throw AssistantError.server(err) }
+                        if let err = chunk.error { throw SliveError.server(status: 200, message: err) }
                         if chunk.done == true { break }
                         if let d = chunk.delta { continuation.yield(d) }
                     }
@@ -238,39 +128,8 @@ struct AssistantClient {
     /// return the answer. Throws with a human-readable message on failure.
     func ask(_ text: String, config: AssistantConfig, apiKey: String,
              images: [ImageInput]? = nil, history: [HistoryItem]? = nil) async throws -> String {
-        let provider = config.provider
-        guard !apiKey.isEmpty || !provider.needsAPIKey else { throw AssistantError.missingKey(provider.displayName) }
-        if provider.isLocal && config.model(for: .local).isEmpty {
-            throw AssistantError.server("No local model chosen.")
-        }
-        // A local model may need its first-use load (multi-GB weights) before
-        // it can answer — allow far more slack than a cloud call.
-        let timeout = provider.isLocal ? max(self.timeout, 600) : self.timeout
-
+        let timeout = try prepare(config, apiKey: apiKey)
         let body = makeBody(text, config: config, apiKey: apiKey, images: images, history: history)
-
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(body)
-        request.timeoutInterval = timeout
-
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.timeoutIntervalForRequest = timeout
-        sessionConfig.timeoutIntervalForResource = timeout
-        sessionConfig.waitsForConnectivity = false
-        let session = URLSession(configuration: sessionConfig)
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AssistantError.notHTTP }
-
-        guard http.statusCode == 200 else {
-            // Prefer the server's error message when present.
-            throw Self.failure(status: http.statusCode, body: data)
-        }
-        guard let payload = try? JSONDecoder().decode(OKPayload.self, from: data) else {
-            throw AssistantError.decodeFailed
-        }
-        return payload.text
+        return try await LocalServer.send(AssistantAPI.Ask(request: body, timeout: timeout)).text
     }
 }

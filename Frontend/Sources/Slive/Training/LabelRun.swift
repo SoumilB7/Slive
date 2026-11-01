@@ -311,11 +311,11 @@ final class LabelRun: ObservableObject {
                     inFlight.remove(id)
                 case .failed(let id, let error):
                     inFlight.remove(id)
-                    if let stop = error as? GroundTruthClient.GroundTruthError, stop.stopsRun {
+                    if let stop = error as? SliveError, stop.stopsRun {
                         // A key problem or a dead backend fails every clip
                         // the same way — stop now, say why.
                         message = stop.localizedDescription
-                        if case .backendDown = stop { needsKeyFix = false } else { needsKeyFix = true }
+                        if case .serverDown = stop { needsKeyFix = false } else { needsKeyFix = true }
                         group.cancelAll()
                         return false
                     }
@@ -468,7 +468,7 @@ final class LabelRun: ObservableObject {
                 }
             } catch {
                 self.message = error.localizedDescription
-                if case .fatal? = error as? GroundTruthClient.GroundTruthError { self.needsKeyFix = true }
+                if case .missingKey? = error as? SliveError { self.needsKeyFix = true }
             }
         }
     }
@@ -515,7 +515,7 @@ final class LabelRun: ObservableObject {
             lastPromptMeta = "Whisper · \(model)"
             guard let text = await TranscriptionModel.shared.transcribe(url, model: model),
                   !text.isEmpty else {
-                throw GroundTruthClient.GroundTruthError.server(
+                throw SliveError.local(
                     "Whisper not ready, or clip silent.")
             }
             return text
@@ -538,12 +538,12 @@ final class LabelRun: ObservableObject {
     /// the "model says there is no audio" failure — so it fails here, loudly.
     nonisolated static func validatedAudioSeconds(_ url: URL) throws -> Double {
         guard let file = try? AVAudioFile(forReading: url) else {
-            throw GroundTruthClient.GroundTruthError.server(
+            throw SliveError.local(
                 "Audio file is broken.")
         }
         let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1)
         guard seconds >= 0.3 else {
-            throw GroundTruthClient.GroundTruthError.server(String(
+            throw SliveError.local(String(
                 format: "Too short (%.2f s).",
                 seconds))
         }

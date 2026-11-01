@@ -64,78 +64,25 @@ struct LocalDownloadJob: Decodable {
 
 /// Talks to the backend's `/local/*` routes: read the HF cache, download a
 /// model by id into it, poll the job, delete a cached model. Everything runs in
-/// the Python backend; this is just the HTTP client.
+/// the Python backend; the routes are `LocalAPI`.
 struct LocalModelsClient {
-    private let base = URL(string: "http://127.0.0.1:50711")!
-
-    struct ServerError: LocalizedError {
-        let message: String
-        var errorDescription: String? { message }
-    }
-
-    /// Jobs live in the server's memory, so a 404 mid-poll means it restarted
-    /// and the download is gone — said plainly, not as a decode error.
-    static let jobGoneMessage = "Download stopped: the server restarted."
-
     func cachedModels() async throws -> [LocalCachedModel] {
-        struct Resp: Decodable { let models: [LocalCachedModel] }
-        let data = try await get("/local/cache", timeout: 30)
-        return try JSONDecoder().decode(Resp.self, from: data).models
+        try await LocalServer.send(LocalAPI.Cache()).models
     }
 
     func startDownload(repoID: String, token: String) async throws -> String {
-        struct Resp: Decodable { let job_id: String? }
-        let body = ["repo_id": repoID, "token": token]
-        let data = try await post("/local/download", body: body, timeout: 30)
-        guard let id = try JSONDecoder().decode(Resp.self, from: data).job_id else {
-            throw ServerError(message: "Download didn't start.")
-        }
+        guard let id = try await LocalServer.send(LocalAPI.StartDownload(repoID: repoID, token: token)).job_id
+        else { throw SliveError.server(status: 200, message: "Download didn't start.") }
         return id
     }
 
     func downloadStatus(jobID: String) async throws -> LocalDownloadJob {
-        let data = try await get("/local/download/\(jobID)", timeout: 15,
-                                 notFound: Self.jobGoneMessage)
-        return try JSONDecoder().decode(LocalDownloadJob.self, from: data)
+        try await LocalServer.send(LocalAPI.DownloadStatus(jobID: jobID))
     }
 
+    /// The server is lazy (and idle-stopped): `send` brings it up, or the
+    /// delete would fail with a bare "could not connect".
     func delete(repoID: String) async throws {
-        // The server is lazy (and idle-stopped): bring it up, or the delete
-        // fails with a bare "could not connect".
-        guard await BackendManager.shared.ensureHealthy() else {
-            let reason = await BackendManager.shared.lastSpawnError
-            throw ServerError(message: reason ?? "Local server didn't start.")
-        }
-        _ = try await post("/local/delete", body: ["repo_id": repoID], timeout: 30)
-    }
-
-    // MARK: - HTTP
-
-    private func get(_ path: String, timeout: TimeInterval, notFound: String? = nil) async throws -> Data {
-        var req = URLRequest(url: base.appendingPathComponent(path))
-        req.timeoutInterval = timeout
-        let (data, response) = try await URLSession.shared.data(for: req)
-        return try Self.checked(data, response, notFound: notFound)
-    }
-
-    private func post(_ path: String, body: [String: String], timeout: TimeInterval) async throws -> Data {
-        var req = URLRequest(url: base.appendingPathComponent(path))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = timeout
-        let (data, response) = try await URLSession.shared.data(for: req)
-        return try Self.checked(data, response)
-    }
-
-    /// The body of a 2xx reply, else the server's message as an error.
-    static func checked(_ data: Data, _ response: URLResponse, notFound: String? = nil) throws -> Data {
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else {
-            if status == 404, let notFound { throw ServerError(message: notFound) }
-            throw ServerError(message: AssistantClient.serverMessage(in: data)
-                              ?? "Server error \(status).")
-        }
-        return data
+        _ = try await LocalServer.send(LocalAPI.Delete(repoID: repoID))
     }
 }

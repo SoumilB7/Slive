@@ -81,7 +81,7 @@ enum LabelRunTests {
         do {
             _ = try GroundTruthClient.decodeConsensus(Data(fatal.utf8))
             t.check(false, "fatal reply stops the run", "no error thrown")
-        } catch let error as GroundTruthClient.GroundTruthError {
+        } catch let error as SliveError {
             t.check(error.stopsRun, "fatal reply stops the run")
         } catch {
             t.check(false, "fatal reply stops the run", "\(error)")
@@ -89,7 +89,7 @@ enum LabelRunTests {
         do {
             _ = try GroundTruthClient.decodeConsensus(Data(#"{"error":"Both transcribers failed"}"#.utf8))
             t.check(false, "per-clip failure keeps the run going", "no error thrown")
-        } catch let error as GroundTruthClient.GroundTruthError {
+        } catch let error as SliveError {
             t.check(!error.stopsRun, "per-clip failure keeps the run going")
         } catch {
             t.check(false, "per-clip failure keeps the run going", "\(error)")

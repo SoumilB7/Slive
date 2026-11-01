@@ -84,6 +84,17 @@ final class FailureReporter: @unchecked Sendable {
                                               source: source, includeServerLog: serverLog)))
     }
 
+    /// A failed call to the local server: forwarded only when it's a fault
+    /// (`reportable` — a 5xx, an unreadable reply), never a bad key, a
+    /// cancel or a timeout. LocalServer calls this for every failure.
+    func report(_ error: SliveError, area: String, title: String, detail: String? = nil,
+                serverLog: Bool = false,
+                file: String = #fileID, line: Int = #line, function: String = #function) {
+        guard error.reportable else { return }
+        report(area, title, error: error, detail: detail, serverLog: serverLog,
+               file: file, line: line, function: function)
+    }
+
     // MARK: - Helper process
 
     @MainActor

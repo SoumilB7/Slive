@@ -38,9 +38,9 @@ enum BackendErrorTests {
         t.check(ok?.text == "hello" && ok?.prompt == "p", "ground truth: a good reply decodes")
 
         let gone = Data(#"{"error":"Unknown job."}"#.utf8)
-        t.equal(message { try LocalModelsClient.checked(gone, reply(404), notFound: LocalModelsClient.jobGoneMessage) },
-              LocalModelsClient.jobGoneMessage, "local download: a vanished job ends the poll plainly")
-        t.equal(message { try LocalModelsClient.checked(Data(#"{"error":"Not in the cache."}"#.utf8), reply(404)) },
+        t.equal(message { try LocalServer.validate(gone, reply(404), notFound: LocalAPI.jobGoneMessage) },
+              LocalAPI.jobGoneMessage, "local download: a vanished job ends the poll plainly")
+        t.equal(message { try LocalServer.validate(Data(#"{"error":"Not in the cache."}"#.utf8), reply(404)) },
               "Not in the cache.", "local models: the server's own error wins")
     }
 }

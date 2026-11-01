@@ -205,94 +205,32 @@ struct WhisperTrainingJob: Decodable {
     var isActive: Bool { state == "queued" || state == "running" }
 }
 
+/// The Training page's calls; the routes are `TrainingAPI`.
 struct TrainingClient {
-    private let base = URL(string: "http://127.0.0.1:50711")!
-
-    struct TrainingError: LocalizedError {
-        let message: String
-        var errorDescription: String? { message }
-    }
-
     func readiness() async throws -> TrainingReadiness {
-        guard await BackendManager.shared.ensureHealthy() else {
-            throw TrainingError(message: "Couldn't start the training backend.")
-        }
-        let data = try await request("/training/readiness")
-        return try JSONDecoder().decode(TrainingReadiness.self, from: data)
+        try await LocalServer.send(TrainingAPI.Readiness())
     }
 
     func models() async throws -> [WhisperTrainingModel] {
-        guard await BackendManager.shared.ensureHealthy() else {
-            throw TrainingError(message: "Couldn't start the training backend.")
-        }
-        let data = try await request("/training/models")
-        return try JSONDecoder().decode(ModelEnvelope.self, from: data).models
+        try await LocalServer.send(TrainingAPI.Models()).models
     }
 
     func start(sourceModel: String, method: String, name: String? = nil,
                maxRamGB: Double) async throws -> WhisperTrainingJob {
-        guard await BackendManager.shared.ensureHealthy() else {
-            throw TrainingError(message: "Couldn't start the training backend.")
-        }
-        let body = try JSONEncoder().encode(
-            StartRequest(sourceModel: sourceModel, method: method, name: name,
-                         maxRamGB: maxRamGB))
-        let data = try await request("/training/start", method: "POST", body: body)
-        return try JSONDecoder().decode(JobEnvelope.self, from: data).job
+        try await LocalServer.send(TrainingAPI.Start(request: .init(
+            sourceModel: sourceModel, method: method, name: name, maxRamGB: maxRamGB))).job
     }
 
     func latest() async throws -> WhisperTrainingJob? {
-        guard await BackendManager.shared.ensureHealthy() else {
-            throw TrainingError(message: "Couldn't start the training backend.")
-        }
-        let data = try await request("/training/jobs/latest")
-        return try JSONDecoder().decode(OptionalJobEnvelope.self, from: data).job
+        try await LocalServer.send(TrainingAPI.Latest()).job
     }
 
     /// Finish a run that failed after training (merge → convert → install).
     func resume(id: String) async throws -> WhisperTrainingJob {
-        guard await BackendManager.shared.ensureHealthy() else {
-            throw TrainingError(message: "Couldn't start the training backend.")
-        }
-        let data = try await request("/training/jobs/\(id)/resume", method: "POST")
-        return try JSONDecoder().decode(JobEnvelope.self, from: data).job
+        try await LocalServer.send(TrainingAPI.Resume(id: id)).job
     }
 
     func status(id: String) async throws -> WhisperTrainingJob {
-        let data = try await request("/training/jobs/\(id)")
-        return try JSONDecoder().decode(JobEnvelope.self, from: data).job
-    }
-
-    private struct JobEnvelope: Decodable { let job: WhisperTrainingJob }
-    private struct OptionalJobEnvelope: Decodable { let job: WhisperTrainingJob? }
-    private struct ModelEnvelope: Decodable { let models: [WhisperTrainingModel] }
-    private struct StartRequest: Encodable {
-        let sourceModel: String
-        let method: String
-        let name: String?
-        let maxRamGB: Double
-        enum CodingKeys: String, CodingKey {
-            case sourceModel = "source_model", method, name
-            case maxRamGB = "max_ram_gb"
-        }
-    }
-
-    private func request(_ path: String, method: String = "GET", body: Data? = nil) async throws -> Data {
-        var request = URLRequest(url: base.appendingPathComponent(path))
-        request.httpMethod = method
-        request.httpBody = body
-        if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        request.timeoutInterval = 30
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw TrainingError(message: "Training backend returned no HTTP response.")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            // `error` from our handlers, `detail` from FastAPI validation.
-            let message = AssistantClient.serverMessage(in: data)
-                ?? "Training backend returned HTTP \(http.statusCode)."
-            throw TrainingError(message: message)
-        }
-        return data
+        try await LocalServer.send(TrainingAPI.Status(id: id)).job
     }
 }

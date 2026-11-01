@@ -61,15 +61,10 @@ final class BackendManager: ObservableObject {
     /// matched editors, `tail`s and dev servers that merely mention it.
     nonisolated static let serverPattern = "[-]m flowy\\.server( |$)"
 
-    private let port = 50711
-    private let healthURL = URL(string: "http://127.0.0.1:50711/health")!
     private var process: Process?
 
     /// Absolute path to the repo's Backend/ dir (baked at build time).
     private var backendDir: URL? {
-        if Edition.bundledServer {
-            return Bundle.main.resourceURL?.appendingPathComponent("backend", isDirectory: true)
-        }
         if let env = ProcessInfo.processInfo.environment["FLOWY_BACKEND_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: env)
         }
@@ -189,7 +184,6 @@ final class BackendManager: ObservableObject {
             lastSpawnError = "Server missing from this build."
             return
         }
-        if Edition.bundledServer { spawnBundled(dir); return }
         let python = dir.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             NSLog("Slive: venv python missing at \(python.path) — run `uv sync` in Backend/.")
@@ -218,10 +212,9 @@ final class BackendManager: ObservableObject {
         // it and its children (the training converter) together.
         env["SLIVE_PROCESS_GROUP"] = "1"
         startServer(launch.exe, arguments: ["-m", "flowy.server"], directory: dir, environment: env)
-
     }
 
-    /// Start the server process (shared by the dev and bundled paths).
+    /// Start the server process.
     private func startServer(_ exe: URL, arguments: [String], directory: URL, environment: [String: String]) {
         let p = Process()
         p.executableURL = exe
@@ -304,7 +297,7 @@ final class BackendManager: ObservableObject {
                                         logTail: String) -> String {
         let log = logTail.lowercased()
         if log.contains("address already in use") || log.contains("errno 48") {
-            return "Port 50711 is in use by another app."
+            return "Port \(ServerConfig.port) is in use by another app."
         }
         return "Slive Server quit on start (\(exitText(code, reason)))."
     }
@@ -320,29 +313,6 @@ final class BackendManager: ObservableObject {
         let end = (try? handle.seekToEnd()) ?? 0
         try? handle.seek(toOffset: end > 4096 ? end - 4096 : 0)
         return String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
-    }
-
-    /// Release Full build: Python, its packages and the server source live in
-    /// Contents/Resources/backend (python/, site-packages/, src/). The
-    /// interpreter ships pre-named "Slive Server", and nothing is written into
-    /// the signed app — no bytecode, and it runs from Application Support.
-    private func spawnBundled(_ dir: URL) {
-        let python = dir.appendingPathComponent("python/bin/Slive Server")
-        guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            lastSpawnError = "The bundled Slive Server is missing — reinstall Slive."
-            return
-        }
-        let work = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Slive", isDirectory: true)
-        try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONPATH"] = [dir.appendingPathComponent("site-packages").path,
-                             dir.appendingPathComponent("src").path].joined(separator: ":")
-        env["PYTHONHOME"] = dir.appendingPathComponent("python").path
-        env["PYTHONNOUSERSITE"] = "1"
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["SLIVE_PROCESS_GROUP"] = "1"
-        startServer(python, arguments: ["-m", "flowy.server"], directory: work, environment: env)
     }
 
     /// Resolve the venv's real interpreter and expose it under a "Slive Server"
@@ -423,28 +393,14 @@ final class BackendManager: ObservableObject {
 
     /// The server's `busy` flag, or nil if it didn't answer.
     private func probeBusy() async -> Bool? {
-        var request = URLRequest(url: healthURL)
-        request.timeoutInterval = 1.5
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj["busy"] as? Bool ?? false
+        guard let health = try? await LocalServer.send(ServerAPI.Health()) else { return nil }
+        return health.busy ?? false
     }
 
     // MARK: - Health
 
     private func probeHealth() async -> Bool {
-        var request = URLRequest(url: healthURL)
-        request.timeoutInterval = 1.5
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
-            return false
-        }
+        (try? await LocalServer.send(ServerAPI.Health())) != nil
     }
 
     /// PIDs of every running `flowy.server` (ours and any orphan on the port).
