@@ -107,7 +107,11 @@ public struct CrashReport: Sendable, Equatable {
             }
             let clean = redactor.clean(line)
             frames.append(clean)
-            if sliveFrame == nil, image == "Slive", let symbol = (frame["symbol"] as? String).flatMap(meaningfulSymbol) {
+            // Named after a frame with real source: inlined generics
+            // ("specialized Dictionary.subscript.getter") say nothing.
+            let file = frame["sourceFile"] as? String ?? ""
+            if sliveFrame == nil, image == "Slive", !file.isEmpty, !file.contains("<compiler-generated>"),
+               let symbol = (frame["symbol"] as? String).flatMap(meaningfulSymbol) {
                 sliveFrame = redactor.clean(symbol)
             }
         }

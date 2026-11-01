@@ -8,9 +8,12 @@ let package = Package(
     ],
     dependencies: [
         // On-device speech-to-text on the Apple Neural Engine (Core ML).
-        // Pinned: newer WhisperKit pulls a swift-transformers that fails to
-        // compile on the Command Line Tools toolchain.
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.9.0")),
+        // Pinned exactly. 0.10.2 is the newest that keeps swift-transformers
+        // 0.1.8 (later ones pull a release that fails to compile on the
+        // Command Line Tools toolchain), and it fixes 0.9's data race on the
+        // decoder's early-stop flags — a real crash in the post-load warm-up
+        // (EXC_BAD_ACCESS in TextDecoder.decodeText, Nov 5).
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "0.10.2"),
         // NVIDIA Parakeet (FastConformer TDT) on the Neural Engine — the
         // "instant" engine (~50ms decodes vs Whisper's ~0.9s on this Mac).
         // Pinned exactly, like WhisperKit: a new release is a deliberate bump.
