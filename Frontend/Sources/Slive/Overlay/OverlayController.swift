@@ -271,6 +271,17 @@ final class OverlayController {
             ?? NSScreen.screens.first
         guard let frame = screen?.visibleFrame else { return }
         let size = panel.frame.size
+        // Text always shows bottom-centre; only the pill itself moves to the
+        // right edge (upright) when the user turned that on.
+        let showingText: Bool = {
+            if case .result = model.phase { return true }
+            return model.streaming
+        }()
+        if Settings.shared.pillOnRight && !showingText {
+            panel.setFrameOrigin(NSPoint(x: frame.maxX - size.width - 2,
+                                         y: frame.midY - size.height / 2))
+            return
+        }
         let x = frame.midX - size.width / 2
         let y = frame.minY + 8                         // lower, near the bottom edge
         panel.setFrameOrigin(NSPoint(x: x, y: y))

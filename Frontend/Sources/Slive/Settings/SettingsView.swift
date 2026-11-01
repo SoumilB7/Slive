@@ -448,6 +448,9 @@ struct SettingsView: View {
                 valueText: "\(Int(settings.overlayOpacity * 100))%"
             )
             CardDivider()
+            ToggleRow(title: "Pill on the right", isOn: $settings.pillOnRight)
+                .help("Upright on the right edge. Text still shows at the bottom.")
+            CardDivider()
             ToggleRow(title: "Launch at login", isOn: $settings.launchAtLogin)
             CardDivider()
             ToggleRow(title: "Developer logs", isOn: $settings.verboseLogging)

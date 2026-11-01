@@ -5,8 +5,11 @@ import AppKit
 /// AppKit controller (NSPanel frame) size themselves from these numbers so the
 /// grown box and the window that hosts it stay in lock-step.
 enum OverlayMetrics {
-    /// The resting pill container (also the shadow-spill container size).
-    static let pillSize = CGSize(width: 120, height: 44)
+    /// The pill container (also the shadow-spill room): wide at the bottom,
+    /// tall when the pill stands upright on the right (Settings).
+    static var pillSize: CGSize {
+        Settings.shared.pillOnRight ? CGSize(width: 60, height: 110) : CGSize(width: 120, height: 44)
+    }
 
     static let fontSize: CGFloat = 14
     static let maxBoxWidth: CGFloat = 420      // widest the result box may grow
@@ -176,11 +179,24 @@ struct OverlayView: View {
 
     // MARK: - Listening (unchanged waveform pill)
 
+    private var upright: Bool { settings.pillOnRight }
+
+    /// The pill's content at its usual size — stood upright (a quarter turn,
+    /// swapped frame) when the pill is on the right.
+    @ViewBuilder private func oriented<V: View>(_ content: V, width: CGFloat, height: CGFloat) -> some View {
+        if upright {
+            content.frame(width: width, height: height)
+                .rotationEffect(.degrees(90))
+                .frame(width: height, height: width)
+        } else {
+            content.frame(width: width, height: height)
+        }
+    }
+
     private var listeningPill: some View {
-        WaveformView(levels: model.levels)
-            .frame(width: 48, height: 18)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+        oriented(WaveformView(levels: model.levels), width: 48, height: 18)
+            .padding(.horizontal, upright ? 6 : 8)
+            .padding(.vertical, upright ? 8 : 6)
             .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
@@ -190,10 +206,9 @@ struct OverlayView: View {
     // MARK: - Continuous listening (pen scribbling a line)
 
     private var continuousPill: some View {
-        PenScribbleView(active: isLiveDictating)
-            .frame(width: 66, height: 26)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+        oriented(PenScribbleView(active: isLiveDictating), width: 66, height: 26)
+            .padding(.horizontal, upright ? 4 : 8)
+            .padding(.vertical, upright ? 8 : 4)
             .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())
@@ -214,10 +229,9 @@ struct OverlayView: View {
     // MARK: - Transcribing (loading dots in the same pill)
 
     private func transcribingPill(active: Bool) -> some View {
-        LoadingDots(active: active)
-            .frame(width: 48, height: 18)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+        oriented(LoadingDots(active: active), width: 48, height: 18)
+            .padding(.horizontal, upright ? 6 : 8)
+            .padding(.vertical, upright ? 8 : 6)
             .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())

@@ -24,6 +24,7 @@ final class Settings: ObservableObject {
         static let contextPrompt = "contextPrompt"
         static let holdActivationDelay = "holdActivationDelay"
         static let overlayOpacity = "overlayOpacity"
+        static let pillOnRight = "pillOnRight"
         static let whisperModel = "whisperModel"
         static let continuousModel = "continuousModel"
         static let continuousTypeCPS = "continuousTypeCPS"
@@ -192,6 +193,12 @@ final class Settings: ObservableObject {
     /// fully opaque so answers remain readable. Default 0.92.
     @Published var overlayOpacity: Double {
         didSet { UserDefaults.standard.set(overlayOpacity, forKey: Keys.overlayOpacity) }
+    }
+
+    /// The pill stands upright on the right edge instead of bottom-centre.
+    /// Text (results, the copy box, messages) always shows at the bottom.
+    @Published var pillOnRight: Bool {
+        didSet { UserDefaults.standard.set(pillOnRight, forKey: Keys.pillOnRight) }
     }
 
     /// WhisperKit model the on-device (Neural Engine) transcriber loads. Changing
@@ -415,6 +422,7 @@ final class Settings: ObservableObject {
         // Continuous dictation defaults to the same bundled tiny model (so both
         // sections share one instance until the user changes either one).
         continuousModel = UserDefaults.standard.string(forKey: Keys.continuousModel) ?? "parakeet-ultra"
+        pillOnRight = UserDefaults.standard.bool(forKey: Keys.pillOnRight)
         if UserDefaults.standard.object(forKey: Keys.continuousTypeCPS) == nil {
             continuousTypeCPS = 80
         } else {
