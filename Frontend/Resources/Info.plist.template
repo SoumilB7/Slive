@@ -22,7 +22,7 @@
     <key>LSUIElement</key>
     <false/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Slive records your voice while you hold the talk key, then transcribes it locally.</string>
+    <string>Slive listens only while you dictate.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>CFBundleIconFile</key>

@@ -38,11 +38,11 @@ struct AssistantClient {
 
         var description: String {
             switch self {
-            case .missingKey(let p):  return "No API key set for \(p). Add one in Settings → Assistant."
-            case .notHTTP:            return "Assistant: no HTTP response"
+            case .missingKey(let p):  return "No \(p) key. Add one in Models."
+            case .notHTTP:            return "No response."
             case .server(let m):      return m
-            case .badStatus(let c):   return "Assistant: HTTP \(c)"
-            case .decodeFailed:       return "Assistant: could not decode response"
+            case .badStatus(let c):   return "Server error \(c)."
+            case .decodeFailed:       return "Unreadable response."
             }
         }
     }
@@ -90,7 +90,7 @@ struct AssistantClient {
             if let d = obj["detail"] as? String, !d.isEmpty { return .server(d) }
             if let items = obj["detail"] as? [[String: Any]],
                let msg = items.first?["msg"] as? String, !msg.isEmpty {
-                return .server("Assistant: \(msg)")
+                return .server(msg)
             }
         }
         return .badStatus(status)
@@ -174,7 +174,7 @@ struct AssistantClient {
                     }
                     if config.provider.isLocal && config.model(for: .local).isEmpty {
                         throw AssistantError.server(
-                            "No local model picked — choose one in Settings → Assistant.")
+                            "No local model chosen.")
                     }
                     // A local model may need its first-use load (multi-GB
                     // weights) before any tokens appear — allow far more
@@ -234,7 +234,7 @@ struct AssistantClient {
         let provider = config.provider
         guard !apiKey.isEmpty || !provider.needsAPIKey else { throw AssistantError.missingKey(provider.displayName) }
         if provider.isLocal && config.model(for: .local).isEmpty {
-            throw AssistantError.server("No local model picked — choose one in Settings → Assistant.")
+            throw AssistantError.server("No local model chosen.")
         }
         // A local model may need its first-use load (multi-GB weights) before
         // it can answer — allow far more slack than a cloud call.

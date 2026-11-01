@@ -263,7 +263,7 @@ final class LabelRun: ObservableObject {
             if completed {
                 let failed = self.failedIDs.count
                 self.message = failed == 0 ? nil
-                    : "\(failed) clip\(failed == 1 ? "" : "s") couldn't be labeled — Retry runs just those. Last error: \(self.lastFailure ?? "unknown")"
+                    : "\(failed) failed: \(self.lastFailure ?? "unknown")"
             }
             self.finish()
         }
@@ -321,7 +321,7 @@ final class LabelRun: ObservableObject {
                     message = "Last failure: \(error.localizedDescription)"
                 }
                 if Task.isCancelled {
-                    message = "Stopped — \(done.formatted()) labeled. Label everything picks up the rest."
+                    message = "Stopped · \(done.formatted()) labeled"
                     group.cancelAll()
                     return false
                 }
@@ -505,12 +505,12 @@ final class LabelRun: ObservableObject {
     private func singleText(url: URL, provider: AssistantProvider, model: String) async throws -> String {
         _ = try Self.validatedAudioSeconds(url)
         if provider == .whisper {
-            lastPrompt = "(none — the on-device Whisper judge takes no text prompt, so the vocabulary can't steer it yet; use the pencil for name fixes)"
+            lastPrompt = "(Whisper takes no prompt.)"
             lastPromptMeta = "Whisper · \(model)"
             guard let text = await TranscriptionModel.shared.transcribe(url, model: model),
                   !text.isEmpty else {
                 throw GroundTruthClient.GroundTruthError.server(
-                    "Whisper \(model) isn't ready — download it above, or the clip was silent.")
+                    "Whisper not ready, or clip silent.")
             }
             return text
         }
@@ -533,12 +533,12 @@ final class LabelRun: ObservableObject {
     nonisolated static func validatedAudioSeconds(_ url: URL) throws -> Double {
         guard let file = try? AVAudioFile(forReading: url) else {
             throw GroundTruthClient.GroundTruthError.server(
-                "This recording can't be opened as audio — the file is broken. Delete the row.")
+                "Audio file is broken.")
         }
         let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1)
         guard seconds >= 0.3 else {
             throw GroundTruthClient.GroundTruthError.server(String(
-                format: "This recording holds only %.2fs of audio — nothing to transcribe. Delete the row.",
+                format: "Too short (%.2f s).",
                 seconds))
         }
         return seconds

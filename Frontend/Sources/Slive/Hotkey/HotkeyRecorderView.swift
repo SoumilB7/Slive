@@ -12,8 +12,9 @@ struct HotkeyRecorderView: View {
 
     @ObservedObject private var settings = Settings.shared
     var target: Target = .dictation
-    var title: String = "Push-to-talk shortcut"
-    var subtitle: String = "Hold this to talk. A modifier + key is suppressed while held."
+    var title: String = "Shortcut"
+    /// Optional idle line under the title; the recording prompt replaces it.
+    var subtitle: String = ""
 
     @State private var recording = false
     @State private var monitor: Any?
@@ -53,14 +54,16 @@ struct HotkeyRecorderView: View {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.92))
-                Text(recording
-                     ? (supportsDoubleTap
-                        ? "Press it now — tap a modifier once, or DOUBLE-tap it to bind the ×2 gesture. Esc cancels."
-                        : "Press it now — a modifier alone, or a modifier + key (⌥ /). Esc cancels.")
-                     : subtitle)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .fixedSize(horizontal: false, vertical: true)
+                if recording || !subtitle.isEmpty {
+                    Text(recording
+                         ? (supportsDoubleTap
+                            ? "Press a key. Double-tap for ×2. Esc cancels."
+                            : "Press a key or combo. Esc cancels.")
+                         : subtitle)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 8)
             if isClearable && current != nil && !recording {
@@ -71,7 +74,7 @@ struct HotkeyRecorderView: View {
                         .foregroundStyle(.white.opacity(0.4))
                 }
                 .buttonStyle(.plain)
-                .help("Clear this shortcut")
+                .help("Clear")
             }
             Button {
                 recording ? cancel() : startRecording()

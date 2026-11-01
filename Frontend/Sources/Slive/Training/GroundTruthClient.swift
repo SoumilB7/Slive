@@ -18,9 +18,9 @@ struct GroundTruthClient {
         var errorDescription: String? {
             switch self {
             case .missingKey(let provider):
-                return "No API key for \(provider) — set it below."
+                return "No \(provider) key."
             case .backendDown:
-                return "Backend didn't come up — try again in a moment."
+                return "Server didn't start. Try again."
             case .server(let message), .fatal(let message):
                 return message
             }
@@ -37,7 +37,7 @@ struct GroundTruthClient {
 
     /// Where the consensus recipe's key lives, said exactly.
     static let missingOpenAIKeyMessage =
-        "Best quality needs your OpenAI key — add it in Models → OpenAI, then press Label everything again."
+        "Needs an OpenAI key."
 
     private struct RequestBody: Encodable {
         let provider: String
@@ -109,7 +109,7 @@ struct GroundTruthClient {
         }
         if provider.isLocal && model.trimmingCharacters(in: .whitespaces).isEmpty {
             throw GroundTruthError.server(
-                "No local model picked — choose a downloaded audio-capable model.")
+                "No local model chosen.")
         }
         guard await BackendManager.shared.ensureHealthy() else {
             throw GroundTruthError.backendDown
@@ -188,7 +188,7 @@ struct GroundTruthClient {
         }
         let text = (reply.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            throw GroundTruthError.server("The transcribers returned nothing for this clip.")
+            throw GroundTruthError.server("No text returned.")
         }
         return ConsensusResult(
             text: text, chosen: reply.chosen ?? "", agreement: reply.agreement ?? 0,

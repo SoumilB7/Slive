@@ -73,7 +73,7 @@ final class ProviderStore: ObservableObject {
         localError = nil
         defer { localLoading = false }
         guard await BackendManager.shared.ensureHealthy() else {
-            localError = "Couldn't start the local backend."
+            localError = "Local server didn't start."
             return
         }
         do {
@@ -90,7 +90,7 @@ final class ProviderStore: ObservableObject {
         guard !id.isEmpty, localDownloading == nil else { return }
         localError = nil
         guard await BackendManager.shared.ensureHealthy() else {
-            localError = "Couldn't start the local backend."
+            localError = "Local server didn't start."
             return
         }
         localDownloading = id
@@ -166,13 +166,13 @@ final class ProviderStore: ObservableObject {
             if let err = localError {
                 fetchErrors[raw] = err
             } else if ids.isEmpty {
-                fetchErrors[raw] = "No downloaded models yet — add one in Models → Local."
+                fetchErrors[raw] = "No local models."
             }
             return
         }
 
         guard await BackendManager.shared.ensureHealthy() else {
-            fetchErrors[raw] = "Couldn't start the local backend."
+            fetchErrors[raw] = "Local server didn't start."
             return
         }
         var config = settings.assistantConfig
@@ -183,7 +183,7 @@ final class ProviderStore: ObservableObject {
                 config: config, apiKey: apiKey(for: provider))
             settings.assistantConfig.fetchedModels[raw] = models
             if models.isEmpty {
-                fetchErrors[raw] = "No models returned for this provider."
+                fetchErrors[raw] = "No models found."
             }
         } catch {
             fetchErrors[raw] = error.localizedDescription

@@ -23,60 +23,19 @@ struct ModelsSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: SliveTheme.cardGap) {
-            header
-
             VStack(alignment: .leading, spacing: 18) {
-                group("CLOUD PROVIDERS") {
+                group("CLOUD") {
                     ForEach(cloud) { p in
                         ProviderRow(provider: p, expanded: binding(for: p.rawValue))
                     }
                 }
+                .help("Keys are stored in your Keychain")
                 group("ON THIS MAC") {
                     LocalProviderRow(expanded: binding(for: "huggingface"))
                 }
             }
         }
         .onAppear(perform: seedExpansion)
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Connect an AI provider")
-                .font(SliveTheme.font(17, .bold))
-                .foregroundStyle(SliveTheme.textPrimary)
-            Text("Drop a key in once. Assistant and Training then let you pick any of that provider's models — set it up here, never again.")
-                .font(SliveTheme.font(12))
-                .foregroundStyle(SliveTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(SliveTheme.textTertiary)
-                Text("Keys live in your macOS Keychain — they never touch disk.")
-                    .font(SliveTheme.captionFont)
-                    .foregroundStyle(SliveTheme.textTertiary)
-                Spacer(minLength: 12)
-                connectedBadge
-            }
-            .padding(.top, 2)
-        }
-    }
-
-    private var connectedBadge: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(connectedCount > 0 ? Color.green : Color.orange)
-                .frame(width: 7, height: 7)
-            Text(connectedCount > 0
-                 ? "\(connectedCount) connected"
-                 : "None connected yet")
-                .font(SliveTheme.font(11, .semibold))
-                .foregroundStyle(connectedCount > 0 ? .green : .orange.opacity(0.95))
-        }
-        .fixedSize()
     }
 
     // MARK: - Group
@@ -187,7 +146,7 @@ private struct ProviderRow: View {
     }
 
     private var statusLine: String {
-        guard connected else { return "Not connected — tap to drop a key in" }
+        guard connected else { return "Not connected" }
         return modelCount > 0 ? "Connected · \(modelCount) models" : "Connected"
     }
 
@@ -197,7 +156,7 @@ private struct ProviderRow: View {
         VStack(alignment: .leading, spacing: 12) {
             if provider.needsBaseURL {
                 labeledField("Base URL",
-                             hint: "OpenRouter, Groq, Ollama, LM Studio — anything that speaks the OpenAI API.") {
+                             hint: "Any OpenAI-compatible endpoint.") {
                     TextField("https://…/v1", text: $settings.assistantConfig.baseURL)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
@@ -248,7 +207,7 @@ private struct ProviderRow: View {
                     Button {
                         Task { await providers.fetchModels(for: provider) }
                     } label: {
-                        Label(modelCount > 0 ? "Refresh model list" : "Load model list",
+                        Label("Refresh",
                               systemImage: "arrow.clockwise")
                             .font(SliveTheme.font(11, .semibold))
                     }
@@ -267,11 +226,6 @@ private struct ProviderRow: View {
                 Text(err)
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.95))
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Optional — so you can pick from a live list in Assistant & Training instead of typing an id.")
-                    .font(SliveTheme.captionFont)
-                    .foregroundStyle(SliveTheme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -327,6 +281,8 @@ private struct LocalProviderRow: View {
     @State private var tokenDraft = ""
     @State private var modelIDDraft = ""
     @State private var filter = ""
+    /// Repo id awaiting delete confirmation.
+    @State private var pendingDelete: String?
 
     private var downloading: String? { providers.localDownloading }
 
@@ -335,9 +291,6 @@ private struct LocalProviderRow: View {
     /// size floor keeps this to actual models without the noise.
     private var models: [LocalCachedModel] {
         providers.localModels.filter { $0.size_bytes >= LocalCachedModel.minPickableBytes }
-    }
-    private var hiddenSmallCount: Int {
-        providers.localModels.count - models.count
     }
     private var filteredModels: [LocalCachedModel] {
         let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
@@ -408,42 +361,38 @@ private struct LocalProviderRow: View {
     private var subtitle: String {
         if let downloading { return "Downloading \(downloading)…" }
         let n = models.count
-        return n > 0 ? "\(n) model\(n == 1 ? "" : "s") on this Mac" : "Download models to this Mac"
+        return n > 0 ? "\(n) model\(n == 1 ? "" : "s")" : "No models"
     }
 
     // MARK: Detail
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Downloads drop into your usual Hugging Face cache (shared with transformers / PyTorch) and run in the Python backend. Wiring these up for the Assistant is next on the list.")
-                .sliveCaption()
-
             // Access token (saves as you type — the pill confirms it).
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Access token (for gated / private repos)")
+                    Text("Access token")
                         .font(SliveTheme.rowFont)
                         .foregroundStyle(SliveTheme.textPrimary)
+                        .help("For gated repos")
                     Spacer()
                     KeyStatusPill(hasKey: !providers.huggingFaceToken.isEmpty)
                 }
-                SecureField("hf_…  (huggingface.co/settings/tokens)", text: $tokenDraft)
+                SecureField("hf_…", text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .onChange(of: tokenDraft) { _, new in providers.setHuggingFaceToken(new) }
-                Text("Auto-saved to your Keychain — no button to hunt for.")
-                    .sliveCaption()
             }
 
             CardDivider()
 
             // Download by id.
             VStack(alignment: .leading, spacing: 6) {
-                Text("Download a model")
+                Text("Download")
                     .font(SliveTheme.rowFont)
                     .foregroundStyle(SliveTheme.textPrimary)
                 HStack(spacing: 8) {
-                    TextField("owner/name  (e.g. google/gemma-3-4b-it)", text: $modelIDDraft)
+                    TextField("owner/name", text: $modelIDDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
                         .onSubmit(startDownload)
@@ -480,7 +429,7 @@ private struct LocalProviderRow: View {
     /// Truth, which only pick a provider and a model).
     private var runtimeSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("HOW MODELS RUN")
+            Text("RUNTIME")
                 .font(SliveTheme.font(10, .bold))
                 .foregroundStyle(SliveTheme.textTertiary)
                 .tracking(1.1)
@@ -493,7 +442,7 @@ private struct LocalProviderRow: View {
     private var cacheList: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("IN YOUR CACHE")
+                Text("DOWNLOADED")
                     .font(SliveTheme.font(10, .bold))
                     .foregroundStyle(SliveTheme.textTertiary)
                     .tracking(1.1)
@@ -507,17 +456,17 @@ private struct LocalProviderRow: View {
                         .foregroundStyle(SliveTheme.accent)
                 }
                 .buttonStyle(.plain)
-                .help("Re-read the Hugging Face cache")
+                .help("Refresh")
             }
 
             if models.isEmpty {
-                Text(providers.localLoading ? "Reading cache…" : "No models downloaded yet.")
+                Text(providers.localLoading ? "Reading…" : "None yet")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textTertiary)
                     .padding(.vertical, 4)
             } else {
                 if models.count > 8 {
-                    TextField("Filter \(models.count) models…", text: $filter)
+                    TextField("Filter", text: $filter)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
                 }
@@ -531,12 +480,14 @@ private struct LocalProviderRow: View {
                 }
                 .frame(maxHeight: 240)
             }
-
-            if hiddenSmallCount > 0 {
-                Text("\(hiddenSmallCount) tiny config-only repos (under 50 MB) tucked away.")
-                    .font(SliveTheme.captionFont)
-                    .foregroundStyle(SliveTheme.textTertiary)
+        }
+        .confirmationDialog("Delete \(pendingDelete ?? "")?", isPresented: Binding(
+            get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
+            Button("Delete", role: .destructive) {
+                if let id = pendingDelete { Task { await providers.deleteLocalModel(id) } }
+                pendingDelete = nil
             }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
         }
     }
 
@@ -554,14 +505,14 @@ private struct LocalProviderRow: View {
                 .foregroundStyle(SliveTheme.textSecondary)
                 .fixedSize()
             Button {
-                Task { await providers.deleteLocalModel(model.repo_id) }
+                pendingDelete = model.repo_id
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.4))
             }
             .buttonStyle(.plain)
-            .help("Delete \(model.repo_id) from the cache")
+            .help("Delete")
         }
         .padding(.vertical, 7)
     }

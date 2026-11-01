@@ -13,6 +13,7 @@ struct SettingsView: View {
     @ObservedObject private var transcription = TranscriptionModel.shared
     @ObservedObject private var stats = SpeakingStats.shared
     @ObservedObject private var inputDevices = InputDevices.shared
+    @ObservedObject private var providers = ProviderStore.shared
     var onRelaunch: () -> Void
 
     @StateObject private var scrollKeeper = SettingsScrollKeeper()
@@ -20,6 +21,7 @@ struct SettingsView: View {
     /// Remembered so compact-mode section switching restores the last-visited
     /// Dictation sub-tab.
     @State private var lastDictationPage: SettingsPage = .general
+    @State private var confirmClearHistory = false
     /// Seeded from the autosaved window frame so the first frame renders in the
     /// right tier (a compact-restored window shouldn't flash one sidebar frame
     /// before onGeometryChange reports). Format: "x y w h screenX …" — width is
@@ -96,7 +98,7 @@ struct SettingsView: View {
 
             scrollContainer
 
-            Text("Slive lives in your menu bar · v0.1")
+            Text("v0.1")
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(SliveTheme.textTertiary)
                 .padding(.top, 2)
@@ -129,12 +131,14 @@ struct SettingsView: View {
     private var scrollContainer: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 14) {
+                    PageTitle(title: page.rawValue, status: pageStatus.text,
+                              statusColor: pageStatus.color)
                     pageContent
-                        .padding(.top, layout == .compact ? 20 : 44)
-                        .frame(maxWidth: .infinity)
-                    signoff
                 }
+                .frame(maxWidth: pageCap)
+                .padding(.top, layout == .compact ? 20 : 44)
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, SliveTheme.gutter)
                 .padding(.bottom, 14)
                 .background(SettingsScrollResolver { scrollKeeper.scrollView = $0 })
@@ -150,16 +154,6 @@ struct SettingsView: View {
         }
     }
 
-    /// The brand sign-off, bottom-right of every page.
-    private var signoff: some View {
-        Text("Your whisper, truly yours.")
-            .font(SliveTheme.font(11, .medium))
-            .italic()
-            .foregroundStyle(SliveTheme.textTertiary)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.top, 26)
-    }
-
     /// Width cap for plain form pages at the current tier.
     private var formCap: CGFloat {
         layout == .compact ? .infinity : SliveTheme.formWidth
@@ -167,33 +161,59 @@ struct SettingsView: View {
 
     @ViewBuilder private var pageContent: some View {
         switch page {
-        case .general:
-            generalPage
-        case .continuous:
-            ContinuousSettingsView(settings: settings)
-                .frame(maxWidth: formCap)
-        case .permissions:
-            permissionsCard
-                .frame(maxWidth: formCap)
-        case .vocabulary:
-            vocabularyCard
-                .frame(maxWidth: formCap)
-        case .history:
-            historyCard
-                .frame(maxWidth: layout == .compact ? .infinity : SliveTheme.historyWidth)
-        case .assistant:
-            AssistantSettingsView(settings: settings, openModels: { page = .models })
-                .frame(maxWidth: formCap)
-        case .models:
-            ModelsSettingsView(settings: settings)
-                .frame(maxWidth: layout == .compact ? .infinity : SliveTheme.historyWidth)
-        case .data:
-            DataSettingsView(settings: settings, openModels: { page = .models })
-                .frame(maxWidth: trainingCap)
-        case .training:
-            TrainingSettingsView(settings: settings, openData: { page = .data })
-                .frame(maxWidth: trainingCap)
+        case .general: generalPage
+        case .continuous: ContinuousSettingsView(settings: settings)
+        case .permissions: permissionsCard
+        case .vocabulary: vocabularyCard
+        case .history: historyPage
+        case .assistant: AssistantSettingsView(settings: settings, openModels: { page = .models })
+        case .models: ModelsSettingsView(settings: settings)
+        case .data: DataSettingsView(settings: settings, openModels: { page = .models })
+        case .training: TrainingSettingsView(settings: settings, openData: { page = .data })
         }
+    }
+
+    /// Column width for the current page at the current tier.
+    private var pageCap: CGFloat {
+        switch page {
+        case .general: return layout == .wide ? SliveTheme.generalGridWidth : formCap
+        case .history, .models: return layout == .compact ? .infinity : SliveTheme.historyWidth
+        case .data, .training: return trainingCap
+        default: return formCap
+        }
+    }
+
+    /// The one quiet status beside each page title.
+    private var pageStatus: (text: String?, color: Color) {
+        switch page {
+        case .general: return (modelStatusLine(settings.whisperModel), SliveTheme.textSecondary)
+        case .continuous: return (modelStatusLine(settings.continuousModel), SliveTheme.textSecondary)
+        case .permissions:
+            return ("\(grantedCount) of 3 granted", grantedCount == 3 ? SliveTheme.textSecondary : .orange)
+        case .history:
+            return (history.entries.isEmpty ? nil : "\(history.entries.count) · last 24 h", SliveTheme.textSecondary)
+        case .models:
+            let n = [AssistantProvider.anthropic, .openai, .gemini, .openaiCompatible]
+                .filter { providers.hasKey($0) }.count
+            return (n > 0 ? "\(n) connected" : "None connected", n > 0 ? SliveTheme.textSecondary : .orange)
+        default: return (nil, SliveTheme.textSecondary)
+        }
+    }
+
+    /// "Parakeet – Ultra · Ready" for a dictation model id.
+    private func modelStatusLine(_ model: String) -> String {
+        let name = (WhisperModelChoice.all + WhisperModelChoice.parakeet).first { $0.model == model }?.label
+            ?? transcription.customModels.first { $0.id == model }?.displayName
+            ?? model
+        let state: String
+        switch transcription.status(for: model) {
+        case .ready: state = "Ready"
+        case .downloading: state = "Downloading"
+        case .preparing: state = "Loading"
+        case .failed: state = "Failed"
+        case .notDownloaded: state = "Not downloaded"
+        }
+        return "\(name) · \(state)"
     }
 
     /// Data may grow past the form cap — its table earns real width.
@@ -210,25 +230,21 @@ struct SettingsView: View {
     @ViewBuilder private var generalPage: some View {
         Group {
             if layout == .wide {
-                // 880pt grid: pace hero full width, then two two-up rows.
-                // Key + model lead — the two things you actually set up.
-                // Pace and the speed graph are readouts; they live below.
+                // Setup on the left, model and mic on the right, the speed
+                // graph full width below.
                 VStack(spacing: SliveTheme.cardGap) {
                     HStack(alignment: .top, spacing: SliveTheme.gridGap) {
-                        keyCard
+                        VStack(spacing: SliveTheme.cardGap) {
+                            keyCard
+                            behaviorCard
+                        }
                         VStack(spacing: SliveTheme.cardGap) {
                             modelCard
                             micCard
                         }
                     }
-                    HStack(alignment: .top, spacing: SliveTheme.gridGap) {
-                        behaviorCard
-                        advancedCard
-                    }
                     speedCard
-                    speakingPaceCard
                 }
-                .frame(maxWidth: SliveTheme.generalGridWidth)
             } else {
                 VStack(spacing: SliveTheme.cardGap) {
                     keyCard
@@ -236,10 +252,7 @@ struct SettingsView: View {
                     micCard
                     behaviorCard
                     speedCard
-                    speakingPaceCard
-                    advancedCard
                 }
-                .frame(maxWidth: formCap)
             }
         }
         .onAppear { transcription.select(settings.whisperModel) }
@@ -248,130 +261,49 @@ struct SettingsView: View {
 
     // MARK: Speaking pace (words per minute)
 
-    /// A live readout of how fast you've been speaking, measured after each
-    /// dictation's text is written (so it never adds latency to what you type).
-    private var speakingPaceCard: some View {
-        let hasData = stats.sampleCount > 0
-        return SettingsCard("SPEAKING PACE", trailing: {
-            if hasData {
+    /// One line above History: last take's pace, then avg / best / takes.
+    /// Measured after each dictation's text is written, so it never adds
+    /// latency to what you type.
+    @ViewBuilder private var paceLine: some View {
+        if stats.sampleCount > 0 {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(Int(stats.lastWPM.rounded())) wpm")
+                    .font(SliveTheme.mono(12))
+                    .foregroundStyle(SliveTheme.accent)
+                    .contentTransition(.numericText())
+                Text("avg \(Int(stats.averageWPM.rounded())) · best \(Int(stats.bestWPM.rounded())) · \(stats.sampleCount) take\(stats.sampleCount == 1 ? "" : "s")")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textSecondary)
+                Spacer(minLength: 0)
                 Button("Reset") { stats.reset() }
                     .buttonStyle(.plain)
                     .font(SliveTheme.font(11, .semibold))
                     .foregroundStyle(.white.opacity(0.45))
             }
-        }) {
-            if layout == .wide {
-                // Horizontal hero: dial left, numbers right.
-                HStack(spacing: 26) {
-                    SpeedometerView(value: stats.lastWPM, accent: SliveTheme.accent)
-                        .frame(width: 220, height: 110)
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .lastTextBaseline, spacing: 6) {
-                            Text(hasData ? "\(Int(stats.lastWPM.rounded()))" : "—")
-                                .font(SliveTheme.font(40, .bold))
-                                .foregroundStyle(.white)
-                                .contentTransition(.numericText())
-                            Text("WPM")
-                                .font(SliveTheme.font(13, .bold))
-                                .foregroundStyle(SliveTheme.accent)
-                        }
-                        if hasData {
-                            HStack(spacing: 22) {
-                                paceStat("AVG", "\(Int(stats.averageWPM.rounded()))")
-                                paceStat("BEST", "\(Int(stats.bestWPM.rounded()))")
-                                paceStat("TAKES", "\(stats.sampleCount)")
-                            }
-                        } else {
-                            Text("Talk to me — your words-per-minute lands here after every take.")
-                                .font(SliveTheme.font(12))
-                                .foregroundStyle(SliveTheme.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 6)
-            } else {
-                VStack(spacing: 4) {
-                    SpeedometerView(value: stats.lastWPM, accent: SliveTheme.accent)
-                        .frame(width: 260, height: 122)
-
-                    HStack(alignment: .lastTextBaseline, spacing: 5) {
-                        Text(hasData ? "\(Int(stats.lastWPM.rounded()))" : "—")
-                            .font(SliveTheme.font(34, .bold))
-                            .foregroundStyle(.white)
-                            .contentTransition(.numericText())
-                        Text("WPM")
-                            .font(SliveTheme.font(13, .bold))
-                            .foregroundStyle(SliveTheme.accent)
-                    }
-
-                    if hasData {
-                        Text("avg \(Int(stats.averageWPM.rounded())) · best \(Int(stats.bestWPM.rounded())) · \(stats.sampleCount) dictation\(stats.sampleCount == 1 ? "" : "s")")
-                            .font(SliveTheme.captionFont)
-                            .foregroundStyle(.white.opacity(0.45))
-                    } else {
-                        Text("Talk to me — your words-per-minute lands here after every take.")
-                            .font(SliveTheme.font(12))
-                            .foregroundStyle(SliveTheme.textSecondary)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 2)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: stats.lastWPM)
-    }
-
-    private func paceStat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(SliveTheme.font(10, .bold))
-                .foregroundStyle(SliveTheme.textTertiary)
-                .tracking(0.8)
-            Text(value)
-                .font(SliveTheme.font(15, .semibold))
-                .foregroundStyle(SliveTheme.textPrimary)
+            .animation(.spring(response: 0.5, dampingFraction: 0.85), value: stats.lastWPM)
         }
     }
 
     // MARK: Push-to-talk key
 
     private var keyCard: some View {
-        SettingsCard("DICTATION KEYS") {
+        SettingsCard("KEYS") {
             // Hold: press-and-speak. Its switch can turn the hold bind off
             // entirely (toggle-only users).
-            HStack(alignment: .top, spacing: 12) {
-                HotkeyRecorderView(
-                    target: .dictation,
-                    title: "Hold to talk",
-                    subtitle: "Hold, speak, release — text lands at your cursor.")
+            HStack(alignment: .center, spacing: 12) {
+                HotkeyRecorderView(target: .dictation, title: "Hold to talk")
                     .opacity(settings.dictateHoldOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.dictateHoldOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
-                    .help("Turn the hold bind on or off")
             }
             CardDivider()
             // Toggle: tap to start, tap again to stop.
-            HStack(alignment: .top, spacing: 12) {
-                HotkeyRecorderView(
-                    target: .dictationToggle,
-                    title: "Tap to toggle",
-                    subtitle: "Tap once to start listening, tap again to finish and type.")
+            HStack(alignment: .center, spacing: 12) {
+                HotkeyRecorderView(target: .dictationToggle, title: "Tap to toggle")
                     .opacity(settings.dictateToggleOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.dictateToggleOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
-                    .help("Turn the toggle bind on or off")
             }
-            CardDivider()
-            StepsRibbon(steps: [
-                .init(icon: "hand.point.up.left.fill", text: "Hold or tap",
-                      key: settings.hotkey.label),
-                .init(icon: "waveform", text: "Speak"),
-                .init(icon: "checkmark.circle.fill", text: "Text appears"),
-            ])
         }
     }
 
@@ -379,9 +311,9 @@ struct SettingsView: View {
 
     private var modelCard: some View {
         ModelPickerCard(
-            title: "TRANSCRIPTION MODEL",
+            title: "MODEL",
             model: $settings.whisperModel,
-            footnote: "Runs right on the Neural Engine — fast, and nothing ever leaves your Mac. A fresh model takes a moment to warm up the first time; you keep dictating on your current model until it's ready.",
+            help: "Runs on this Mac",
             includeParakeet: true
         )
     }
@@ -417,30 +349,46 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 .tint(SliveTheme.accent)
                 .fixedSize()
+                .help("Used for dictation and live typing")
                 .onChange(of: settings.inputDeviceUID) { _, uid in
                     settings.inputDeviceName = inputDevices.device(forUID: uid)?.name ?? ""
                 }
                 micDetail
                 Spacer(minLength: 0)
             }
-            Text("Pick the mic Slive listens on — hold and continuous alike. Only that mic is opened: choose the built-in mic and your Bluetooth headphones stay in music quality while you dictate. System default follows whatever macOS is using.")
-                .sliveCaption()
             if settings.echoCancellation {
-                Text("Echo cancellation is on, so Slive follows the system default route (the canceller needs the speaker signal) — the pick above is ignored until it's off.")
-                    .font(SliveTheme.captionFont)
-                    .foregroundStyle(Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                // The canceller needs the speaker signal, so it follows the
+                // system default route and the pick above is ignored.
+                HStack(spacing: 8) {
+                    Text("Echo cancellation uses the system mic.")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(Color.orange)
+                    Button("Turn off") { settings.echoCancellation = false }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+            } else if activeMic?.transport == "Bluetooth" {
+                // Opening a Bluetooth mic drops headphones to call quality.
+                Text("Pick Built-in to keep music quality.")
+                    .sliveCaption()
             }
+            CardDivider()
+            ToggleRow(title: "Echo cancellation", isOn: $settings.echoCancellation)
+                .help("Removes speaker sound from the mic. May pop on start.")
         }
     }
 
+    /// The mic recording will actually open (the pick, or the default).
+    private var activeMic: InputDevices.Device? {
+        chosenMic ?? (settings.inputDeviceUID.isEmpty ? inputDevices.systemDefault : nil)
+    }
+
     @ViewBuilder private var micDetail: some View {
-        if let mic = chosenMic ?? (settings.inputDeviceUID.isEmpty ? inputDevices.systemDefault : nil) {
+        if let mic = activeMic {
             Text(mic.detail)
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(.white.opacity(0.55))
         } else if !settings.inputDeviceUID.isEmpty {
-            Text("Not connected — using \(inputDevices.systemDefault?.name ?? "the system default") until it's back")
+            Text("Not connected · using \(inputDevices.systemDefault?.name ?? "system default")")
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(Color.orange)
         }
@@ -450,59 +398,39 @@ struct SettingsView: View {
 
     private var behaviorCard: some View {
         SettingsCard("BEHAVIOR") {
-            ToggleRow(title: "Auto-insert into text fields", isOn: $settings.autoInsert)
+            ToggleRow(title: "Type at cursor", isOn: $settings.autoInsert)
+                .help("Off: shows text to copy")
             CardDivider()
             SliderRow(
                 title: "Hold delay",
                 value: $settings.holdActivationDelay,
                 range: 0...0.6, step: 0.05,
-                valueText: String(format: "%.2fs", settings.holdActivationDelay),
-                caption: "The beat between press and record. Short feels instant; long shrugs off accidental taps."
+                valueText: String(format: "%.2fs", settings.holdActivationDelay)
             )
+            .help("Wait before recording starts")
             CardDivider()
             SliderRow(
                 title: "Overlay opacity",
                 value: $settings.overlayOpacity,
                 range: 0.35...1.0, step: 0.01,
-                valueText: "\(Int(settings.overlayOpacity * 100))%",
-                caption: "Ghost the pill into your wallpaper, or keep it bold — readable either way."
+                valueText: "\(Int(settings.overlayOpacity * 100))%"
             )
             CardDivider()
             ToggleRow(title: "Launch at login", isOn: $settings.launchAtLogin)
+            CardDivider()
+            ToggleRow(title: "Developer logs", isOn: $settings.verboseLogging)
+                .help("Console.app · filter Slive")
         }
     }
 
-    // MARK: Advanced
+    // MARK: Speed
 
     /// The latency ⇄ resources tradeoff, as a clickable graph: pick the
-    /// latency you want, see exactly what it spends.
+    /// latency you want, see what it spends.
     private var speedCard: some View {
-        SettingsCard("SPEED ⇄ RESOURCES") {
-            Text("Click the latency you want. Lower latency pins more in RAM and holds the machine at speed — the receipt below says exactly what your pick spends.")
-                .sliveCaption()
+        SettingsCard("SPEED") {
             LatencyGraphView(settings: settings)
-        }
-    }
-
-    private var advancedCard: some View {
-        SettingsCard("ADVANCED") {
-            ToggleRow(
-                title: "Echo cancellation (open mic)",
-                caption: "Walls off whatever your speakers are blasting so it never leaks into the mic — the same canceller FaceTime uses. It can pop for a moment when recording starts on some Macs, so leave it off unless speaker bleed is wrecking your transcripts.",
-                isOn: $settings.echoCancellation
-            )
-            CardDivider()
-            ToggleRow(
-                title: "Save dictation recordings (training data)",
-                caption: "Slive keeps every take — the audio and what it heard — so it can learn how you really talk. Stays on your Mac, always.",
-                isOn: $settings.captureEdits
-            )
-            CardDivider()
-            ToggleRow(
-                title: "Verbose logging (developer)",
-                caption: "Spills diagnostic logs when you're chasing a bug — read them in Console.app or `log stream`, filtered by “Slive.”. Leave it off otherwise.",
-                isOn: $settings.verboseLogging
-            )
+                .help("Lower latency keeps more in memory")
         }
     }
 
@@ -515,28 +443,24 @@ struct SettingsView: View {
     }
 
     private var permissionsCard: some View {
-        SettingsCard("PERMISSIONS", trailing: {
-            Text("\(grantedCount) of 3 granted")
-                .font(SliveTheme.font(11, .semibold))
-                .foregroundStyle(grantedCount == 3 ? Color.green : Color.orange)
-        }) {
+        SettingsCard("") {
             permissionRow(
                 title: "Input Monitoring",
-                detail: "So Slive can feel your push-to-talk key",
+                detail: "Detects your shortcut",
                 granted: permissions.inputMonitoringGranted || settings.hotkeyActive,
                 action: { permissions.requestInputMonitoring() }
             )
             CardDivider()
             permissionRow(
                 title: "Microphone",
-                detail: "So Slive can hear your voice",
+                detail: "Hears you",
                 granted: permissions.micGranted,
                 action: { permissions.requestMic() }
             )
             CardDivider()
             permissionRow(
                 title: "Accessibility",
-                detail: "So Slive can type into whatever field you're in",
+                detail: "Types into apps",
                 granted: permissions.accessibilityGranted,
                 action: { permissions.requestAccessibility() }
             )
@@ -545,7 +469,7 @@ struct SettingsView: View {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .foregroundStyle(SliveTheme.accent)
                     .font(.system(size: 14))
-                Text("macOS only notices permission changes after a relaunch.")
+                Text("Applies after relaunch.")
                     .sliveCaption()
                 Spacer()
                 Button("Relaunch", action: onRelaunch)
@@ -583,53 +507,43 @@ struct SettingsView: View {
     // MARK: - Dictation · Vocabulary
 
     private var vocabularyCard: some View {
-        SettingsCard("VOCABULARY") {
+        SettingsCard("") {
             if layout == .wide {
                 HStack(alignment: .top, spacing: 16) {
-                    VocabularyField(
-                        label: "Custom words",
-                        hint: "Names, jargon, acronyms — comma or new line between them. Slive spells them exactly as you type them.",
-                        height: 96, text: $settings.hotwords)
-                    VocabularyField(
-                        label: "Context prompt",
-                        hint: "A line of context to nudge transcription your way. Totally optional.",
-                        height: 96, text: $settings.contextPrompt)
+                    VocabularyField(label: "Custom words", hint: "One per line",
+                                    height: 96, text: $settings.hotwords)
+                    VocabularyField(label: "Context prompt", hint: "Context for labels",
+                                    height: 96, text: $settings.contextPrompt)
                 }
             } else {
-                VocabularyField(
-                    label: "Custom words",
-                    hint: "Names, jargon, acronyms — comma or new line between them. Slive spells them exactly as you type them.",
-                    height: 96, text: $settings.hotwords)
-                VocabularyField(
-                    label: "Context prompt",
-                    hint: "A line of context to nudge transcription your way. Totally optional.",
-                    height: 72, text: $settings.contextPrompt)
+                VocabularyField(label: "Custom words", hint: "One per line",
+                                height: 96, text: $settings.hotwords)
+                VocabularyField(label: "Context prompt", hint: "Context for labels",
+                                height: 72, text: $settings.contextPrompt)
             }
         }
     }
 
     // MARK: - Dictation · History
 
+    private var historyPage: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            paceLine
+            historyCard
+        }
+    }
+
     private var historyCard: some View {
-        SettingsCard("HISTORY", trailing: {
-            HStack(spacing: 12) {
-                if !history.entries.isEmpty {
-                    Text("\(history.entries.count) · last 24 h")
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(SliveTheme.textTertiary)
-                    Button("Clear history") { history.clearAll() }
-                        .buttonStyle(.plain)
-                        .font(SliveTheme.font(11, .semibold))
-                        .foregroundStyle(SliveTheme.accent)
-                }
+        SettingsCard("", trailing: {
+            if !history.entries.isEmpty {
+                Button("Clear") { confirmClearHistory = true }
+                    .buttonStyle(.plain)
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(SliveTheme.accent)
             }
         }) {
             if history.entries.isEmpty {
-                EmptyState(
-                    icon: "waveform",
-                    title: "No transcripts yet",
-                    caption: "Everything you've said in the last 24 hours waits here."
-                )
+                EmptyState(icon: "waveform", title: "Nothing in the last 24 hours.")
             } else {
                 // The page scrolls — no inner scroll view.
                 VStack(spacing: 0) {
@@ -641,6 +555,11 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+        .confirmationDialog("Clear \(history.entries.count) transcript\(history.entries.count == 1 ? "" : "s")?",
+                            isPresented: $confirmClearHistory) {
+            Button("Clear", role: .destructive) { history.clearAll() }
+            Button("Cancel", role: .cancel) {}
         }
     }
 }
@@ -735,8 +654,8 @@ private struct VocabularyField: View {
                 )
                 .focused($focused)
                 .animation(.easeOut(duration: 0.15), value: focused)
-            Text(hint).sliveCaption()
         }
+        .help(hint)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -759,13 +678,9 @@ private struct HistoryRow: View {
                     .lineLimit(3)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Text(relativeAge(entry.createdAt))
-                        .foregroundStyle(SliveTheme.textSecondary)
-                    Text("· expires in \(expiresInHours(entry.expiresAt))")
-                        .foregroundStyle(SliveTheme.textTertiary)
-                }
-                .font(SliveTheme.font(10))
+                Text(relativeAge(entry.createdAt))
+                    .foregroundStyle(SliveTheme.textSecondary)
+                    .font(SliveTheme.font(10))
             }
             Spacer(minLength: 6)
             HStack(spacing: 10) {
@@ -809,11 +724,4 @@ private struct HistoryRow: View {
         return "\(Int(seconds / 86_400))d ago"
     }
 
-    /// Hours remaining until expiry, rounded up, floored at 1h.
-    private func expiresInHours(_ expiry: Date) -> String {
-        let remaining = expiry.timeIntervalSince(Date())
-        if remaining <= 0 { return "soon" }
-        let hours = Int(ceil(remaining / 3600))
-        return "\(max(1, hours))h"
-    }
 }

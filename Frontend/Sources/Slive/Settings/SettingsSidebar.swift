@@ -104,7 +104,7 @@ struct SettingsSidebar: View {
             }
 
             Spacer(minLength: 12)
-            Text("Slive lives in your menu bar · v0.1")
+            Text("v0.1")
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(SliveTheme.textTertiary)
                 .frame(maxWidth: .infinity)

@@ -63,10 +63,10 @@ enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
     /// Where to find the API key hint / signup.
     var keyHint: String {
         switch self {
-        case .anthropic: return "sk-ant-…  (console.anthropic.com)"
-        case .openai: return "sk-…  (platform.openai.com)"
-        case .gemini: return "AIza…  (aistudio.google.com)"
-        case .openaiCompatible: return "provider key for your base URL"
+        case .anthropic: return "sk-ant-…"
+        case .openai: return "sk-…"
+        case .gemini: return "AIza…"
+        case .openaiCompatible: return "API key"
         case .local, .whisper: return ""
         }
     }

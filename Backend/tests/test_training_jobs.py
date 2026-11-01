@@ -15,7 +15,7 @@ from flowy.training.models import get_training_model, training_models_payload
 def test_fine_tuned_model_name_is_picker_and_filesystem_safe() -> None:
     now = datetime(2026, 7, 18, 14, 5, 9, tzinfo=timezone.utc)
 
-    assert jobs.fine_tuned_model_name(now) == "balenced-ft-20260718-140509"
+    assert jobs.fine_tuned_model_name(now) == "balanced-ft-20260718-140509"
 
 
 def test_catalog_covers_pinned_whisperkit_variants_and_optimized_alias() -> None:
@@ -180,11 +180,11 @@ def test_job_runs_pipeline_and_records_installed_model(tmp_path: Path, monkeypat
             "eligible_audio_minutes": 7.5,
         },
     )
-    installed = tmp_path / "Models" / "Custom" / "balenced-ft-test"
+    installed = tmp_path / "Models" / "Custom" / "balanced-ft-test"
     finished = __import__("threading").Event()
 
     def runner(config: PipelineConfig, progress):
-        assert config.model_name.startswith("balenced-ft-")
+        assert config.model_name.startswith("balanced-ft-")
         run_dir = tmp_path / "runs" / config.model_name
         run_dir.mkdir(parents=True)
         progress(stage="training", message="Training", value=0.5, run_dir=str(run_dir))

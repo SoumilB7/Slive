@@ -419,7 +419,7 @@ enum SelfTest {
                 && !TranscriptionModel.acceptableCalibrationClip(45),
               "calibration only trusts one-window, dictation-sized clips (3–30s)")
 
-        // The machine checker behind the "maximum reach" tag.
+        // The machine checker behind the graph caption.
         check(MachineProfile.ramGB > 0, "machine checker reads physical RAM")
         check(MachineProfile.summary.contains("GB") && !MachineProfile.chip.isEmpty,
               "machine summary names the chip and RAM")

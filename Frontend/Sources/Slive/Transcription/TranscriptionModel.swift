@@ -787,8 +787,7 @@ final class TranscriptionModel: ObservableObject {
     private func noteLoaded(_ model: String, seconds: Double) {
         guard releasedByFeather.remove(model) != nil, seconds > Self.slowReloadSeconds else { return }
         featherKeepsModelsReason = String(
-            format: "Feather is keeping models loaded: reloading one took %.0fs on this Mac — macOS "
-                + "discarded its compiled copy (it does that when disk space runs low).", seconds)
+            format: "Reloads are slow here (%.0f s), so models stay loaded.", seconds)
         Log.event(String(format: "Feather: reload of %@ took %.0fs — no longer releasing models", model, seconds))
     }
 
@@ -928,7 +927,7 @@ final class TranscriptionModel: ObservableObject {
         } catch is TimeoutError {
             loadingModels.remove(model)
             Log.event("model load TIMED OUT: \(model)")
-            statuses[model] = .failed("Timed out preparing this model. Try Re-download, or a smaller model.")
+            statuses[model] = .failed("Timed out. Re-download or pick smaller.")
             Log.stt("TIMEOUT loading \(model)")
         } catch {
             loadingModels.remove(model)
@@ -942,7 +941,7 @@ final class TranscriptionModel: ObservableObject {
     /// basket, then the same ready/serving/warm-up path as Whisper.
     private func loadParakeet(_ p: ParakeetModel, id model: String) async {
         loadingModels.insert(model)
-        statuses[model] = .preparing("Compiling for the Neural Engine")
+        statuses[model] = .preparing("Compiling")
         let t0 = Date()
         do {
             let engine = try await withTimeout(seconds: 600) { [basket] in
@@ -959,7 +958,7 @@ final class TranscriptionModel: ObservableObject {
                dictationsWaiting[model, default: 0] == 0 { warmUp(model) }
         } catch is TimeoutError {
             loadingModels.remove(model)
-            statuses[model] = .failed("Timed out preparing this model. Try Re-download.")
+            statuses[model] = .failed("Timed out. Re-download.")
         } catch {
             loadingModels.remove(model)
             statuses[model] = .failed(error.localizedDescription)

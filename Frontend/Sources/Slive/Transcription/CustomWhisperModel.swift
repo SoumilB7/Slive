@@ -48,9 +48,13 @@ enum CustomWhisperModelRegistry {
 
     static func load() -> [CustomWhisperModel] {
         guard let folders = try? FileManager.default.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: nil) else { return [] }
-        return folders.compactMap { model(in: $0) }
-            .sorted { $0.id > $1.id } // timestamped balenced-ft ids: newest first
+            at: root, includingPropertiesForKeys: [.creationDateKey]) else { return [] }
+        // Newest first by folder date: ids carry user names and an older
+        // misspelled prefix, so they don't sort by age.
+        func created(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+        }
+        return folders.sorted { created($0) > created($1) }.compactMap { model(in: $0) }
     }
 
     /// The installed model in `folder` (its manifest.json), or nil when the

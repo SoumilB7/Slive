@@ -111,14 +111,40 @@ struct SettingsCard<Trailing: View, Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SliveSectionTitle(title)
-                Spacer(minLength: 0)
-                trailing
+            // A card that is a page's only card drops its title (the page
+            // title says it); the row stays if it carries a trailing control.
+            if !title.isEmpty || Trailing.self != EmptyView.self {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if !title.isEmpty { SliveSectionTitle(title) }
+                    Spacer(minLength: 0)
+                    trailing
+                }
             }
             content
         }
         .sliveCard()
+    }
+}
+
+/// The row at the top of every page: its name, and one quiet status.
+struct PageTitle: View {
+    let title: String
+    var status: String?
+    var statusColor: Color = SliveTheme.textSecondary
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(SliveTheme.font(17, .bold))
+                .foregroundStyle(SliveTheme.textPrimary)
+            Spacer(minLength: 0)
+            if let status {
+                Text(status)
+                    .font(SliveTheme.font(11, .semibold))
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+            }
+        }
     }
 }
 
@@ -231,7 +257,7 @@ struct WhisperStatusDot: View {
             StatusDot(color: .green, size: 7).help("\(settings.whisperModel) ready")
         case .downloading, .preparing:
             StatusDot(color: SliveTheme.accent, pulses: true, size: 7)
-                .help("Preparing \(settings.whisperModel)…")
+                .help("\(settings.whisperModel) loading")
         case .failed:
             StatusDot(color: .orange, size: 7).help("Model failed to load")
         case .notDownloaded:
@@ -263,8 +289,7 @@ struct KeyStatusPill: View {
 }
 
 /// The Local provider's runtime knobs — quantization and the memory ceiling.
-/// Shown beside the model picker wherever a local model is chosen (Assistant,
-/// Ground Truth); one shared setting pair, so the two surfaces stay in sync.
+/// Shown in the Models page's Local row.
 struct LocalInferenceControls: View {
     @ObservedObject var settings: Settings
 
@@ -307,48 +332,13 @@ struct OnDevicePill: View {
     }
 }
 
-// MARK: - Steps ribbon
-
-/// One-line "how it works" strip inside a shortcut card: icon + word steps
-/// separated by chevrons. Replaces the old three-card explainer.
-struct StepsRibbon: View {
-    struct Step {
-        let icon: String
-        let text: String
-        /// Emphasized (accent) portion, e.g. the live hotkey label.
-        var key: String?
-    }
-    let steps: [Step]
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                if index > 0 {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.25))
-                }
-                Image(systemName: step.icon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(SliveTheme.accent)
-                (Text(step.text)
-                    + Text(step.key.map { " \($0)" } ?? "")
-                        .foregroundColor(SliveTheme.accent))
-                    .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .lineLimit(1)
-            }
-        }
-    }
-}
-
 // MARK: - Empty state
 
 /// Centered quiet empty-state block for lists with nothing in them yet.
 struct EmptyState: View {
     let icon: String
     let title: String
-    let caption: String
+    var caption: String?
 
     var body: some View {
         VStack(spacing: 8) {
@@ -358,9 +348,11 @@ struct EmptyState: View {
             Text(title)
                 .font(SliveTheme.rowFont)
                 .foregroundStyle(SliveTheme.textPrimary)
-            Text(caption)
-                .sliveCaption()
-                .multilineTextAlignment(.center)
+            if let caption {
+                Text(caption)
+                    .sliveCaption()
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
@@ -377,10 +369,10 @@ struct WhisperModelChoice: Identifiable {
     var id: String { model }
 
     static let all: [WhisperModelChoice] = [
-        .init(label: "Whisper – tiny.en", model: "tiny.en", detail: "Fastest Whisper, basic accuracy · ~75 MB"),
-        .init(label: "Whisper – base.en", model: "base.en", detail: "Quick, good accuracy · ~150 MB"),
-        .init(label: "Whisper – large-v3 turbo", model: "large-v3-v20240930_626MB", detail: "Recommended — accurate & fast · ~600 MB"),
-        .init(label: "Whisper – large-v3", model: "large-v3", detail: "Highest accuracy, a touch slower · ~1.5 GB"),
+        .init(label: "Whisper – tiny.en", model: "tiny.en", detail: "Fastest · 75 MB"),
+        .init(label: "Whisper – base.en", model: "base.en", detail: "Fast · 150 MB"),
+        .init(label: "Whisper – large-v3 turbo", model: "large-v3-v20240930_626MB", detail: "Recommended · 600 MB"),
+        .init(label: "Whisper – large-v3", model: "large-v3", detail: "Most accurate · 1.5 GB"),
     ]
 
     /// The Parakeet engine (FluidAudio, Neural Engine). Offered only where a
@@ -388,9 +380,9 @@ struct WhisperModelChoice: Identifiable {
     /// live streaming) and the ground-truth judge stay Whisper-only.
     static let parakeet: [WhisperModelChoice] = [
         .init(label: ParakeetModel.ultra.displayName, model: ParakeetModel.ultra.rawValue,
-              detail: "~20× faster than Whisper, a little weaker on names · ~610 MB"),
+              detail: "Fastest · weaker on names · 610 MB"),
         .init(label: ParakeetModel.v2.displayName, model: ParakeetModel.v2.rawValue,
-              detail: "English only · ~450 MB"),
+              detail: "English · 450 MB"),
     ]
 }
 
@@ -425,7 +417,7 @@ struct ModelStatusRow: View {
                     .fixedSize()
             case .preparing(let stage):
                 ProgressView().controlSize(.small)
-                Text("Preparing… (\(stage))").foregroundStyle(.white.opacity(0.7))
+                Text("\(stage)…").foregroundStyle(.white.opacity(0.7))
             case .failed(let e):
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(e).foregroundStyle(.orange.opacity(0.9)).lineLimit(2)
@@ -444,13 +436,14 @@ struct ModelStatusRow: View {
 struct ModelPickerCard: View {
     let title: String
     @Binding var model: String
-    let footnote: String
+    /// Tooltip on the picker.
+    var help: String = ""
     var includeParakeet = false
 
     var body: some View {
         SettingsCard(title) {
             ModelPickerRows(model: $model, includeParakeet: includeParakeet)
-            Text(footnote).sliveCaption()
+                .help(help)
         }
     }
 }

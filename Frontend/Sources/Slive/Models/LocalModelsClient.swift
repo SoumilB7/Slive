@@ -50,7 +50,7 @@ struct LocalModelsClient {
         let (data, _) = try await post("/local/download", body: body, timeout: 30)
         let resp = try JSONDecoder().decode(Resp.self, from: data)
         if let error = resp.error { throw ServerError(message: error) }
-        guard let id = resp.job_id else { throw ServerError(message: "No job id returned.") }
+        guard let id = resp.job_id else { throw ServerError(message: "Download didn't start.") }
         return id
     }
 

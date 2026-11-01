@@ -34,7 +34,7 @@ struct AssistantSettingsView: View {
     private var startingBanner: some View {
         HStack(spacing: 9) {
             ProgressView().controlSize(.small)
-            Text("Backend starting…")
+            Text("Starting…")
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(SliveTheme.textSecondary)
             Spacer(minLength: 0)
@@ -51,24 +51,11 @@ struct AssistantSettingsView: View {
 
     private var shortcutCard: some View {
         SettingsCard("SHORTCUT") {
-            HotkeyRecorderView(
-                target: .assistant,
-                title: "Assistant shortcut",
-                subtitle: "Hold it, ask out loud — the answer floats back in a little box."
-            )
-            CardDivider()
+            HotkeyRecorderView(target: .assistant, title: "Hold to ask")
             if settings.assistantHotkey == nil {
-                Label("Assistant mode stays asleep until you record a shortcut.",
-                      systemImage: "exclamationmark.triangle.fill")
+                Label("No shortcut set.", systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.9))
-            } else {
-                StepsRibbon(steps: [
-                    .init(icon: "hand.point.up.left.fill", text: "Hold",
-                          key: settings.assistantHotkey?.label),
-                    .init(icon: "waveform", text: "Speak"),
-                    .init(icon: "sparkles", text: "Answer appears"),
-                ])
             }
         }
     }
@@ -87,8 +74,7 @@ struct AssistantSettingsView: View {
                 }
             }
             .buttonStyle(.plain)
-            .help(settings.assistantConfig.provider.isLocal
-                  ? "Models are downloaded in Models" : "Keys are managed in Models")
+            .help(settings.assistantConfig.provider.isLocal ? "Manage models" : "Manage keys")
         }) {
             HStack(spacing: 10) {
                 Text("Provider")
@@ -119,9 +105,7 @@ struct AssistantSettingsView: View {
                         Button {
                             Task { await providers.fetchModels(for: settings.assistantConfig.provider) }
                         } label: {
-                            Label(settings.assistantConfig.provider.isLocal
-                                  ? "Refresh downloaded" : "Fetch live models",
-                                  systemImage: "arrow.clockwise")
+                            Label("Refresh", systemImage: "arrow.clockwise")
                                 .font(SliveTheme.font(11, .semibold))
                         }
                         .buttonStyle(.plain)
@@ -135,25 +119,26 @@ struct AssistantSettingsView: View {
                         .foregroundStyle(.orange.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true)
                 } else if settings.assistantConfig.provider.isLocal {
-                    Text(currentFetched.isEmpty
-                         ? "All on this Mac — no key, no cloud. Grab a model in Models, then hit refresh."
-                         : "\(currentFetched.count) downloaded — it loads on your first ask (give it a minute).")
-                        .sliveCaption()
-                } else {
-                    Text(currentFetched.isEmpty
-                         ? "Fetch the live list to pick from, or just type any model id."
-                         : "\(currentFetched.count) live models on tap — refetch whenever they change.")
-                        .sliveCaption()
+                    if currentFetched.isEmpty {
+                        HStack(spacing: 8) {
+                            Text("No local models.").sliveCaption()
+                            Button("Get models →", action: openModels)
+                                .buttonStyle(.plain)
+                                .font(SliveTheme.font(11, .semibold))
+                                .foregroundStyle(SliveTheme.accent)
+                        }
+                    } else {
+                        Text("\(currentFetched.count) downloaded").sliveCaption()
+                    }
+                } else if !currentFetched.isEmpty {
+                    Text("\(currentFetched.count) models").sliveCaption()
                 }
             }
 
             CardDivider()
 
-            ToggleRow(
-                title: "Attach a full-screen screenshot",
-                caption: "Slips a screenshot in with every question — macOS asks for Screen Recording just once.",
-                isOn: $settings.assistantConfig.attachScreenshot
-            )
+            ToggleRow(title: "Include screenshot", isOn: $settings.assistantConfig.attachScreenshot)
+                .help("Sends your screen with each question")
         }
     }
 
@@ -161,7 +146,7 @@ struct AssistantSettingsView: View {
     /// will be sent, with a trailing menu chip listing fetched models.
     private var modelField: some View {
         TextField(settings.assistantConfig.provider.isLocal
-                  ? "pick a downloaded model" : settings.assistantConfig.provider.defaultModel,
+                  ? "Model" : settings.assistantConfig.provider.defaultModel,
                   text: selectedModel)
             .textFieldStyle(.roundedBorder)
             .font(.system(size: 12, design: .monospaced))
@@ -258,7 +243,7 @@ struct AssistantSettingsView: View {
                 // blowing the card open.
                 ScrollView {
                     Text(PromptLibrary.contents(named: settings.assistantConfig.promptName)
-                         ?? "(couldn't read this file)")
+                         ?? "Can't read file")
                         .font(SliveTheme.font(12, .regular))
                         .foregroundStyle(.white.opacity(0.7))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -266,14 +251,12 @@ struct AssistantSettingsView: View {
                 }
                 .frame(maxHeight: 180)
                 .innerWell()
-                Text("Tweak the file — it takes effect on your next ask.")
-                    .sliveCaption()
             }
 
             // What actually went in on the LAST ask — the resolved system
             // prompt as sent, not the file preview above (they can differ if
             // the file changed since, or a Custom prompt is live).
-            if let sent = promptLog.lastSystemPrompt {
+            if settings.verboseLogging, let sent = promptLog.lastSystemPrompt {
                 CardDivider()
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) { sentPromptExpanded.toggle() }

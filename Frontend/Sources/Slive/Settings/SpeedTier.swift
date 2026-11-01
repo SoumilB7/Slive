@@ -114,31 +114,18 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
     /// click states facts you can plan around, not adjectives.
     func costLines(modelResidentGB: Double, batteryWh: Double?) -> [(String, String)] {
         let ram = pinsModels
-            ? String(format: "≈%.1f GB always resident", modelResidentGB)
-            : "freed when macOS runs low on memory"
-        let clocks = holdsLatencyAssertion
-            ? "held at full speed while dictating"
-            : "system-managed (may downclock on battery)"
-        let prime = primesOnHold
-            ? "ANE pre-warmed on every cold hold"
-            : (warmsAfterLoad ? "warmed once per model load" : "no warmups")
-        let idle = pinsModels
-            ? "instant, always"
-            : "reloads on the next hold after memory pressure frees it"
-
-        let pace = Int(Self.assumedDictationsPerHour)
+            ? String(format: "%.1f GB", modelResidentGB)
+            : "Freed when idle"
+        // Battery at the assumed dictation pace (see assumedDictationsPerHour).
         let battery: String
         if drainMWhPerHour == 0 {
-            battery = "≈0 above baseline — nothing stays hot"
+            battery = "None"
         } else if let pct = drainPercentPerHour(batteryWh: batteryWh) {
-            battery = String(format: "≈%.2f%%/hr of this battery (≈%.0f mWh) at %d dictations/hr",
-                             pct, drainMWhPerHour, pace)
+            battery = String(format: "%.2f %%/hr", pct)
         } else {
-            battery = String(format: "≈%.0f mWh/hr at %d dictations/hr (wall power — no battery found)",
-                             drainMWhPerHour, pace)
+            battery = String(format: "%.0f mWh/hr", drainMWhPerHour)
         }
-        return [("Model RAM", ram), ("Battery", battery), ("CPU clocks", clocks),
-                ("Neural Engine", prime), ("After idle", idle)]
+        return [("Memory", ram), ("Battery", battery)]
     }
 
     // MARK: - Model-derived inputs

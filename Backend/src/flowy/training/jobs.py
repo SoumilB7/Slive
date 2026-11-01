@@ -54,7 +54,7 @@ def required_disk_gb(family: str, clips: int) -> float:
 def fine_tuned_model_name(now: datetime | None = None) -> str:
     """Filesystem- and picker-safe name required for trained Balanced models."""
 
-    return (now or datetime.now().astimezone()).strftime("balenced-ft-%Y%m%d-%H%M%S")
+    return (now or datetime.now().astimezone()).strftime("balanced-ft-%Y%m%d-%H%M%S")
 
 
 def sanitize_model_name(raw: str) -> str:

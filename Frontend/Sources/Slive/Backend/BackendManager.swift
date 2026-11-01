@@ -133,13 +133,13 @@ final class BackendManager: ObservableObject {
     private func spawn() {
         guard let dir = backendDir else {
             NSLog("Slive: backend dir not configured — cannot start the server.")
-            lastSpawnError = "The Slive Server isn't configured in this build — rebuild with build.sh."
+            lastSpawnError = "Server missing from this build."
             return
         }
         let python = dir.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             NSLog("Slive: venv python missing at \(python.path) — run `uv sync` in Backend/.")
-            lastSpawnError = "The Slive Server's Python environment is missing — run `uv sync` in Backend/."
+            lastSpawnError = "Server setup missing (run `uv sync` in Backend)."
             return
         }
 
@@ -194,7 +194,7 @@ final class BackendManager: ObservableObject {
             NSLog("Slive: backend starting (pid \(p.processIdentifier)) as \(launch.exe.lastPathComponent).")
         } catch {
             NSLog("Slive: failed to start backend — \(error)")
-            lastSpawnError = "The Slive Server couldn't start: \(error.localizedDescription)"
+            lastSpawnError = "Server didn't start: \(error.localizedDescription)"
         }
     }
 

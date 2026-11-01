@@ -14,7 +14,7 @@ struct ContinuousSettingsView: View {
             ModelPickerCard(
                 title: "MODEL",
                 model: $settings.continuousModel,
-                footnote: "Parakeet re-reads everything you've said many times a second, so it keeps up best; on Whisper, tiny.en or base.en stay quickest. Match your Dictation model and only one copy sits in memory.",
+                help: "Parakeet keeps up best. Same as Dictation = less memory",
                 includeParakeet: true
             )
             typingSpeedCard
@@ -26,41 +26,24 @@ struct ContinuousSettingsView: View {
     // MARK: - Shortcut
 
     private var shortcutCard: some View {
-        SettingsCard("CONTINUOUS KEYS") {
-            HStack(alignment: .top, spacing: 12) {
-                HotkeyRecorderView(
-                    target: .stream,
-                    title: "Hold to stream",
-                    subtitle: "Hold it and your words type themselves into the field, live, as you talk.")
+        SettingsCard("KEYS") {
+            HStack(alignment: .center, spacing: 12) {
+                HotkeyRecorderView(target: .stream, title: "Hold to type")
                     .opacity(settings.streamHoldOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.streamHoldOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
-                    .help("Turn the hold bind on or off")
             }
             CardDivider()
-            HStack(alignment: .top, spacing: 12) {
-                HotkeyRecorderView(
-                    target: .streamToggle,
-                    title: "Tap to toggle",
-                    subtitle: "Tap once to start live typing, tap again to finish.")
+            HStack(alignment: .center, spacing: 12) {
+                HotkeyRecorderView(target: .streamToggle, title: "Tap to toggle")
                     .opacity(settings.streamToggleOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.streamToggleOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
-                    .help("Turn the toggle bind on or off")
             }
-            CardDivider()
             if settings.streamHotkey == nil && settings.streamToggleHotkey == nil {
-                Label("Continuous dictation stays asleep until you record a shortcut.",
-                      systemImage: "exclamationmark.triangle.fill")
+                Label("No shortcut set.", systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.9))
-            } else {
-                StepsRibbon(steps: [
-                    .init(icon: "hand.point.up.left.fill", text: "Hold or tap",
-                          key: (settings.streamHotkey ?? settings.streamToggleHotkey)?.label),
-                    .init(icon: "waveform", text: "Speak"),
-                    .init(icon: "text.cursor", text: "Types live"),
-                ])
             }
         }
     }
@@ -77,8 +60,6 @@ struct ContinuousSettingsView: View {
         }) {
             Slider(value: $settings.continuousTypeCPS, in: 12...120, step: 1)
                 .tint(SliveTheme.accent)
-            Text("How fast words land as you talk. Instant drops each phrase at once; lower is a smooth typewriter roll.")
-                .sliveCaption()
         }
     }
 
