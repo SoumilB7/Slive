@@ -425,9 +425,11 @@ final class Settings: ObservableObject {
         echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
         inputDeviceUID = UserDefaults.standard.string(forKey: Keys.inputDeviceUID) ?? ""
         inputDeviceName = UserDefaults.standard.string(forKey: Keys.inputDeviceName) ?? ""
+        // New installs default to OpenAI: the 3-way check (the default
+        // recipe) runs on an OpenAI key, so one key covers both recipes.
         groundTruthProvider = UserDefaults.standard.string(forKey: Keys.groundTruthProvider)
-            .flatMap(AssistantProvider.init(rawValue:)) ?? .gemini
-        var gtModel = UserDefaults.standard.string(forKey: Keys.groundTruthModel) ?? "gemini-2.5-flash"
+            .flatMap(AssistantProvider.init(rawValue:)) ?? .openai
+        var gtModel = UserDefaults.standard.string(forKey: Keys.groundTruthModel) ?? "gpt-audio"
         // Migrate the retired OpenAI audio id we once defaulted to — accounts
         // without the legacy preview 404 on it; gpt-audio is the GA successor.
         if gtModel == "gpt-4o-audio-preview" { gtModel = "gpt-audio" }

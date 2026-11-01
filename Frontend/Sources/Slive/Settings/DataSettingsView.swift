@@ -429,7 +429,7 @@ struct DataSettingsView: View {
         let hasKey = providers.hasKey(.openai)
         if !hasKey {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("Needs an OpenAI key.")
+                Text("Add an OpenAI key to try the 3-way check.")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.95))
                 Spacer(minLength: 0)

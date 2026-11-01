@@ -439,11 +439,47 @@ struct ModelPickerCard: View {
     /// Tooltip on the picker.
     var help: String = ""
     var includeParakeet = false
+    /// Offer the large-v3 turbo download while on tiny/base (dictation card).
+    var suggestBalanced = false
 
     var body: some View {
         SettingsCard(title) {
             ModelPickerRows(model: $model, includeParakeet: includeParakeet)
                 .help(help)
+            if suggestBalanced { BalancedSuggestion(model: $model) }
+        }
+    }
+}
+
+/// A fresh install dictates on the bundled tiny.en, which is far less
+/// accurate. Point straight at large-v3 turbo ("Balanced") — not the
+/// in-between sizes. Tapping Download selects it; tiny keeps serving until
+/// it's ready.
+struct BalancedSuggestion: View {
+    @ObservedObject private var transcription = TranscriptionModel.shared
+    @Binding var model: String
+    static let balanced = "large-v3-v20240930_626MB"
+
+    var body: some View {
+        if ["tiny.en", "base.en"].contains(model), !transcription.isDownloaded(Self.balanced) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(SliveTheme.accent)
+                Text("Whisper – large-v3 turbo is far more accurate · 600 MB")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textSecondary)
+                Spacer(minLength: 0)
+                Button("Download") {
+                    model = Self.balanced
+                    Task { await transcription.download(Self.balanced) }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(SliveTheme.accent)
+                .fixedSize()
+            }
+            .padding(10)
+            .innerWell()
         }
     }
 }

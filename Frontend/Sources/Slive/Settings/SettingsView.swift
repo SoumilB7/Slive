@@ -309,7 +309,8 @@ struct SettingsView: View {
             title: "MODEL",
             model: $settings.whisperModel,
             help: "Runs on this Mac",
-            includeParakeet: true
+            includeParakeet: true,
+            suggestBalanced: true
         )
     }
 
