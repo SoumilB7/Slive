@@ -1,0 +1,32 @@
+/// The one list of self-test suites, in run order. Adding a suite = one file
+/// in `Suites/` (exposing `static let suite`) plus one line here.
+@MainActor
+enum AllSuites {
+    static let all: [TestSuite] = [
+        HotkeyModelTests.suite,
+        HotkeyMatchingTests.suite,
+        ProviderTests.suite,
+        SpeedTierTests.suite,
+        VocabHintTests.suite,
+        BackendErrorTests.suite,
+        VocabularyCorrectorTests.suite,
+        DictationQueueTests.suite,
+        DefaultShortcutTests.suite,
+        SilenceTrimTests.suite,
+        TextHygieneTests.suite,
+        PasteFocusTests.suite,
+        PacingTests.suite,
+        WpmTests.suite,
+        OverlayMetricsTests.suite,
+        SampleFormatTests.suite,
+        LabelRunTests.suite,
+        StitchTests.suite,
+        ParakeetWindowTests.suite,
+        LiveTypingTests.suite,
+        TranscriptDiffTests.suite,
+        DictationRoutingTests.suite,
+        CaptureAndHistoryTests.suite,
+        ModelLifecycleTests.suite,
+        ProblemReportTests.suite,
+    ]
+}
