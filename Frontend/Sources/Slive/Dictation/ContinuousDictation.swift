@@ -15,12 +15,15 @@ import Foundation
 /// backspacing is bounded to the last few forming words.
 @MainActor
 final class ContinuousDictation {
-    private let whisper = TranscriptionModel.shared
+    private let whisper: DictationSpeech
+    /// Where the live text goes (`TypingSink`: at the caret).
+    private let sink: LiveTextSink
+    private let settings: Settings
     /// Paces the actual keystrokes so text appears smoothly, character by
     /// character, rather than in per-pass bursts. A fresh one per session: a
     /// new hold during the previous session's final pass must not have its
     /// typist reset — or finished — by that stale stop.
-    private var typist = LiveTypist()
+    private var typist: LiveTypist
 
     /// What a finished session produced. `typed` is false when no editable field
     /// was focused, so nothing could stream into it — the caller should surface
@@ -57,6 +60,13 @@ final class ContinuousDictation {
 
     var isActive: Bool { active }
 
+    init(speech: DictationSpeech, sink: LiveTextSink = TypingSink(), settings: Settings = .shared) {
+        whisper = speech
+        self.sink = sink
+        self.settings = settings
+        typist = LiveTypist(sink: sink)
+    }
+
     /// Start streaming with `model` (the serving continuous model — the
     /// user's pick, or the previous one while the pick is still preparing)
     /// at the configured typing speed. Returns false if `model` isn't loaded
@@ -71,25 +81,25 @@ final class ContinuousDictation {
         self.session = session
         active = true
         lastTranscript = ""
-        pipeline = .live(vocabulary: Settings.shared.hotwords)
-        let canType = PasteEngine.canStreamType()
-        typing = canType
-        Log.live("start — model=\(model) cps=\(Int(Settings.shared.continuousTypeCPS)) canType=\(canType)")
-        typist = LiveTypist()
-        typist.start(allowed: canType, cps: Settings.shared.continuousTypeCPS,
-                     target: canType ? PasteEngine.currentStreamTarget() : nil)
-        let ok = whisper.startLiveDictation(model: model) { [weak self] transcript, energy in
+        pipeline = .live(vocabulary: settings.hotwords)
+        // Claims the focused field: may we type at all, and which field.
+        let handle = sink.beginStream()
+        typing = handle.allowed
+        Log.live("start — model=\(model) cps=\(Int(settings.continuousTypeCPS)) canType=\(handle.allowed)")
+        typist = LiveTypist(sink: sink)
+        typist.start(handle, cps: settings.continuousTypeCPS)
+        let ok = whisper.startLiveDictation(model: model, onUpdate: { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
             let text = self.pipeline.finish(transcript)
             self.lastTranscript = text
             // Just move the goal — the typist eases the field toward it smoothly.
             self.typist.setTarget(text)
-        } onFailure: { [weak self] in
+        }, onFailure: { [weak self] in
             guard let self, self.active, self.session == session else { return }
             self.cancel()
             self.onFailure?()
-        }
+        })
         if !ok { active = false; typist.cancel() }
         return ok
     }

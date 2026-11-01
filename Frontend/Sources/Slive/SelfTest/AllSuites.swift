@@ -41,5 +41,6 @@ enum AllSuites {
         ModelResidencyTests.suite,
         SessionCoordinatorTests.suite,
         ChatSessionTests.suite,
+        DictationModeTests.suite,
     ]
 }

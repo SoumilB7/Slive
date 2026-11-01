@@ -18,14 +18,8 @@ enum PasteEngine {
     static let descendantWalkBudget = FocusProbe.descendantWalkBudget
 
     // Typing
-    static func canStreamType() -> Bool { TypingSink.canStream() }
-    static func currentStreamTarget() -> StreamTarget? { TypingSink.currentTarget() }
     static func isStillStreamTarget(_ target: StreamTarget) -> Bool {
         TypingSink().stillOurs(LiveStreamHandle(allowed: true, target: target))
-    }
-    static func insertIfPossible(_ text: String,
-                                 onDeliveryFailure: @escaping () -> Void = {}) -> Bool {
-        TypingSink().deliver(text, onDeliveryFailure: onDeliveryFailure)
     }
     static func postUnicode(_ s: String) { SyntheticTyper.postUnicode(s) }
     static func postBackspace() { SyntheticTyper.postBackspace() }
@@ -35,7 +29,6 @@ enum PasteEngine {
 
     // Policy
     static func secureInputBlocksTyping() -> Bool { TypingPolicy.secureInputBlocksTyping() }
-    static var typingBlockedNote: String? { TypingPolicy.typingBlockedNote }
     static func typingBlockedNote(accessibility: Bool, secureInput: Bool) -> String? {
         TypingPolicy.typingBlockedNote(accessibility: accessibility, secureInput: secureInput)
     }

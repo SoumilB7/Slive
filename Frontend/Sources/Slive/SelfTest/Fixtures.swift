@@ -12,7 +12,7 @@ enum Fixtures {
         let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
         e.type = .flagsChanged
         e.flags = CGEventFlags(rawValue: flags)
-        if marker { e.setIntegerValueField(.eventSourceUserData, value: PasteEngine.syntheticMarker) }
+        if marker { e.setIntegerValueField(.eventSourceUserData, value: SyntheticTyper.syntheticMarker) }
         return e
     }
 

@@ -69,12 +69,6 @@ final class LiveTypist: @unchecked Sendable {
         let focusLost: Bool
     }
 
-    /// Begin a session. `allowed` (from `PasteEngine.canStreamType()`, checked on
-    /// the main thread) gates whether we actually post keystrokes this session.
-    func start(allowed: Bool, cps: Double, target: StreamTarget? = nil) {
-        start(LiveStreamHandle(allowed: allowed, target: target), cps: cps)
-    }
-
     /// Begin a session on a destination the sink claimed (`sink.beginStream()`,
     /// on the main thread). `handle.allowed` gates whether we post keystrokes.
     func start(_ handle: LiveStreamHandle, cps: Double) {

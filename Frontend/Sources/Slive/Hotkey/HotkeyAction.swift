@@ -7,7 +7,8 @@ import Foundation
 /// Adding an action:
 /// 1. a case here and its `ActionSpec` (below) — keys, defaults, cue,
 ///    queue rule, required capability;
-/// 2. its handler in the AppDelegate's start/stop/toggle flow.
+/// 2. its `DictationMode` type in Modes/ and one `register` line in
+///    `ModeRegistry.standard` (see Modes/DictationMode.swift).
 /// Settings storage, the monitor's match tables, the recorder view and the
 /// activation cue all follow from the spec. (Named Settings accessors like
 /// `streamHotkey` exist only for older call sites; new code uses

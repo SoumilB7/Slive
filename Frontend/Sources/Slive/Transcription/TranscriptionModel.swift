@@ -5,8 +5,8 @@ import WhisperKit
 /// The app's one door to on-device speech: whether models are downloaded,
 /// downloading them with progress, loading them, keeping them resident, and
 /// transcribing — dictation and live streaming. The UI reads its per-model
-/// `statuses`; AppDelegate, ContinuousDictation, the Settings views, LabelRun
-/// and the benches call it.
+/// `statuses`; the dictation modes, ContinuousDictation, ModelResidency, the
+/// Settings views, LabelRun and the benches call it.
 ///
 /// A facade over the parts that do the work, each testable on its own:
 /// - `ModelCatalog` / `SpeechEngine` — which engine a persisted id belongs to
@@ -87,7 +87,7 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
     func isReady(_ model: String) -> Bool { residency.isResident(model) }
 
     /// Called on the main actor whenever a model finishes loading (download +
-    /// Neural Engine compile + warm-up done) — AppDelegate switches over to it.
+    /// Neural Engine compile + warm-up done) — ModelResidency switches over to it.
     var onModelReady: ((String) -> Void)? {
         get { loads.onModelReady }
         set { loads.onModelReady = newValue }
@@ -95,7 +95,7 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
 
     /// The model a dictation actually runs on: the one the user picked once
     /// it's resident; until then the previous pick (kept resident by
-    /// AppDelegate for exactly this). Switching models never blocks
+    /// ModelResidency for exactly this). Switching models never blocks
     /// dictating — the download and the ~1–2 min Neural Engine compile
     /// happen behind the model already in use.
     func servingModel(wanted: String, fallback: String?) -> String {
@@ -357,7 +357,7 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
         }
         if isDownloaded(model) {
             // Mark it preparing NOW, not when the Task gets to run: callers
-            // (AppDelegate's dictation-first ordering) read the status right
+            // (ModelResidency's dictation-first ordering) read the status right
             // after this returns.
             statuses[model] = .preparing("Loading")
             Task { await loads.loadShared(model) }

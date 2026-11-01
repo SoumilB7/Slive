@@ -2,25 +2,19 @@ import AppKit
 import AVFoundation
 import Combine
 
-/// App lifecycle, the wiring between the long-lived objects (built by
-/// `AppContainer`), and the three flows a gesture starts — one file each:
-/// AppDelegate+Dictation (hold-to-talk), +Live (streaming), +Assistant.
-/// The gesture rules live in `SessionCoordinator`, the overlay's in
-/// `OverlayPresenter`, model residency in `ModelResidency`. Members the
-/// flow files share are internal; the rest stay private here.
+/// App lifecycle and the wiring between the long-lived objects (built by
+/// `AppContainer`). What a gesture does lives in the modes (`ModeRegistry`:
+/// Dictate, Assist, Stream), the gesture rules in `SessionCoordinator`, the
+/// overlay's in `OverlayPresenter`, model residency in `ModelResidency`.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let app = AppContainer()
 
     var presenter: OverlayPresenter { app.presenter }
-    var recorder: AudioRecorder { app.recorder }
     var whisper: TranscriptionModel { app.whisper }
     var backend: BackendManager { app.backend }
-    var continuous: ContinuousDictation { app.continuous }
     var session: SessionCoordinator { app.session }
     var residency: ModelResidency { app.residency }
-    /// Released dictations, typed in the order they were spoken (see DictationQueue).
-    var waitingDictations: DictationQueue { app.dictations }
 
     private var activityToken: NSObjectProtocol?   // holds off App Nap
     /// Keeps the problem reporter's settings summary current and tells it
@@ -28,13 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var reporterWatches: Set<AnyCancellable> = []
     /// The `Settings.changes` subscription (lives as long as the app).
     private var settingsChanges: AnyCancellable?
-    var transcribeTask: Task<Void, Never>? // in-flight assistant request (dictations queue)
-    /// Latency-critical activity assertion held for hold→type, so P-cores stay
-    /// clocked and App Nap/timer coalescing can't stretch the pipeline.
-    var dictationActivity: NSObjectProtocol?
-    var chat = ChatSession()
-
-    static let micFailedMessage = "Couldn't start the microphone."
 
     // MARK: - Lifecycle
 
@@ -122,9 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         FailureReporter.shared.goodbye()   // a normal quit, not a crash
         app.hotkey.stop()
-        transcribeTask?.cancel(); transcribeTask = nil
-        waitingDictations.cancelAll()
-        continuous.cancel()  // stop any live stream
+        app.work.cancelRequest()
+        app.dictations.cancelAll()
+        app.modes.dismissAll()  // stop any live stream
         TrainingStore.shared.flushPendingWrites()   // labels from a run in flight
         whisper.shutdown()   // release the WhisperKit (Neural Engine) model
         backend.stop()       // shut the Python server down with the app
@@ -189,17 +176,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let model = app.overlayModel
         // Voice recency for the release tail lives in the recorder itself
         // (per-callback, no dispatch staleness) — levels here are visuals only.
-        recorder.onLevels = { [weak model] bands, rms in
+        app.recorder.onLevels = { [weak model] bands, rms in
             model?.pushLevels(bands, rms: rms)
         }
-        session.handler = self
+        // Begin / end look the action up; Continue, the stream's energy and
+        // its failure are wired by the modes themselves.
+        session.handler = app.modes
         let session = self.session
         app.hotkey.onStart = { [weak session] action in session?.keyDown(action) }
         app.hotkey.onStop = { [weak session] _ in session?.keyUp() }
         model.onDismiss = { [weak self] in self?.dismissOverlay() }
-        model.onContinue = { [weak self] in self?.continueChat() }
-        continuous.onEnergy = { [weak model] energy in model?.pushStreamEnergy(energy) }
-        continuous.onFailure = { [weak self] in self?.liveStreamFailed() }
         app.hotkey.onToggle = { [weak session] action in session?.toggleTapped(action) }
     }
 
@@ -207,72 +193,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Released dictations are NOT cancelled: their words were spoken, so they
     /// still type (or surface a copy box) when decoded.
     private func dismissOverlay() {
-        transcribeTask?.cancel(); transcribeTask = nil
-        waitingDictations.cancelAssists()
+        app.work.cancelRequest()
         session.endToggle()
-        continuous.cancel()
-        chat.end()
+        app.modes.dismissAll()   // queued assistant requests, the chat, a live stream
         presenter.dismiss()
     }
-
-
-    // MARK: - Shared by the flows
-
-    private func endDictationActivity() {
-        if let activity = dictationActivity {
-            ProcessInfo.processInfo.endActivity(activity)
-            dictationActivity = nil
-        }
-    }
-
-    /// End the assertion once nothing still needs it: no hold live (a newer
-    /// one is running on it) and no dictation decoding or waiting its turn.
-    /// Every release's task ends through here — the cancelled / empty /
-    /// no-audio exits used to leave it held.
-    func endDictationActivityIfIdle() {
-        guard waitingDictations.isEmpty, !session.isSessionLive else { return }
-        endDictationActivity()
-    }
-
-    /// Mic permission, checked before every session: denied or never asked,
-    /// macOS records pure zeros and the hold just faded away. False (after
-    /// saying what to do) when nothing could be heard.
-    func micAllowed() -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            return true
-        case .notDetermined:
-            // The system prompt takes this hold either way; ask now.
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            presenter.notice("Allow the microphone, then try again.")
-        default:
-            presenter.notice("Microphone blocked. Open Settings.")
-        }
-        Log.event("mic not authorized — hold aborted")
-        return false
-    }
-}
-
-// MARK: - Gestures → flows
-
-extension AppDelegate: SessionHandler {
-    func beginSession(_ action: HotkeyAction) {
-        if action == .stream { beginLiveDictation() } else { beginRecording() }
-    }
-
-    func endSession(_ action: HotkeyAction) {
-        if action == .stream { stopLiveDictation() } else { stopRecording() }
-    }
-
-    func abortSession() {
-        transcribeTask?.cancel(); transcribeTask = nil
-        if continuous.isActive { continuous.cancel() }
-        if recorder.isRecording {
-            let capture = recorder.stop()
-            if let url = capture.url { try? FileManager.default.removeItem(at: url) }
-        }
-        endDictationActivityIfIdle()   // the discarded fragment held it
-    }
-
-    var isCapturing: Bool { recorder.isRecording || continuous.isActive }
 }

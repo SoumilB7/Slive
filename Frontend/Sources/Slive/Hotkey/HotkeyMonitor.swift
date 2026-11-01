@@ -268,8 +268,8 @@ final class HotkeyMonitor {
         // Ignore the synthetic keystrokes Slive itself types (live dictation types
         // into the field WHILE the stream key is held). They carry no modifiers, so
         // without this the modifier-only matcher would read them as "key released"
-        // and stop the stream. PasteEngine tags them with this marker.
-        if event.getIntegerValueField(.eventSourceUserData) == PasteEngine.syntheticMarker {
+        // and stop the stream. SyntheticTyper tags them with this marker.
+        if event.getIntegerValueField(.eventSourceUserData) == SyntheticTyper.syntheticMarker {
             return false
         }
         markActive()
