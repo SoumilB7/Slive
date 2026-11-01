@@ -931,6 +931,11 @@ final class TranscriptionModel: ObservableObject {
                         Log.stt("stage \(model): \(new.description)")
                     }
                 }
+                // Test hook: a Neural Engine load that never finishes (the
+                // Nov 5 fresh-install hang) — the CPU copy must still serve.
+                if ProcessInfo.processInfo.environment["SLIVE_TEST_ANE_HANG"] == "1" {
+                    try await Task.sleep(nanoseconds: 3_600_000_000_000)
+                }
                 try await kit.loadModels()                        // Neural Engine load — the work
                 return kit
             }
