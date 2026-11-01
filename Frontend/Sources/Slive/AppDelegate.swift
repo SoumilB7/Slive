@@ -145,6 +145,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
         refreshModelResidency()
 
+        // The pill: a click starts and stops like the toggle shortcut; ■ types,
+        // ✕ discards (Settings → General → Behavior).
+        model.onPillClick = { [weak self] in
+            self?.pillClicked(Settings.shared.pillClickAction == "stream" ? .stream : .dictate)
+        }
+        model.onPillStop = { [weak self] in
+            guard let self, let action = self.toggleActive else { return }
+            self.toggleTapped(action)
+        }
+        model.onPillCancel = { [weak self] in self?.cancelClickSession() }
+        model.onPillMenu = { [weak self] item in
+            guard let self else { return }
+            switch item {
+            case .startContinuous: self.pillClicked(.stream)
+            case .hideForAnHour: self.overlay.hideForAnHour()
+            case .settings: self.openSettings()
+            }
+        }
+        Settings.shared.onPillChange = { [weak self] in self?.overlay.applyPillSettings() }
+        overlay.rest()
+
         hotkey.start()   // self-arms once Input Monitoring is granted
 
         // Pre-build the feedback tones off-main so the FIRST hold doesn't pay
@@ -322,6 +343,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         currentAction = action
         // No hold-activation delay for a tap: the tap IS deliberate.
         if action == .stream { beginLiveDictation() } else { beginRecording() }
+    }
+
+    /// A click on the resting pill: start as a tap of the toggle shortcut
+    /// would, with ■ / ✕ on the pill (the shortcut or a hold also stop it).
+    private func pillClicked(_ action: HotkeyAction) {
+        guard !isSessionLive, toggleActive == nil else { return }
+        toggleTapped(action)
+        guard isSessionLive else { toggleActive = nil; return }   // e.g. continuous model not ready
+        model.clickSession = true
+        overlay.setInteractive(true)
+    }
+
+    /// ✕ on a clicked-on session: throw the recording away, type nothing.
+    private func cancelClickSession() {
+        toggleActive = nil
+        abortFalseStartSession()
+        model.finishListening()
+        overlay.hide()
     }
 
     /// True when the live session began moments ago — i.e. it is the first

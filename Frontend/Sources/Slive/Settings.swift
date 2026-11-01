@@ -24,6 +24,10 @@ final class Settings: ObservableObject {
         static let contextPrompt = "contextPrompt"
         static let holdActivationDelay = "holdActivationDelay"
         static let overlayOpacity = "overlayOpacity"
+        static let pillOnScreen = "pillOnScreen"
+        static let pillPlacement = "pillPlacement"
+        static let pillClickAction = "pillClickAction"
+        static let pillHiddenInShares = "pillHiddenInShares"
         static let whisperModel = "whisperModel"
         static let continuousModel = "continuousModel"
         static let continuousTypeCPS = "continuousTypeCPS"
@@ -54,6 +58,8 @@ final class Settings: ObservableObject {
     /// Fired when the transcription model changes, so the backend can restart
     /// with the new FLOWY_WHISPER_MODEL.
     var onWhisperModelChange: ((String) -> Void)?
+    /// Any of the pill settings changed (the overlay re-applies them).
+    var onPillChange: (() -> Void)?
     /// Fired when the continuous (live streaming) dictation model changes, so the
     /// registry can preload the new one and evict any model no longer referenced.
     var onContinuousModelChange: ((String) -> Void)?
@@ -192,6 +198,24 @@ final class Settings: ObservableObject {
     /// fully opaque so answers remain readable. Default 0.92.
     @Published var overlayOpacity: Double {
         didSet { UserDefaults.standard.set(overlayOpacity, forKey: Keys.overlayOpacity) }
+    }
+
+    /// The pill stays on screen between dictations (a thin capsule on the
+    /// right) and a click starts dictation — no keyboard needed.
+    @Published var pillOnScreen: Bool {
+        didSet { UserDefaults.standard.set(pillOnScreen, forKey: Keys.pillOnScreen); onPillChange?() }
+    }
+    /// Where on the right edge: "middle" or "lower".
+    @Published var pillPlacement: String {
+        didSet { UserDefaults.standard.set(pillPlacement, forKey: Keys.pillPlacement); onPillChange?() }
+    }
+    /// What a click on the resting pill starts: "dictate" or "stream" (continuous).
+    @Published var pillClickAction: String {
+        didSet { UserDefaults.standard.set(pillClickAction, forKey: Keys.pillClickAction) }
+    }
+    /// Keep the overlay out of screen sharing and screenshots.
+    @Published var pillHiddenInShares: Bool {
+        didSet { UserDefaults.standard.set(pillHiddenInShares, forKey: Keys.pillHiddenInShares); onPillChange?() }
     }
 
     /// WhisperKit model the on-device (Neural Engine) transcriber loads. Changing
@@ -415,6 +439,12 @@ final class Settings: ObservableObject {
         // Continuous dictation defaults to the same bundled tiny model (so both
         // sections share one instance until the user changes either one).
         continuousModel = UserDefaults.standard.string(forKey: Keys.continuousModel) ?? "parakeet-ultra"
+        pillOnScreen = UserDefaults.standard.object(forKey: Keys.pillOnScreen) == nil
+            ? true : UserDefaults.standard.bool(forKey: Keys.pillOnScreen)
+        pillPlacement = UserDefaults.standard.string(forKey: Keys.pillPlacement) ?? "middle"
+        pillClickAction = UserDefaults.standard.string(forKey: Keys.pillClickAction) ?? "dictate"
+        pillHiddenInShares = UserDefaults.standard.object(forKey: Keys.pillHiddenInShares) == nil
+            ? true : UserDefaults.standard.bool(forKey: Keys.pillHiddenInShares)
         if UserDefaults.standard.object(forKey: Keys.continuousTypeCPS) == nil {
             continuousTypeCPS = 80
         } else {
