@@ -174,7 +174,7 @@ struct DataSettingsView: View {
 
     /// What a row's redo/Get would use, for help text.
     private var labelerName: String {
-        isConsensus ? "3-way consensus" : settings.groundTruthModel
+        isConsensus ? "Slive Custom" : settings.groundTruthModel
     }
 
     /// Models fetched live for the current ground-truth provider — the FULL

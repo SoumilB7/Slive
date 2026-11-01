@@ -29,7 +29,7 @@ enum GroundTruthSource: Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case .consensus: return "Best — 3-way consensus"
+        case .consensus: return "Slive Custom — 3-way check"
         case .provider(let p): return p.displayName
         }
     }
@@ -369,7 +369,7 @@ final class LabelRun: ObservableObject {
         agreementMean = agreementSum / Double(agreementCount)
         if result.agreement < LabelScope.lowAgreement { lowAgreementCount += 1 }
         lastPrompt = result.prompt
-        lastPromptMeta = "Consensus · \(result.chosen)"
+        lastPromptMeta = "Slive Custom · \(result.chosen)"
     }
 
     // MARK: - Single provider (the picker's other recipes)

@@ -1018,7 +1018,7 @@ enum SelfTest {
         check(AssistantProvider(rawValue: "consensus") == nil
                 && !GroundTruthSource.singleProviders.contains(.anthropic),
               "consensus is a ground-truth recipe, never an assistant provider")
-        equal(GroundTruthSource.consensus.title, "Best — 3-way consensus", "recipe picker title")
+        equal(GroundTruthSource.consensus.title, "Slive Custom — 3-way check", "recipe picker title")
 
         // Response mapping: key problems stop the run, a bad clip doesn't.
         let fatal = #"{"error":"OpenAI rejected the key (401)","fatal":"auth"}"#
