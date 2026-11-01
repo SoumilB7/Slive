@@ -2,6 +2,16 @@
 
 Notable changes to Slive, newest first. Versions follow [semver](https://semver.org).
 
+## [0.2.4] - 2026-11-01
+
+### Changed
+- Slive installs by command now, building on your Mac: permissions stay granted across updates, and the speech model is ready before Slive first opens. Run the same command to update. There are no more DMG downloads.
+
+### Fixed
+- A model whose Neural Engine compile is slow or never finishes no longer leaves Slive on "Loading…": after 20 seconds it dictates on a CPU copy, which the Neural Engine copy replaces when ready.
+- Shortcuts keep working when Accessibility isn't granted; before, setting a shortcut like ⌥ . switched every shortcut off, fn included.
+- Turning on continuous mode downloads its model, and continuous mode works on the loaded model meanwhile.
+
 ## [0.2.3] - 2026-11-01
 
 ### Added
@@ -65,6 +75,7 @@ First release, in two downloads: **Slive** (on-device speech only) and **Slive F
 - Fine-tune Whisper on your own voice, on this Mac.
 - The bundled server starts only when needed, stops after 10 idle minutes, and only answers Slive.
 
+[0.2.4]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.4
 [0.2.3]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.3
 [0.2.2]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.2
 [0.2.1]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.1
