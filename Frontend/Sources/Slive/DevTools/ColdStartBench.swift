@@ -36,7 +36,6 @@ enum ColdStartBench {
         }
         let warmup = value("--warmup") ?? "silence"
         let count = Int(value("--clips") ?? "") ?? 6
-        TranscriptionModel.benchSuppressesAutoWarm = true
         let whisper = TranscriptionModel.shared
 
         // Real clips, 3–15s, oldest-first so the "speech" warm-up clip is
@@ -49,7 +48,7 @@ enum ColdStartBench {
         let clips = Array(pool.prefix(count))
         print(String(format: "bundle: %@ · warm-up: %@", Bundle.main.bundleIdentifier ?? "(none)", warmup))
 
-        guard await whisper.ensureLoaded(model) else { print("✗ model not available"); return 2 }
+        guard await whisper.ensureLoaded(model, options: .noWarmUp) else { print("✗ model not available"); return 2 }
         print(String(format: "model ready %.2fs after launch", Date().timeIntervalSince(t0)))
 
         var t = Date()
@@ -110,9 +109,8 @@ enum ColdStartBench {
     /// clip's file-path decode (the app's fallback path) concurrently, then
     /// the clip alone, and compares.
     static func concurrentWithWarmUp(model: String, rounds: Int) async -> Int32 {
-        TranscriptionModel.benchSuppressesAutoWarm = true
         let whisper = TranscriptionModel.shared
-        guard await whisper.ensureLoaded(model) else { print("✗ model"); return 2 }
+        guard await whisper.ensureLoaded(model, options: .noWarmUp) else { print("✗ model"); return 2 }
         guard let warm = TranscriptionModel.warmUpAudio ?? EngineCheck.readInt16WAV(URL(fileURLWithPath: "Resources/WarmUp.wav")),
               let clip = BenchSupport.loadClips(minSeconds: 3, limit: 12).first else { print("✗ audio"); return 2 }
         let alone = await whisper.transcribe(clip.url, model: model) ?? "(nil)"

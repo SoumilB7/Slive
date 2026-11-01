@@ -13,8 +13,8 @@ import WhisperKit
 /// problem (see `MicCapture`): it would open a Bluetooth headset's mic even
 /// when the built-in mic was picked. So this wrapper conforms to
 /// `AudioProcessing`, forwards everything to the pipeline's real
-/// `AudioProcessor` — buffer, energy, purge all live there, and the rest of
-/// `TranscriptionModel` keeps reading `pipe.audioProcessor` — but on
+/// `AudioProcessor` — buffer, energy, purge all live there, and
+/// `WhisperRecognizer` keeps reading `kit.audioProcessor` — but on
 /// start/resume runs `MicCapture` on the chosen device and feeds the
 /// canonical 16 kHz buffers into `AudioProcessor.processBuffer`, exactly as
 /// WhisperKit's own tap would. WhisperKit's engine never starts.
@@ -25,14 +25,16 @@ import WhisperKit
 final class DeviceRoutedAudioProcessor: AudioProcessing {
     private var base: any AudioProcessing
     private let concrete: AudioProcessor?
+    /// The capture unit, the user's pick and the system default.
+    private let mic: LiveMicInput
     /// The mic to use when the caller doesn't name one; nil = system default.
-    let preferredDevice: DeviceID?
-    private let capture = MicCapture.shared
+    var preferredDevice: DeviceID? { mic.preferred }
+    private var capture: MicCapture { mic.capture }
 
-    init(base: any AudioProcessing, preferredDevice: DeviceID?) {
+    init(base: any AudioProcessing, mic: LiveMicInput) {
         self.base = base
         self.concrete = base as? AudioProcessor
-        self.preferredDevice = preferredDevice
+        self.mic = mic
     }
 
     /// An explicit request always wins; otherwise the user's pick.
@@ -94,7 +96,7 @@ final class DeviceRoutedAudioProcessor: AudioProcessing {
 
     private func open(inputDeviceID: DeviceID?, callback: (([Float]) -> Void)?, resume: Bool) throws {
         let picked = Self.effectiveDevice(requested: inputDeviceID, preferred: preferredDevice)
-        if let concrete, let device = picked ?? InputDevices.defaultInputID() {
+        if let concrete, let device = picked ?? mic.systemDefault() {
             try capture.start(device: device) { buffer in
                 guard let channel = buffer.floatChannelData else { return }
                 let samples = Array(UnsafeBufferPointer(start: channel[0], count: Int(buffer.frameLength)))

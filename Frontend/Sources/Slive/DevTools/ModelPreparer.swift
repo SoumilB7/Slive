@@ -19,7 +19,6 @@ enum ModelPreparer {
     static let budgetSeconds: UInt64 = 300
 
     static func run() async -> Int32 {
-        TranscriptionModel.benchSuppressesAutoWarm = true   // warm below, awaited
         let settings = Settings.shared
         var models = [settings.whisperModel]
         if ((settings.streamHoldOn && settings.streamHotkey != nil)
@@ -35,7 +34,7 @@ enum ModelPreparer {
             }
             let t0 = Date()
             let loaded = (try? await withTimeout(seconds: budgetSeconds, what: "prepare") {
-                await whisper.ensureLoaded(model)
+                await whisper.ensureLoaded(model, options: .noWarmUp)   // warm below, awaited
             }) ?? false
             guard loaded || whisper.isReady(model) else {
                 failed = true

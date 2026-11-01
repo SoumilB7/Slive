@@ -25,7 +25,7 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
         }
     }
 
-    // MARK: - The actual knobs (read by AppDelegate / TranscriptionModel)
+    // MARK: - The actual knobs (read by AppDelegate / ResidencyPolicy)
 
     /// Model pipes stay resident in RAM/ANE forever (vs idle release).
     var pinsModels: Bool { self != .feather }

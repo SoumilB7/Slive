@@ -58,6 +58,7 @@ final class ParakeetLiveSession {
     static let pollNanoseconds: UInt64 = 60_000_000
 
     private let engine: ParakeetEngine
+    private let capture: MicCapture
     private let onUpdate: @MainActor (String) -> Void
     let buffer = SampleBuffer()
     private var loop: Task<Void, Never>?
@@ -67,15 +68,17 @@ final class ParakeetLiveSession {
     private(set) var confirmedText = ""
     private var cut: Double = 0
 
-    init(engine: ParakeetEngine, onUpdate: @escaping @MainActor (String) -> Void) {
+    init(engine: ParakeetEngine, capture: MicCapture = .shared,
+         onUpdate: @escaping @MainActor (String) -> Void) {
         self.engine = engine
+        self.capture = capture
         self.onUpdate = onUpdate
     }
 
     /// Start capturing on `device` and transcribing.
     func start(device: AudioDeviceID) throws {
         let buffer = self.buffer
-        try MicCapture.shared.start(device: device) { chunk in
+        try capture.start(device: device) { chunk in
             guard let channel = chunk.floatChannelData else { return }
             buffer.append(UnsafeBufferPointer(start: channel[0], count: Int(chunk.frameLength)))
         }
@@ -119,7 +122,7 @@ final class ParakeetLiveSession {
     func stop() {
         loop?.cancel()
         loop = nil
-        if usesMic { MicCapture.shared.stop() }
+        if usesMic { capture.stop() }
     }
 
     private func startLoop() {
@@ -141,7 +144,7 @@ final class ParakeetLiveSession {
                 let end = Double(audio.count) / 16_000
                 let cutSample = min(audio.count, Int(self.cut * 16_000))
                 let newSeconds = end - self.cut
-                guard TranscriptionModel.trimSilence(Array(audio[cutSample...])).count > 16_000 / 3 else {
+                guard SilenceTrim.trim(Array(audio[cutSample...])).count > 16_000 / 3 else {
                     // Silence after settled words: keep the window short.
                     if newSeconds > 2 { self.cut = end - 0.5; previous = [] }
                     continue
@@ -178,4 +181,38 @@ final class ParakeetLiveSession {
             }
         }
     }
+}
+
+/// `ParakeetLiveSession` as the app's `LiveSession`: opens the chosen mic and
+/// hands cleaned text on.
+@MainActor
+final class ParakeetLiveStream: LiveSession {
+    private let session: ParakeetLiveSession
+    private let context: LiveContext
+
+    init(engine: ParakeetEngine, context: LiveContext) {
+        self.context = context
+        let onUpdate = context.onUpdate
+        session = ParakeetLiveSession(engine: engine, capture: context.mic.capture) { text in
+            onUpdate(StreamHygiene.clean(text), 0)
+        }
+    }
+
+    func start() -> Bool {
+        guard let device = context.mic.device else { return false }
+        do { try session.start(device: device) } catch {
+            Log.live("parakeet START failed — \(error.localizedDescription)")
+            return false
+        }
+        // No stitched release: the final pass decodes all (~0.2s).
+        Log.live("START model=\(context.model) (parakeet live loop)")
+        return true
+    }
+
+    func stop() {
+        session.stop()
+        Log.live("parakeet stream stopped after \(session.passes) passes")
+    }
+
+    func snapshot() -> [Float] { session.snapshot() }
 }

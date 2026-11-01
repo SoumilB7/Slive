@@ -56,7 +56,6 @@ enum EngineCheck {
     /// download (clone from FluidAudio's shared cache when present) → load
     /// (compile) → .ready → transcribeSamples.
     static func provision(_ models: [ParakeetModel], audio: [Float]) async -> Int32 {
-        TranscriptionModel.benchSuppressesAutoWarm = true
         let registry = TranscriptionModel.shared
         for model in models {
             let id = model.rawValue
@@ -64,7 +63,7 @@ enum EngineCheck {
             print("\(model.displayName) → \(dir.path)")
             print("  downloaded before: \(registry.isDownloaded(id))")
             var t = Date()
-            await registry.download(id)
+            await registry.download(id, options: .noWarmUp)
             print(String(format: "  download+load: %.1fs · status: %@ · downloaded now: %@",
                          Date().timeIntervalSince(t), "\(registry.status(for: id))",
                          registry.isDownloaded(id) ? "yes" : "no"))

@@ -5,8 +5,8 @@ import Foundation
 ///
 /// Engine only: it loads a model and turns 16 kHz mono Float32 samples into
 /// text. Where models are stored, download progress and UI status belong to
-/// the provisioning layer; residency, warm-up and the dictation path to
-/// TranscriptionModel.
+/// `ParakeetStorage` / `ModelDownloads`; residency, warm-up and the dictation
+/// path to `ResidencyManager` and `SpeechDecoder` (via `ParakeetRecognizer`).
 final class ParakeetEngine: @unchecked Sendable {
     let model: ParakeetModel
     private let manager: AsrManager
