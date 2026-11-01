@@ -25,7 +25,7 @@ struct PillPositionPicker: View {
                          Color(red: 0.24, green: 0.22, blue: 0.28)],
                 startPoint: .topLeading, endPoint: .bottomTrailing)
             VStack(spacing: 0) {
-                Rectangle().fill(.white.opacity(0.06)).frame(height: 5)
+                Rectangle().fill(SliveTheme.wellFill).frame(height: 5)
                 Spacer(minLength: 0)
             }
             spot(right: false)
@@ -37,10 +37,10 @@ struct PillPositionPicker: View {
                 .padding(.top, 5)
         }
         .frame(width: Self.height * aspect, height: Self.height)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: SliveTheme.miniRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(.white.opacity(0.14), lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: SliveTheme.miniRadius, style: .continuous)
+                .strokeBorder(SliveTheme.frameStroke, lineWidth: 0.8)
         )
         .help("Click to move · text stays at the bottom")
     }
@@ -79,8 +79,8 @@ private struct SpotButton: View {
                         .shadow(color: .black.opacity(0.35), radius: 3, y: 2)
                 } else {
                     Capsule()
-                        .fill(.white.opacity(hovering ? 0.06 : 0))
-                        .overlay(Capsule().strokeBorder(.white.opacity(hovering ? 0.5 : 0.2), lineWidth: 1))
+                        .fill(hovering ? SliveTheme.wellFill : Color.clear)
+                        .overlay(Capsule().strokeBorder(hovering ? SliveTheme.textSecondary : SliveTheme.pillRing, lineWidth: 1))
                 }
             }
             .frame(width: pill.width, height: pill.height)
@@ -100,7 +100,7 @@ private struct SpotButton: View {
         let layout = upright ? AnyLayout(VStackLayout(spacing: 1.2)) : AnyLayout(HStackLayout(spacing: 1.2))
         return layout {
             ForEach(lengths.indices, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 0.6)
+                RoundedRectangle(cornerRadius: SliveTheme.tickRadius)
                     .fill(.white)
                     .frame(width: upright ? lengths[i] : 1.2, height: upright ? 1.2 : lengths[i])
             }

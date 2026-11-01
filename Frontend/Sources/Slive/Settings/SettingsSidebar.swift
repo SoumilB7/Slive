@@ -120,9 +120,9 @@ struct SettingsSidebar: View {
         .padding(.vertical, 14)
         .frame(width: SliveTheme.sidebarWidth)
         .frame(maxHeight: .infinity)
-        .background(.white.opacity(0.03))
+        .background(SliveTheme.sidebarFill)
         .overlay(alignment: .trailing) {
-            Rectangle().fill(.white.opacity(0.06)).frame(width: 1)
+            Rectangle().fill(SliveTheme.wellFill).frame(width: 1)
         }
     }
 
@@ -140,25 +140,25 @@ private struct SidebarRow: View {
         Button(action: action) {
             HStack(spacing: 9) {
                 Image(systemName: page.icon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(SliveTheme.accent.opacity(0.85))
+                    .font(SliveTheme.controlFont)
+                    .foregroundStyle(SliveTheme.accentText)
                     .frame(width: 16)
                 Text(page.rawValue)
                     .font(SliveTheme.rowFont)
-                    .foregroundStyle(selected ? Color.white.opacity(0.95) : SliveTheme.textMid)
+                    .foregroundStyle(selected ? SliveTheme.textStrong : SliveTheme.textMid)
                 Spacer(minLength: 0)
                 if attention {
-                    Circle().fill(Color.orange).frame(width: 6, height: 6)
+                    Circle().fill(SliveTheme.warn).frame(width: 6, height: 6)
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? SliveTheme.accent.opacity(0.18)
-                          : hovering ? Color.white.opacity(0.06) : .clear)
+                RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
+                    .fill(selected ? SliveTheme.accentSelection
+                          : hovering ? SliveTheme.wellFill : .clear)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

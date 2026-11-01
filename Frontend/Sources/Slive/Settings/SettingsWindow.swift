@@ -30,7 +30,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             w.isMovableByWindowBackground = true
             w.collectionBehavior = [.fullScreenPrimary]   // allow entering full screen
             w.minSize = SliveTheme.windowMin              // single source of truth
-            w.backgroundColor = NSColor(white: 0.10, alpha: 1)
+            w.backgroundColor = SliveTheme.windowBackdrop
             w.contentView = hosting
             w.isReleasedWhenClosed = false
             w.center()

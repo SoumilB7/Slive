@@ -67,10 +67,10 @@ private struct InnerWellModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: SliveTheme.fieldRadius, style: .continuous)
                     .fill(SliveTheme.wellFill)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: SliveTheme.fieldRadius, style: .continuous)
                             .strokeBorder(SliveTheme.wellStroke, lineWidth: 0.8)
                     )
             )
@@ -91,7 +91,7 @@ extension View {
 func SliveSectionTitle(_ text: String) -> some View {
     Text(text)
         .font(SliveTheme.sectionFont)
-        .foregroundStyle(.white.opacity(0.4))
+        .foregroundStyle(SliveTheme.textFaint)
         .tracking(1.2)
 }
 
@@ -254,14 +254,14 @@ struct WhisperStatusDot: View {
     var body: some View {
         switch transcription.status(for: settings.whisperModel) {
         case .ready:
-            StatusDot(color: .green, size: 7).help("\(settings.whisperModel) ready")
+            StatusDot(color: SliveTheme.ok, size: 7).help("\(settings.whisperModel) ready")
         case .downloading, .preparing:
             StatusDot(color: SliveTheme.accent, pulses: true, size: 7)
                 .help("\(settings.whisperModel) loading")
         case .failed:
-            StatusDot(color: .orange, size: 7).help("Model failed to load")
+            StatusDot(color: SliveTheme.warn, size: 7).help("Model failed to load")
         case .notDownloaded:
-            StatusDot(color: .white.opacity(0.25), size: 7)
+            StatusDot(color: SliveTheme.textGhost, size: 7)
                 .help("\(settings.whisperModel) not downloaded")
         }
     }
@@ -274,16 +274,16 @@ struct KeyStatusPill: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: hasKey ? "checkmark.circle.fill" : "key.fill")
-                .font(.system(size: 9, weight: .semibold))
+                .font(SliveTheme.chipFont)
             Text(hasKey ? "Key" : "No key")
                 .font(SliveTheme.font(10, .semibold))
         }
-        .foregroundStyle(hasKey ? SliveTheme.accent : .orange.opacity(0.9))
+        .foregroundStyle(hasKey ? SliveTheme.accent : SliveTheme.warnText)
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(
-            Capsule().fill(.white.opacity(0.06))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
+            Capsule().fill(SliveTheme.wellFill)
+                .overlay(Capsule().strokeBorder(SliveTheme.cardStroke, lineWidth: 0.8))
         )
     }
 }
@@ -318,7 +318,7 @@ struct OnDevicePill: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "desktopcomputer")
-                .font(.system(size: 9, weight: .semibold))
+                .font(SliveTheme.chipFont)
             Text("On-device")
                 .font(SliveTheme.font(10, .semibold))
         }
@@ -326,8 +326,8 @@ struct OnDevicePill: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(
-            Capsule().fill(.white.opacity(0.06))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
+            Capsule().fill(SliveTheme.wellFill)
+                .overlay(Capsule().strokeBorder(SliveTheme.cardStroke, lineWidth: 0.8))
         )
     }
 }
@@ -343,8 +343,8 @@ struct EmptyState: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 28, weight: .medium))
-                .foregroundStyle(SliveTheme.accent.opacity(0.35))
+                .font(SliveTheme.iconHero)
+                .foregroundStyle(SliveTheme.accentSoft)
             Text(title)
                 .font(SliveTheme.rowFont)
                 .foregroundStyle(SliveTheme.textPrimary)
@@ -396,16 +396,16 @@ struct ModelStatusRow: View {
         HStack(spacing: 10) {
             switch transcription.status(for: model) {
             case .ready:
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text("Ready").foregroundStyle(.white.opacity(0.8))
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(SliveTheme.ok)
+                Text("Ready").foregroundStyle(SliveTheme.textBody)
                 Spacer()
                 Button("Re-download") { Task { await transcription.redownload(model) } }
                     .buttonStyle(.plain)
                     .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(SliveTheme.textDim)
             case .notDownloaded:
                 Image(systemName: "arrow.down.circle").foregroundStyle(SliveTheme.accent)
-                Text("Not downloaded").foregroundStyle(.white.opacity(0.7))
+                Text("Not downloaded").foregroundStyle(SliveTheme.textSoft)
                 Spacer()
                 Button("Download") { Task { await transcription.download(model) } }
                     .buttonStyle(.borderedProminent).tint(SliveTheme.accent).controlSize(.small)
@@ -417,10 +417,10 @@ struct ModelStatusRow: View {
                     .fixedSize()
             case .preparing(let stage):
                 ProgressView().controlSize(.small)
-                Text("\(stage)…").foregroundStyle(.white.opacity(0.7))
+                Text("\(stage)…").foregroundStyle(SliveTheme.textSoft)
             case .failed(let e):
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(e).foregroundStyle(.orange.opacity(0.9)).lineLimit(2)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(SliveTheme.warn)
+                Text(e).foregroundStyle(SliveTheme.warnText).lineLimit(2)
                 Spacer()
                 Button("Re-download") { Task { await transcription.redownload(model) } }
                     .buttonStyle(.bordered).controlSize(.small)
@@ -480,7 +480,7 @@ struct BalancedSuggestion: View {
                 case .failed(let e):
                     Text(e)
                         .font(SliveTheme.captionFont)
-                        .foregroundStyle(.orange.opacity(0.9))
+                        .foregroundStyle(SliveTheme.warnText)
                         .lineLimit(2)
                     Spacer(minLength: 0)
                     downloadButton("Retry")
@@ -563,7 +563,7 @@ struct ModelPickerRows: View {
                         .map { "Fine-tuned \($0.baseModel) · \($0.id)" }
                      ?? "Custom model · \(model)")
                     .font(SliveTheme.captionFont)
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(SliveTheme.textMuted)
                 Spacer(minLength: 0)
             }
             ModelStatusRow(model: model)

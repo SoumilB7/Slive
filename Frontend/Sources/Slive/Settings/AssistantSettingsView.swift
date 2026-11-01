@@ -42,8 +42,8 @@ struct AssistantSettingsView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.white.opacity(0.05))
+            RoundedRectangle(cornerRadius: SliveTheme.fieldRadius, style: .continuous)
+                .fill(SliveTheme.cardFill)
         )
     }
 
@@ -55,7 +55,7 @@ struct AssistantSettingsView: View {
             if settings.assistantHotkey == nil {
                 Label("No shortcut set.", systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)
-                    .foregroundStyle(.orange.opacity(0.9))
+                    .foregroundStyle(SliveTheme.warnText)
             }
         }
     }
@@ -116,7 +116,7 @@ struct AssistantSettingsView: View {
                 if let err = providers.fetchError(for: settings.assistantConfig.provider) {
                     Text(err)
                         .font(SliveTheme.captionFont)
-                        .foregroundStyle(.orange.opacity(0.9))
+                        .foregroundStyle(SliveTheme.warnText)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if settings.assistantConfig.provider.isLocal {
                     if currentFetched.isEmpty {
@@ -149,7 +149,7 @@ struct AssistantSettingsView: View {
                   ? "Model" : settings.assistantConfig.provider.defaultModel,
                   text: selectedModel)
             .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12, design: .monospaced))
+            .font(SliveTheme.monoBody)
             .overlay(alignment: .trailing) {
                 if !currentFetched.isEmpty {
                     Menu {
@@ -158,7 +158,7 @@ struct AssistantSettingsView: View {
                         }
                     } label: {
                         Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(SliveTheme.tagFont)
                             .foregroundStyle(SliveTheme.accent)
                     }
                     .menuStyle(.borderlessButton)
@@ -229,7 +229,7 @@ struct AssistantSettingsView: View {
             if settings.assistantConfig.promptName.isEmpty {
                 TextEditor(text: $settings.assistantConfig.systemPrompt)
                     .font(SliveTheme.font(12))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(SliveTheme.textBright)
                     .scrollContentBackground(.hidden)
                     .padding(8)
                     .frame(height: 150)
@@ -245,7 +245,7 @@ struct AssistantSettingsView: View {
                     Text(PromptLibrary.contents(named: settings.assistantConfig.promptName)
                          ?? "Can't read file")
                         .font(SliveTheme.font(12, .regular))
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(SliveTheme.textSoft)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                 }
@@ -263,7 +263,7 @@ struct AssistantSettingsView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(SliveTheme.badgeFont)
                             .rotationEffect(.degrees(sentPromptExpanded ? 90 : 0))
                         Text("Last prompt sent")
                             .font(SliveTheme.font(11, .semibold))

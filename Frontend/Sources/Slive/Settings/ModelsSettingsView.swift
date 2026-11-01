@@ -121,11 +121,11 @@ private struct ProviderRow: View {
                 Spacer(minLength: 8)
                 if connected {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 15))
+                        .font(SliveTheme.iconLarge)
                         .foregroundStyle(SliveTheme.accent)
                 }
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(SliveTheme.labelBoldFont)
                     .foregroundStyle(SliveTheme.textTertiary)
                     .rotationEffect(.degrees(expanded ? 180 : 0))
             }
@@ -135,12 +135,12 @@ private struct ProviderRow: View {
     }
 
     private var icon: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(connected ? SliveTheme.accent.opacity(0.16) : .white.opacity(0.05))
+        RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
+            .fill(connected ? SliveTheme.accentConnected : SliveTheme.cardFill)
             .frame(width: 30, height: 30)
             .overlay(
                 Image(systemName: Self.glyph[provider] ?? "cloud.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(SliveTheme.iconFont)
                     .foregroundStyle(connected ? SliveTheme.accent : SliveTheme.textSecondary)
             )
     }
@@ -159,14 +159,14 @@ private struct ProviderRow: View {
                              hint: "Any OpenAI-compatible endpoint.") {
                     TextField("https://…/v1", text: $settings.assistantConfig.baseURL)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(SliveTheme.monoBody)
                 }
             }
 
             labeledField("API key") {
                 SecureField(provider.keyHint, text: $keyDraft)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(SliveTheme.monoBody)
                     .onChange(of: keyDraft) { _, new in
                         providers.setAPIKey(new, for: provider)
                     }
@@ -177,7 +177,7 @@ private struct ProviderRow: View {
                     HStack(spacing: 4) {
                         Text("Get a key")
                         Image(systemName: "arrow.up.right")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(SliveTheme.badgeFont)
                     }
                     .font(SliveTheme.font(11, .semibold))
                     .foregroundStyle(SliveTheme.accent)
@@ -225,7 +225,7 @@ private struct ProviderRow: View {
             if let err = providers.fetchError(for: provider) {
                 Text(err)
                     .font(SliveTheme.captionFont)
-                    .foregroundStyle(.orange.opacity(0.95))
+                    .foregroundStyle(SliveTheme.warnStrong)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -328,12 +328,12 @@ private struct LocalProviderRow: View {
             withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
         } label: {
             HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.white.opacity(0.05))
+                RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
+                    .fill(SliveTheme.cardFill)
                     .frame(width: 30, height: 30)
                     .overlay(
                         Image(systemName: "desktopcomputer")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(SliveTheme.iconFont)
                             .foregroundStyle(SliveTheme.textSecondary)
                     )
                 VStack(alignment: .leading, spacing: 2) {
@@ -349,7 +349,7 @@ private struct LocalProviderRow: View {
                     ProgressView().controlSize(.small)
                 }
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(SliveTheme.labelBoldFont)
                     .foregroundStyle(SliveTheme.textTertiary)
                     .rotationEffect(.degrees(expanded ? 180 : 0))
             }
@@ -380,7 +380,7 @@ private struct LocalProviderRow: View {
                 }
                 SecureField("hf_…", text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(SliveTheme.monoBody)
                     .onChange(of: tokenDraft) { _, new in providers.setHuggingFaceToken(new) }
             }
 
@@ -394,7 +394,7 @@ private struct LocalProviderRow: View {
                 HStack(spacing: 8) {
                     TextField("owner/name", text: $modelIDDraft)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(SliveTheme.monoBody)
                         .onSubmit(startDownload)
                     if downloading != nil {
                         ProgressView().controlSize(.small)
@@ -409,7 +409,7 @@ private struct LocalProviderRow: View {
                 if let err = providers.localError {
                     Text(err)
                         .font(SliveTheme.captionFont)
-                        .foregroundStyle(.orange.opacity(0.95))
+                        .foregroundStyle(SliveTheme.warnStrong)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -452,7 +452,7 @@ private struct LocalProviderRow: View {
                     Task { await providers.refreshLocalCache() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(SliveTheme.labelFont)
                         .foregroundStyle(SliveTheme.accent)
                 }
                 .buttonStyle(.plain)
@@ -468,13 +468,13 @@ private struct LocalProviderRow: View {
                 if models.count > 8 {
                     TextField("Filter", text: $filter)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12))
+                        .font(SliveTheme.bodyFont)
                 }
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(filteredModels) { model in
                             cacheRow(model)
-                            Divider().overlay(.white.opacity(0.05))
+                            Divider().overlay(SliveTheme.hairlineFaint)
                         }
                     }
                 }
@@ -494,7 +494,7 @@ private struct LocalProviderRow: View {
     private func cacheRow(_ model: LocalCachedModel) -> some View {
         HStack(spacing: 10) {
             Text(model.repo_id)
-                .font(.system(size: 12, design: .monospaced))
+                .font(SliveTheme.monoBody)
                 .foregroundStyle(SliveTheme.textMid)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -508,8 +508,8 @@ private struct LocalProviderRow: View {
                 pendingDelete = model.repo_id
             } label: {
                 Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .font(SliveTheme.labelFont)
+                    .foregroundStyle(SliveTheme.textFaint)
             }
             .buttonStyle(.plain)
             .help("Delete")

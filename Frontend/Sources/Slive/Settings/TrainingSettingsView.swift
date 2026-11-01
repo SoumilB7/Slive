@@ -140,12 +140,12 @@ struct TrainingSettingsView: View {
                         if let eta = etaText(job) {
                             Text("· \(eta)")
                                 .font(SliveTheme.captionFont)
-                                .foregroundStyle(SliveTheme.accent.opacity(0.85))
+                                .foregroundStyle(SliveTheme.accentText)
                         }
                         Spacer()
                         Text(job.modelName)
                             .font(SliveTheme.mono(10))
-                            .foregroundStyle(.white.opacity(0.45))
+                            .foregroundStyle(SliveTheme.textDim)
                     }
                 }
             }
@@ -171,8 +171,8 @@ struct TrainingSettingsView: View {
             : "Training didn't start"
         return HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.orange)
+                .font(SliveTheme.iconFont)
+                .foregroundStyle(SliveTheme.warn)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -197,7 +197,7 @@ struct TrainingSettingsView: View {
                 jobError = nil
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(SliveTheme.tagBoldFont)
                     .foregroundStyle(SliveTheme.textTertiary)
             }
             .buttonStyle(.plain)
@@ -205,10 +205,10 @@ struct TrainingSettingsView: View {
         }
         .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.orange.opacity(0.08))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1))
+            RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
+                .fill(SliveTheme.warnFill)
+                .overlay(RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
+                    .strokeBorder(SliveTheme.warnStroke, lineWidth: 1))
         )
     }
 
@@ -257,14 +257,14 @@ struct TrainingSettingsView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(SliveTheme.accent.opacity(0.85))
+                        .font(SliveTheme.labelFont)
+                        .foregroundStyle(SliveTheme.accentText)
                     Text("Advanced")
                         .font(SliveTheme.font(11, .semibold))
                         .foregroundStyle(SliveTheme.textSecondary)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(SliveTheme.tagBoldFont)
                         .foregroundStyle(SliveTheme.textTertiary)
                         .rotationEffect(.degrees(showAdvanced ? 180 : 0))
                 }
@@ -299,7 +299,7 @@ struct TrainingSettingsView: View {
                 if let model = selectedTrainingModel, maxRamGB < model.loraRamGB {
                     Text("Below the \(Int(model.loraRamGB)) GB recommended.")
                         .font(SliveTheme.captionFont)
-                        .foregroundStyle(Color.orange)
+                        .foregroundStyle(SliveTheme.warn)
                 }
             }
 
@@ -313,7 +313,7 @@ struct TrainingSettingsView: View {
                         .foregroundStyle(SliveTheme.textSecondary)
                     TextField("\(selectedModel == "large-v3-v20240930_626MB" ? "balanced" : selectedModel.replacingOccurrences(of: ".", with: "-"))-ft-<date>-<time>", text: $customName)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(SliveTheme.monoSmall)
                         .frame(maxWidth: 260)
                         .disabled(job?.isActive == true)
                 }
@@ -418,28 +418,28 @@ struct TrainingSettingsView: View {
                         .frame(width: 42, height: 42)
                         .rotationEffect(.radians(phase * 1.7))
                 }
-                let tint = state == .failed ? Color.orange : SliveTheme.accent
+                let tint = state == .failed ? SliveTheme.warn : SliveTheme.accent
                 Circle()
-                    .fill(state == .pending ? Color.white.opacity(0.05)
+                    .fill(state == .pending ? SliveTheme.cardFill
                           : tint.opacity(state == .done ? 0.2 : 0.3))
                     .overlay(
                         Circle().strokeBorder(
-                            state == .pending ? Color.white.opacity(0.15)
+                            state == .pending ? SliveTheme.pendingStroke
                             : tint.opacity(0.85),
                             lineWidth: 1)
                     )
                     .frame(width: 34, height: 34)
                 Image(systemName: state == .done ? "checkmark"
                       : state == .failed ? "xmark" : stage.icon)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(state == .pending ? Color.white.opacity(0.35) : tint)
+                    .font(SliveTheme.iconFont)
+                    .foregroundStyle(state == .pending ? SliveTheme.textTertiary : tint)
                     .shadow(color: state == .active ? SliveTheme.accent.opacity(0.8) : .clear,
                             radius: 4)
             }
             .frame(width: 50, height: 50)
             Text(stage.title)
                 .font(SliveTheme.font(11, .semibold))
-                .foregroundStyle(state == .failed ? Color.orange
+                .foregroundStyle(state == .failed ? SliveTheme.warn
                                  : state == .pending ? SliveTheme.textSecondary : SliveTheme.textPrimary)
                 .multilineTextAlignment(.center)
         }
@@ -459,7 +459,7 @@ struct TrainingSettingsView: View {
             line.addLine(to: CGPoint(x: size.width, y: y))
             context.stroke(line,
                            with: .color(done ? SliveTheme.accent.opacity(0.55)
-                                             : .white.opacity(0.12)),
+                                             : SliveTheme.gridLine),
                            lineWidth: 2)
             guard flowing, size.width > 16 else { return }
             // Two staggered comets with fading tails, travelling into the
@@ -494,11 +494,11 @@ struct TrainingSettingsView: View {
             if readiness.ready {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.green)
+                        .font(SliveTheme.iconMedium)
+                        .foregroundStyle(SliveTheme.ok)
                     Text("Ready to train")
                         .font(SliveTheme.rowFont)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(SliveTheme.ok)
                     Text("· \(readiness.eligibleCount) recordings · \(String(format: "%.1f", readiness.eligibleAudioMinutes)) min")
                         .font(SliveTheme.captionFont)
                         .foregroundStyle(SliveTheme.textTertiary)
@@ -573,13 +573,13 @@ struct TrainingSettingsView: View {
                 Spacer()
                 Text(valueText)
                     .font(SliveTheme.mono(11))
-                    .foregroundStyle(met ? Color.green : .orange)
+                    .foregroundStyle(met ? SliveTheme.ok : SliveTheme.warn)
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.08)).frame(height: 5)
+                    Capsule().fill(SliveTheme.trackFillSlim).frame(height: 5)
                     Capsule()
-                        .fill(met ? Color.green : SliveTheme.accent)
+                        .fill(met ? SliveTheme.ok : SliveTheme.accent)
                         .frame(width: max(4, geo.size.width * CGFloat(min(1, max(0, fraction)))),
                                height: 5)
                 }
@@ -613,7 +613,7 @@ struct TrainingSettingsView: View {
                 refresh()
             } label: {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(SliveTheme.labelFont)
             }
             .buttonStyle(.plain)
             .foregroundStyle(SliveTheme.accent)
@@ -635,14 +635,14 @@ struct TrainingSettingsView: View {
                 HStack(spacing: 16) {
                     legendEntry(color: SliveTheme.accent, label: "Loss",
                                 value: metrics.last.map { String(format: "%.3f", $0.loss) })
-                    legendEntry(color: .orange.opacity(0.9), label: "Drift",
+                    legendEntry(color: SliveTheme.warnText, label: "Drift",
                                 value: metrics.last(where: { $0.kl != nil })?.kl
                                     .map { String(format: "%.4f", $0) })
                     Spacer()
                     if let job, job.totalUpdates > 0 {
                         Text("\(metrics.count)/\(job.totalUpdates)")
                             .font(SliveTheme.mono(10))
-                            .foregroundStyle(.white.opacity(0.45))
+                            .foregroundStyle(SliveTheme.textDim)
                     }
                 }
             }
@@ -673,8 +673,8 @@ struct TrainingSettingsView: View {
                 ForEach(transcription.customModels) { model in
                     HStack(spacing: 8) {
                         Image(systemName: "checkmark.seal.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.green)
+                            .font(SliveTheme.smallFont)
+                            .foregroundStyle(SliveTheme.ok)
                         Text(model.displayName)
                             .font(SliveTheme.mono(11))
                             .foregroundStyle(SliveTheme.textPrimary)
@@ -690,7 +690,7 @@ struct TrainingSettingsView: View {
             }
             .buttonStyle(.plain)
             .font(SliveTheme.font(11, .semibold))
-            .foregroundStyle(.white.opacity(0.45))
+            .foregroundStyle(SliveTheme.textDim)
         }
     }
 
@@ -826,14 +826,14 @@ private struct TrainingSignalChart: View {
                 var line = Path()
                 line.move(to: CGPoint(x: px, y: rect.minY))
                 line.addLine(to: CGPoint(x: px, y: rect.maxY))
-                context.stroke(line, with: .color(.white.opacity(0.1)), lineWidth: 1)
+                context.stroke(line, with: .color(SliveTheme.gridLineSoft), lineWidth: 1)
             }
 
             // Baseline.
             var base = Path()
             base.move(to: CGPoint(x: rect.minX, y: rect.maxY))
             base.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            context.stroke(base, with: .color(.white.opacity(0.12)), lineWidth: 1)
+            context.stroke(base, with: .color(SliveTheme.gridLine), lineWidth: 1)
 
             drawSeries(metrics.map { ($0.update, $0.loss) },
                        in: rect, x: x, context: &context,
@@ -841,7 +841,7 @@ private struct TrainingSignalChart: View {
             let klPoints = metrics.compactMap { m in m.kl.map { (m.update, $0) } }
             if klPoints.count > 1 {
                 drawSeries(klPoints, in: rect, x: x, context: &context,
-                           color: .orange.opacity(0.9), lineWidth: 1.3)
+                           color: SliveTheme.warnText, lineWidth: 1.3)
             }
         }
     }

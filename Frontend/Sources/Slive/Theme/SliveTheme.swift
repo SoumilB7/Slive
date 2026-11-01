@@ -19,6 +19,60 @@ enum SliveTheme {
     static let wellStroke    = Color.white.opacity(0.10)
     static let divider       = Color.white.opacity(0.08)
 
+    // MARK: Text ramp
+    /// Text tiers between the primary/secondary/tertiary anchors. Each value is
+    /// what the views drew before the tiers were named.
+    static let textStrong    = Color.white.opacity(0.95)  // selected sidebar label
+    static let textBright    = Color.white.opacity(0.9)   // field text, hover-reveal icons
+    static let textHigh      = Color.white.opacity(0.85)
+    static let textBody      = Color.white.opacity(0.8)
+    static let textSoft      = Color.white.opacity(0.7)
+    static let textMuted     = Color.white.opacity(0.55)  // secondary glyphs and counts
+    static let textDim       = Color.white.opacity(0.45)
+    static let textFaint     = Color.white.opacity(0.4)   // placeholders, "Off", dashes
+    static let textGhost     = Color.white.opacity(0.25)  // idle dot, empty-state glyph
+    static let textOff       = Color.white.opacity(0.2)   // control disabled while running
+    static let textBusy      = Color.white.opacity(0.15)  // control disabled while busy
+
+    // MARK: Surfaces & lines
+    /// Translucent white fills/strokes for insets, chips, tracks and hairlines.
+    static let sidebarFill     = Color.white.opacity(0.03)
+    static let insetFill       = Color.white.opacity(0.04)
+    static let chipFill        = Color.white.opacity(0.07)
+    static let trackFill       = Color.white.opacity(0.1)   // progress track
+    static let trackFillSlim   = Color.white.opacity(0.08)  // thin progress track
+    static let hairline        = Color.white.opacity(0.06)
+    static let hairlineFaint   = Color.white.opacity(0.05)
+    static let hairlineStrong  = Color.white.opacity(0.1)
+    static let gridLine        = Color.white.opacity(0.12)  // chart baselines
+    static let gridLineSoft    = Color.white.opacity(0.1)
+    static let frameStroke     = Color.white.opacity(0.14)  // pill-position mock screen
+    static let pillRing        = Color.white.opacity(0.2)
+    static let pendingStroke   = Color.white.opacity(0.15)  // not-yet-reached stage ring
+
+    // MARK: Accent tints
+    static let accentText      = accent.opacity(0.85)  // accent-coloured captions/icons
+    static let accentMuted     = accent.opacity(0.75)
+    static let accentSoft      = accent.opacity(0.35)  // empty-state glyph, connected stroke
+    static let accentRing      = accent.opacity(0.45)
+    static let accentFocus     = accent.opacity(0.5)   // focused field stroke
+    static let accentSelection = accent.opacity(0.18)  // selected sidebar row
+    static let accentConnected = accent.opacity(0.16)  // connected card fill
+
+    // MARK: Status
+    /// warn = attention/needs-action orange; ok = granted/ready green;
+    /// caution = battery-tier yellow.
+    static let warn       = Color.orange
+    static let warnText   = Color.orange.opacity(0.9)
+    static let warnStrong = Color.orange.opacity(0.95)
+    static let warnFill   = Color.orange.opacity(0.08)
+    static let warnStroke = Color.orange.opacity(0.35)
+    static let ok         = Color.green
+    static let caution    = Color.yellow.opacity(0.85)
+
+    /// Window backdrop behind the gradient.
+    static let windowBackdrop = NSColor(white: 0.10, alpha: 1)
+
     // MARK: Type (SF Rounded everywhere)
     static func font(_ size: CGFloat, _ weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .rounded)
@@ -33,8 +87,37 @@ enum SliveTheme {
     /// UPPERCASE tracked card title: 11pt bold (+ .tracking(1.2) at the site).
     static let sectionFont = font(11, .bold)
 
+    /// System (non-rounded) face, for glyphs and compact tags.
+    static func plain(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight)
+    }
+    static let monoBody  = mono(12, .regular)
+    static let monoSmall = mono(11, .regular)
+    /// Tiny capsule badges (9pt) and tags (10pt), then labels and body text.
+    static let badgeFont     = plain(9, .bold)
+    static let chipFont      = plain(9, .semibold)
+    static let tagFont       = plain(10, .semibold)
+    static let tagBoldFont   = plain(10, .bold)
+    static let labelFont     = plain(11, .semibold)
+    static let labelBoldFont = plain(11, .bold)
+    static let smallFont     = plain(11)
+    static let controlFont   = plain(12, .semibold)
+    static let bodyFont      = plain(12)
+    /// Icon glyph sizes.
+    static let iconFont   = plain(13, .semibold)
+    static let iconMedium = plain(14)
+    static let iconLarge  = plain(15)
+    static let iconXL     = plain(20)
+    static let iconHero   = plain(28, .medium)
+
     // MARK: Metrics
     static let cardRadius: CGFloat = 14
+    /// Corner radii by role: field = text field/inset editor; row = list row,
+    /// chip and sidebar item; mini = pill-position mock screen; tick = pill glyph.
+    static let fieldRadius: CGFloat = 10
+    static let rowRadius: CGFloat = 8
+    static let miniRadius: CGFloat = 7
+    static let tickRadius: CGFloat = 0.6
     static let cardPad: CGFloat = 16
     static let cardGap: CGFloat = 22
     static let gutter: CGFloat = 24

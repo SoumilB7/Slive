@@ -114,9 +114,9 @@ struct DataSettingsView: View {
             // Usage bar.
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.1)).frame(height: 6)
+                    Capsule().fill(SliveTheme.trackFill).frame(height: 6)
                     Capsule()
-                        .fill(store.isOverLimit ? Color.orange : SliveTheme.accent)
+                        .fill(store.isOverLimit ? SliveTheme.warn : SliveTheme.accent)
                         .frame(width: max(4, geo.size.width * store.usageFraction), height: 6)
                 }
                 .frame(height: 6)
@@ -125,16 +125,16 @@ struct DataSettingsView: View {
 
             HStack {
                 Text("\(byteText(store.totalBytes)) of \(String(format: "%.1f GB", settings.captureMaxGB)) used")
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(SliveTheme.textMuted)
                 Spacer()
                 if store.isOverLimit {
                     Label("Full · paused", systemImage: "pause.circle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(SliveTheme.warn)
                 } else if settings.captureEdits {
                     Label("Capturing", systemImage: "record.circle")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(SliveTheme.ok)
                 } else {
-                    Text("Off").foregroundStyle(.white.opacity(0.4))
+                    Text("Off").foregroundStyle(SliveTheme.textFaint)
                 }
             }
             .font(SliveTheme.font(11, .semibold))
@@ -271,7 +271,7 @@ struct DataSettingsView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text(err)
                         .font(SliveTheme.captionFont)
-                        .foregroundStyle(.orange.opacity(0.95))
+                        .foregroundStyle(SliveTheme.warnStrong)
                         .fixedSize(horizontal: false, vertical: true)
                     if run.needsKeyFix {
                         Spacer(minLength: 0)
@@ -293,7 +293,7 @@ struct DataSettingsView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(SliveTheme.badgeFont)
                             .rotationEffect(.degrees(promptExpanded ? 90 : 0))
                         Text("Last prompt sent")
                             .font(SliveTheme.font(11, .semibold))
@@ -341,7 +341,7 @@ struct DataSettingsView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(SliveTheme.badgeFont)
                     .rotationEffect(.degrees(consensusExpanded ? 90 : 0))
                 Text("Transcription prompt")
                     .font(SliveTheme.font(11, .semibold))
@@ -349,7 +349,7 @@ struct DataSettingsView: View {
                     .font(SliveTheme.font(9, .semibold))
                     .foregroundStyle(custom ? SliveTheme.accent : SliveTheme.textTertiary)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(.white.opacity(0.07)))
+                    .background(Capsule().fill(SliveTheme.chipFill))
                 Spacer(minLength: 0)
             }
             .foregroundStyle(SliveTheme.textSecondary)
@@ -359,7 +359,7 @@ struct DataSettingsView: View {
         if consensusExpanded {
             TextEditor(text: $consensusDraft)
                 .font(SliveTheme.mono(11))
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(SliveTheme.textHigh)
                 .scrollContentBackground(.hidden)
                 .padding(8)
                 .frame(height: 64)
@@ -395,7 +395,7 @@ struct DataSettingsView: View {
                                                    context: settings.contextPrompt)
                  + "\nKeywords: " + (keywords.isEmpty ? "none" : keywords.joined(separator: ", ")))
                 .font(SliveTheme.mono(10))
-                .foregroundStyle(SliveTheme.accent.opacity(0.75))
+                .foregroundStyle(SliveTheme.accentMuted)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
@@ -412,7 +412,7 @@ struct DataSettingsView: View {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("Add an OpenAI key to try the 3-way check.")
                     .font(SliveTheme.captionFont)
-                    .foregroundStyle(.orange.opacity(0.95))
+                    .foregroundStyle(SliveTheme.warnStrong)
                 Spacer(minLength: 0)
                 Button("Add key", action: openModels)
                     .buttonStyle(.bordered)
@@ -443,7 +443,7 @@ struct DataSettingsView: View {
                 if scope.count == 0 && hasAudioSamples {
                     Label("All labeled", systemImage: "checkmark.seal.fill")
                         .font(SliveTheme.font(11, .semibold))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(SliveTheme.textFaint)
                 }
                 if !run.failedIDs.isEmpty {
                     Button {
@@ -454,7 +454,7 @@ struct DataSettingsView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .tint(.orange)
+                    .tint(SliveTheme.warn)
                 }
                 followUpJumps
                 Spacer(minLength: 0)
@@ -473,7 +473,7 @@ struct DataSettingsView: View {
                     .font(SliveTheme.font(11, .semibold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.orange)
+            .foregroundStyle(SliveTheme.warn)
             .help("Low agreement or far from output")
         }
     }
@@ -504,7 +504,7 @@ struct DataSettingsView: View {
             GeometryReader { geo in
                 let fraction = run.total > 0 ? Double(run.processed) / Double(run.total) : 0
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.1)).frame(height: 4)
+                    Capsule().fill(SliveTheme.trackFill).frame(height: 4)
                     Capsule()
                         .fill(SliveTheme.accent)
                         .frame(width: max(4, geo.size.width * min(1, fraction)), height: 4)
@@ -523,7 +523,7 @@ struct DataSettingsView: View {
                             Text("agreement \(Int((mean * 100).rounded()))%")
                             if run.lowAgreementCount > 0 {
                                 Text("· \(run.lowAgreementCount) low")
-                                    .foregroundStyle(.orange.opacity(0.9))
+                                    .foregroundStyle(SliveTheme.warnText)
                             }
                         }
                     }
@@ -555,7 +555,7 @@ struct DataSettingsView: View {
                 // wrong guess turns into a pick instead of a 404.
                 TextField("Model", text: $settings.groundTruthModel)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(SliveTheme.monoBody)
                     .overlay(alignment: .trailing) {
                         if !fetchedGTModels.isEmpty {
                             Menu {
@@ -564,7 +564,7 @@ struct DataSettingsView: View {
                                 }
                             } label: {
                                 Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 10, weight: .semibold))
+                                    .font(SliveTheme.tagFont)
                                     .foregroundStyle(SliveTheme.accent)
                             }
                             .menuStyle(.borderlessButton)
@@ -627,7 +627,7 @@ struct DataSettingsView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .tint(.orange)
+                    .tint(SliveTheme.warn)
                 }
 
                 followUpJumps
@@ -635,7 +635,7 @@ struct DataSettingsView: View {
                 if missingCount == 0 && hasAudioSamples {
                     Label("All labeled", systemImage: "checkmark.seal.fill")
                         .font(SliveTheme.font(11, .semibold))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(SliveTheme.textFaint)
                 }
                 Spacer(minLength: 0)
             }
@@ -652,7 +652,7 @@ struct DataSettingsView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(SliveTheme.badgeFont)
                         .rotationEffect(.degrees(editorExpanded ? 90 : 0))
                     Text("Transcription prompt")
                         .font(SliveTheme.font(11, .semibold))
@@ -663,7 +663,7 @@ struct DataSettingsView: View {
                         .foregroundStyle(settings.groundTruthPrompt.isEmpty
                                          ? SliveTheme.textTertiary : SliveTheme.accent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(.white.opacity(0.07)))
+                        .background(Capsule().fill(SliveTheme.chipFill))
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(SliveTheme.textSecondary)
@@ -673,7 +673,7 @@ struct DataSettingsView: View {
             if editorExpanded {
                 TextEditor(text: $promptDraft)
                     .font(SliveTheme.mono(11))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(SliveTheme.textHigh)
                     .scrollContentBackground(.hidden)
                     .padding(8)
                     .frame(height: 130)
@@ -700,7 +700,7 @@ struct DataSettingsView: View {
                         hotwords: settings.hotwords, context: settings.contextPrompt)
                      ?? "(no custom words set)")
                     .font(SliveTheme.mono(10))
-                    .foregroundStyle(SliveTheme.accent.opacity(0.75))
+                    .foregroundStyle(SliveTheme.accentMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                     .innerWell()
@@ -771,7 +771,7 @@ struct DataSettingsView: View {
                     Button("Clear all") { confirmClear = true }
                         .buttonStyle(.plain)
                         .font(SliveTheme.font(11, .semibold))
-                        .foregroundStyle(.white.opacity(run.isRunning ? 0.2 : 0.45))
+                        .foregroundStyle(run.isRunning ? SliveTheme.textOff : SliveTheme.textDim)
                         .disabled(run.isRunning)
                         .help(run.isRunning ? busyHelp : "")
                 }
@@ -785,13 +785,13 @@ struct DataSettingsView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     tableHeaderRow
-                    Divider().overlay(.white.opacity(0.1))
+                    Divider().overlay(SliveTheme.hairlineStrong)
                     // Newest first, one bounded page at a time. `.id` anchors
                     // the way-off jump after it switches to the target page.
                     ForEach(visibleSamples) { sample in
                         dataRow(sample)
                             .id(sample.id)
-                        Divider().overlay(.white.opacity(0.06))
+                        Divider().overlay(SliveTheme.hairline)
                     }
                     if pageCount > 1 {
                         paginationControls
@@ -871,7 +871,7 @@ struct DataSettingsView: View {
             Spacer(minLength: 0)
         }
         .font(SliveTheme.font(10, .bold))
-        .foregroundStyle(.white.opacity(0.4))
+        .foregroundStyle(SliveTheme.textFaint)
         .tracking(0.8)
         .padding(.bottom, 8)
     }
@@ -905,8 +905,8 @@ struct DataSettingsView: View {
                     pendingDeleteID = sample.id
                 } label: {
                     Image(systemName: "trash")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(busy ? 0.15 : 0.35))
+                        .font(SliveTheme.controlFont)
+                        .foregroundStyle(busy ? SliveTheme.textBusy : SliveTheme.textTertiary)
                 }
                 .buttonStyle(.plain)
                 .disabled(busy)
@@ -930,24 +930,24 @@ struct DataSettingsView: View {
                 truthTextView(truth, sample: sample)
                 if !sample.finalText.isEmpty {
                     Image(systemName: "person.crop.circle.badge.checkmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.green)
+                        .font(SliveTheme.tagFont)
+                        .foregroundStyle(SliveTheme.ok)
                         .help("Your edit")
                 }
                 // >50% divergence is rarely a correction — flag it for a
                 // human ear (listen, then redo or leave it).
                 if isWayOff(sample) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.orange)
+                        .font(SliveTheme.tagFont)
+                        .foregroundStyle(SliveTheme.warn)
                         .help("Far from output")
                 }
                 // The consensus transcribers disagreed — the label is their
                 // best guess; a listen (and the pencil) settles it.
                 if LabelScope.needsALook(sample) {
                     Image(systemName: "ear.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.orange)
+                        .font(SliveTheme.tagFont)
+                        .foregroundStyle(SliveTheme.warn)
                         .help("\(Int(((sample.llmAgreement ?? 0) * 100).rounded()))% agreement")
                 }
                 if sample.finalText.isEmpty, sample.llmTranscript != nil {
@@ -955,15 +955,15 @@ struct DataSettingsView: View {
                     // authoritative and is never silently replaced.
                     Button { run.labelOne(sample) } label: {
                         Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .font(SliveTheme.tagFont)
+                            .foregroundStyle(SliveTheme.textFaint)
                     }
                     .buttonStyle(.plain)
                     .help("Redo")
                 }
                 Button { beginShouldBeEdit(sample) } label: {
                     Image(systemName: "pencil")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(SliveTheme.tagFont)
                         .foregroundStyle(SliveTheme.accent)
                 }
                 .buttonStyle(.plain)
@@ -986,7 +986,7 @@ struct DataSettingsView: View {
                 .foregroundStyle(SliveTheme.accent)
                             }
         } else {
-            Text("—").foregroundStyle(.white.opacity(0.4))
+            Text("—").foregroundStyle(SliveTheme.textFaint)
         }
     }
 
@@ -1012,11 +1012,11 @@ struct DataSettingsView: View {
                 .padding(6)
                 .frame(minHeight: 72, maxHeight: 120)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
                         .fill(SliveTheme.wellFill)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(SliveTheme.accent.opacity(0.45), lineWidth: 1)
+                            RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
+                                .strokeBorder(SliveTheme.accentRing, lineWidth: 1)
                         )
                 )
             HStack(spacing: 8) {
@@ -1040,12 +1040,12 @@ struct DataSettingsView: View {
     @ViewBuilder private func truthTextView(_ truth: String, sample: EditSample) -> some View {
         if let diffed = TranscriptDiffCache.styled(
             id: sample.id, output: sample.transcript, truth: truth,
-            base: .white.opacity(0.75), changed: .orange.opacity(0.95)) {
+            base: SliveTheme.textMid, changed: SliveTheme.warnStrong) {
             Text(diffed).textSelection(.enabled)
         } else {
             Text(truth)
                 .foregroundStyle(truth == sample.transcript
-                                 ? .white.opacity(0.75) : .orange.opacity(0.95))
+                                 ? SliveTheme.textMid : SliveTheme.warnStrong)
                 .textSelection(.enabled)
         }
     }
@@ -1069,15 +1069,15 @@ private struct DataAudioButton: View {
             Button { player.toggle(id: sampleID, url: url) } label: {
                 Image(systemName: player.currentID == sampleID && player.isPlaying
                       ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 20))
+                    .font(SliveTheme.iconXL)
                     .foregroundStyle(SliveTheme.accent)
             }
             .buttonStyle(.plain)
             .help(player.currentID == sampleID && player.isPlaying ? "Pause" : "Play")
         } else {
             Image(systemName: "waveform.slash")
-                .font(.system(size: 14))
-                .foregroundStyle(.white.opacity(0.25))
+                .font(SliveTheme.iconMedium)
+                .foregroundStyle(SliveTheme.textGhost)
         }
     }
 }
@@ -1101,14 +1101,14 @@ private struct DataPlaybackScrubber: View {
                 .frame(maxWidth: 220)
                 Text("\(AudioPreviewPlayer.timeText(player.position)) / \(AudioPreviewPlayer.timeText(player.duration))")
                     .font(SliveTheme.mono(10))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(SliveTheme.textMuted)
                     .fixedSize()
             }
             .padding(.leading, 52)
             .padding(.horizontal, -8)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.white.opacity(0.04))
+                RoundedRectangle(cornerRadius: SliveTheme.rowRadius, style: .continuous)
+                    .fill(SliveTheme.insetFill)
             )
         }
     }

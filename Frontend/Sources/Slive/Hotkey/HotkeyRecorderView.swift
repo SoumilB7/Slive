@@ -52,16 +52,16 @@ struct HotkeyRecorderView: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.92))
+                    .font(SliveTheme.rowFont)
+                    .foregroundStyle(SliveTheme.textPrimary)
                 if recording || !subtitle.isEmpty {
                     Text(recording
                          ? (supportsDoubleTap
                             ? "Press a key. Double-tap for ×2. Esc cancels."
                             : "Press a key or combo. Esc cancels.")
                          : subtitle)
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -71,7 +71,7 @@ struct HotkeyRecorderView: View {
                     clearShortcut()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(SliveTheme.textFaint)
                 }
                 .buttonStyle(.plain)
                 .help("Clear")
@@ -89,7 +89,7 @@ struct HotkeyRecorderView: View {
                 .frame(minWidth: 108)
             }
             .buttonStyle(.borderedProminent)
-            .tint(recording ? .orange : SliveTheme.accent)
+            .tint(recording ? SliveTheme.warn : SliveTheme.accent)
         }
         // Switching pages (or closing Settings) mid-recording must not leave
         // the monitor behind — it swallows every key the app sees.

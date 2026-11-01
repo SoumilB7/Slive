@@ -52,7 +52,7 @@ struct ContinuousSettingsView: View {
             if settings.streamHotkey == nil && settings.streamToggleHotkey == nil {
                 Label("No shortcut set.", systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)
-                    .foregroundStyle(.orange.opacity(0.9))
+                    .foregroundStyle(SliveTheme.warnText)
             }
         }
     }

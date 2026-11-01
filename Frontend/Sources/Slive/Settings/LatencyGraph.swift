@@ -34,8 +34,8 @@ struct LatencyGraphView: View {
 
             HStack(spacing: 14) {
                 legendDot(color: SliveTheme.accent, label: "Model RAM")
-                legendDot(color: .orange.opacity(0.9), label: "Energy")
-                legendDot(color: .yellow.opacity(0.85), label: "Battery")
+                legendDot(color: SliveTheme.warnText, label: "Energy")
+                legendDot(color: SliveTheme.caution, label: "Battery")
                 Spacer()
                 // What this Mac is, and whether the numbers are measured or guessed.
                 Text("\(MachineProfile.chip.replacingOccurrences(of: "Apple ", with: "")) · \(MachineProfile.ramGB) GB · \(effective.measured ? "Measured" : "Estimated")")
@@ -122,7 +122,7 @@ struct LatencyGraphView: View {
         var base = Path()
         base.move(to: CGPoint(x: 0, y: plotBottom))
         base.addLine(to: CGPoint(x: size.width, y: plotBottom))
-        ctx.stroke(base, with: .color(.white.opacity(0.12)), lineWidth: 1)
+        ctx.stroke(base, with: .color(SliveTheme.gridLine), lineWidth: 1)
 
         // The selector: a slim test-tube vial over the chosen column —
         // hairline walls, fully rounded bottom, and a faint "liquid" gradient
@@ -159,12 +159,12 @@ struct LatencyGraphView: View {
 
         // Energy line (orange) — per-dictation effort.
         drawSeries(&ctx, xs: xs, ys: energyFractions.map(y),
-                   color: .orange.opacity(0.9), selectedIndex: sel)
+                   color: SliveTheme.warnText, selectedIndex: sel)
 
         // Battery line (yellow) — the ongoing drain of keeping tensors hot.
         let batteryFractions = tiers.map(\.batteryIndex)
         drawSeries(&ctx, xs: xs, ys: batteryFractions.map(y),
-                   color: .yellow.opacity(0.85), selectedIndex: sel)
+                   color: SliveTheme.caution, selectedIndex: sel)
 
 
         // Tier labels along the X axis: latency first (it IS the axis), name under.
@@ -172,11 +172,11 @@ struct LatencyGraphView: View {
             let isSel = i == sel
             let latency = Text(Self.ms(latencies[i]))
                 .font(SliveTheme.mono(9.5))
-                .foregroundColor(isSel ? SliveTheme.accent : .white.opacity(0.55))
+                .foregroundColor(isSel ? SliveTheme.accent : SliveTheme.textMuted)
             ctx.draw(ctx.resolve(latency), at: CGPoint(x: xs[i], y: plotBottom + 9))
             let name = Text(tier.label)
                 .font(SliveTheme.font(9, isSel ? .bold : .medium))
-                .foregroundColor(isSel ? .white.opacity(0.9) : .white.opacity(0.4))
+                .foregroundColor(isSel ? SliveTheme.textBright : SliveTheme.textFaint)
             ctx.draw(ctx.resolve(name), at: CGPoint(x: xs[i], y: plotBottom + 21))
         }
     }

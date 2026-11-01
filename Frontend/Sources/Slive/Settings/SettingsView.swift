@@ -180,7 +180,7 @@ struct SettingsView: View {
         case .general: return (modelStatusLine(settings.whisperModel), SliveTheme.textSecondary)
         case .continuous: return (modelStatusLine(settings.continuousModel), SliveTheme.textSecondary)
         case .permissions:
-            return ("\(grantedCount) of 3 granted", grantedCount == 3 ? SliveTheme.textSecondary : .orange)
+            return ("\(grantedCount) of 3 granted", grantedCount == 3 ? SliveTheme.textSecondary : SliveTheme.warn)
         case .history:
             return (history.entries.isEmpty ? nil : "\(history.entries.count) · last 24 h", SliveTheme.textSecondary)
         case .data:
@@ -190,7 +190,7 @@ struct SettingsView: View {
         case .models:
             let n = [AssistantProvider.anthropic, .openai, .gemini, .openaiCompatible]
                 .filter { providers.hasKey($0) }.count
-            return (n > 0 ? "\(n) connected" : "None connected", n > 0 ? SliveTheme.textSecondary : .orange)
+            return (n > 0 ? "\(n) connected" : "None connected", n > 0 ? SliveTheme.textSecondary : SliveTheme.warn)
         default: return (nil, SliveTheme.textSecondary)
         }
     }
@@ -277,7 +277,7 @@ struct SettingsView: View {
                 Button("Reset") { stats.reset() }
                     .buttonStyle(.plain)
                     .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(SliveTheme.textDim)
             }
             .animation(.spring(response: 0.5, dampingFraction: 0.85), value: stats.lastWPM)
         }
@@ -396,7 +396,7 @@ struct SettingsView: View {
                 HStack(spacing: 8) {
                     Text("Echo cancellation uses the system mic.")
                         .font(SliveTheme.captionFont)
-                        .foregroundStyle(Color.orange)
+                        .foregroundStyle(SliveTheme.warn)
                     Button("Turn off") { settings.echoCancellation = false }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
@@ -420,11 +420,11 @@ struct SettingsView: View {
         if let mic = activeMic {
             Text(mic.detail)
                 .font(SliveTheme.captionFont)
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(SliveTheme.textMuted)
         } else if !settings.inputDeviceUID.isEmpty {
             Text("Not connected · using \(inputDevices.systemDefault?.name ?? "system default")")
                 .font(SliveTheme.captionFont)
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(SliveTheme.warn)
         }
     }
 
@@ -516,7 +516,7 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .foregroundStyle(SliveTheme.accent)
-                    .font(.system(size: 14))
+                    .font(SliveTheme.iconMedium)
                 Text("Applies after relaunch.")
                     .sliveCaption()
                 Spacer()
@@ -531,7 +531,7 @@ struct SettingsView: View {
     private func permissionRow(title: String, detail: String, granted: Bool,
                                action: @escaping () -> Void) -> some View {
         HStack(spacing: 12) {
-            StatusDot(color: granted ? .green : .orange, pulses: !granted, size: 8)
+            StatusDot(color: granted ? SliveTheme.ok : SliveTheme.warn, pulses: !granted, size: 8)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(SliveTheme.rowFont)
@@ -542,7 +542,7 @@ struct SettingsView: View {
             if granted {
                 Text("Granted")
                     .font(SliveTheme.font(12, .semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(SliveTheme.ok)
             } else {
                 Button("Grant", action: action)
                     .buttonStyle(.borderedProminent)
@@ -597,7 +597,7 @@ struct SettingsView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(history.entries.enumerated()), id: \.element.id) { index, entry in
                         if index > 0 {
-                            Divider().overlay(.white.opacity(0.06))
+                            Divider().overlay(SliveTheme.hairline)
                         }
                         HistoryRow(entry: entry) { history.remove(entry.id) }
                     }
@@ -686,17 +686,17 @@ private struct VocabularyField: View {
                 .foregroundStyle(SliveTheme.textPrimary)
             TextEditor(text: $text)
                 .font(SliveTheme.font(12))
-                .foregroundStyle(.white.opacity(0.9))
+                .foregroundStyle(SliveTheme.textBright)
                 .scrollContentBackground(.hidden)
                 .padding(8)
                 .frame(height: height)
                 .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: SliveTheme.fieldRadius, style: .continuous)
                         .fill(SliveTheme.wellFill)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            RoundedRectangle(cornerRadius: SliveTheme.fieldRadius, style: .continuous)
                                 .strokeBorder(
-                                    focused ? SliveTheme.accent.opacity(0.5) : SliveTheme.wellStroke,
+                                    focused ? SliveTheme.accentFocus : SliveTheme.wellStroke,
                                     lineWidth: focused ? 1 : 0.8)
                         )
                 )
@@ -722,7 +722,7 @@ private struct HistoryRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.text)
                     .font(SliveTheme.font(12))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(SliveTheme.textBright)
                     .lineLimit(3)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
@@ -740,15 +740,15 @@ private struct HistoryRow: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(copied ? Color.green : .white.opacity(0.55))
+                        .font(SliveTheme.labelFont)
+                        .foregroundStyle(copied ? SliveTheme.ok : SliveTheme.textMuted)
                 }
                 .buttonStyle(.plain)
                 .help("Copy")
                 Button(action: onDelete) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .font(SliveTheme.tagBoldFont)
+                        .foregroundStyle(SliveTheme.textDim)
                 }
                 .buttonStyle(.plain)
                 .help("Delete")
