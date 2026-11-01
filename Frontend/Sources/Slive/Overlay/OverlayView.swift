@@ -103,56 +103,23 @@ struct OverlayView: View {
     @ObservedObject var model: AudioModel
     @ObservedObject private var settings = Settings.shared
 
-    /// Retained across the fade-out so the box doesn't collapse mid-animation.
-    @State private var displayText: String = ""
+    /// The box's content, retained across the fade-out so the box doesn't
+    /// collapse mid-animation.
+    @State private var shown = OverlayResult(text: "")
 
     /// User-tunable opacity for the overlay chrome (pill / box backgrounds).
     private var chromeOpacity: Double { settings.overlayOpacity }
 
-    private var isListening: Bool {
-        if case .listening = model.phase { return true }; return false
-    }
-    /// Dictation listen (waveform pill) vs. assistant listen (black-hole pill) vs.
-    /// continuous listen (pen-scribble pill).
-    private var isDictationListening: Bool { isListening && !model.assistantListening && !model.liveDictating }
-    private var isAssistantListening: Bool { isListening && model.assistantListening }
-    private var isLiveDictating: Bool { isListening && model.liveDictating }
-    private var isTranscribing: Bool {
-        if case .transcribing = model.phase { return true }; return false
-    }
-    private var isResult: Bool {
-        if case .result = model.phase { return true }; return false
-    }
+    private var isDictationListening: Bool { model.state.listenKind == .dictation }
+    private var isAssistantListening: Bool { model.state.listenKind == .assistant }
+    private var isLiveDictating: Bool { model.state.listenKind == .live }
+    private var isTranscribing: Bool { model.state.isTranscribing }
+    private var isStuck: Bool { model.state == .transcribing(stuck: true) }
+    private var isResult: Bool { model.state.result != nil }
 
-    private var resultText: String {
-        if case .result(let t) = model.phase { return t }
-        return displayText
-    }
-
-    /// Coarse phase identity for driving the container animation — stable while
-    /// the result text streams in.
-    private var phaseRank: Int {
-        switch model.phase {
-        case .idle: return 0
-        case .listening: return 1
-        case .transcribing: return 2
-        case .result: return 3
-        case .saving: return 4
-        case .saved: return 5
-        case .tooShort: return 6
-        case .error: return 7
-        }
-    }
-
-    private var containerSize: CGSize {
-        if model.streaming { return OverlayMetrics.streamingPanelSize }
-        if case .result(let t) = model.phase {
-            if model.isChat { return OverlayMetrics.assistantStreamingPanelSize }
-            return model.assistantResult ? OverlayMetrics.assistantPanelSize(for: t)
-                                          : OverlayMetrics.panelSize(for: t, note: model.resultNote)
-        }
-        return OverlayMetrics.pillSize
-    }
+    /// What the result box draws: the live result, else the last one while
+    /// it fades out.
+    private var result: OverlayResult { model.state.result ?? shown }
 
     var body: some View {
         ZStack {
@@ -172,21 +139,27 @@ struct OverlayView: View {
                 .opacity(isTranscribing ? 1 : 0)
                 .scaleEffect(isTranscribing ? 1 : 0.9)
 
-            resultBox(resultText)
+            resultBox(result)
                 .opacity(isResult ? 1 : 0)
                 .scaleEffect(isResult ? 1 : 0.92)
         }
-        .frame(width: containerSize.width, height: containerSize.height)
+        .frame(width: model.state.panelSize.width, height: model.state.panelSize.height)
         // Animate on the coarse phase (idle/listen/transcribe/result), NOT the
         // per-token result text — otherwise every streamed token restarts the
         // spring and the text never settles/paints.
-        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: phaseRank)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.state.rank)
         // Click-through everywhere except while the result box is showing, so its
         // copy button can be clicked, and a stuck transcribing pill's ✕; the
         // listening pills stay passive.
-        .allowsHitTesting(isResult || (isTranscribing && model.transcribingStuck))
-        .onChange(of: model.phase) { _, newPhase in
-            if case .result(let t) = newPhase { displayText = t }
+        .allowsHitTesting(model.state.isInteractive)
+        .onChange(of: model.state) { _, newState in
+            switch newState {
+            case .result(let r): shown = r
+            // A new session ends a streaming answer: the fading box draws
+            // as finished, Continue footer and all.
+            case .listening: shown.answer?.streaming = false
+            case .idle, .transcribing: break
+            }
         }
     }
 
@@ -248,7 +221,7 @@ struct OverlayView: View {
                              : AnyLayout(HStackLayout(spacing: 6))
         return layout {
             oriented(LoadingDots(active: active), width: 48, height: 18)
-            if model.transcribingStuck {
+            if isStuck {
                 DismissButton { model.onDismiss?() }
             }
         }
@@ -266,10 +239,10 @@ struct OverlayView: View {
 
     /// The result presentation: the answer box, plus a "Continue" button below
     /// it for assistant answers.
-    private func resultBox(_ text: String) -> some View {
+    private func resultBox(_ result: OverlayResult) -> some View {
         VStack(spacing: 8) {
-            answerBox(text)
-            if model.assistantResult && !model.streaming {
+            answerBox(result)
+            if result.showsContinue {
                 Button { model.onContinue?() } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.turn.down.right")
@@ -311,26 +284,26 @@ struct OverlayView: View {
             .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 
-    private func answerBox(_ text: String) -> some View {
+    private func answerBox(_ result: OverlayResult) -> some View {
+        let text = result.text
         // Streaming or a multi-turn chat uses the fixed scrolling box; a fresh
         // single answer sizes to its text.
-        let box = (model.streaming || model.isChat) ? OverlayMetrics.streamingBoxSize
-                                                     : OverlayMetrics.boxSize(for: text, note: model.resultNote)
+        let box = result.boxSize
         // Text column is the box minus its padding, the button, and the gap.
         let textWidth = box.width - OverlayMetrics.hInset * 2
             - OverlayMetrics.copyReserve
         return ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: model.isChat ? 9 : 0) {
-                    if model.isChat {
+                VStack(alignment: .leading, spacing: result.isChat ? 9 : 0) {
+                    if let chat = result.answer, result.isChat {
                         // Prior turns, then the new question, then this answer.
-                        ForEach(model.priorTurns) { bubble($0.role, $0.text) }
-                        if !model.currentQuestion.isEmpty {
-                            bubble("user", model.currentQuestion)
+                        ForEach(chat.priorTurns) { bubble($0.role, $0.text) }
+                        if !chat.question.isEmpty {
+                            bubble("user", chat.question)
                         }
                         bubble("assistant", text)
                     } else {
-                        if let note = model.resultNote {
+                        if let note = result.note {
                             Text(note)
                                 .font(.system(size: OverlayMetrics.noteFontSize, design: .rounded))
                                 .foregroundStyle(.white.opacity(0.55))
@@ -356,7 +329,7 @@ struct OverlayView: View {
                 .padding(.vertical, OverlayMetrics.vInset)
             }
             .onChange(of: text) { _, _ in
-                if model.streaming { proxy.scrollTo("streamEnd", anchor: .bottom) }
+                if result.isStreaming { proxy.scrollTo("streamEnd", anchor: .bottom) }
             }
         }
             .frame(width: box.width, height: box.height, alignment: .topLeading)
@@ -376,8 +349,8 @@ struct OverlayView: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous)
-                    .strokeBorder(model.resultIsError ? Color.orange.opacity(0.8) : .white.opacity(0.06),
-                                  lineWidth: model.resultIsError ? 1 : 0.5)
+                    .strokeBorder(result.isError ? Color.orange.opacity(0.8) : .white.opacity(0.06),
+                                  lineWidth: result.isError ? 1 : 0.5)
             )
             .clipShape(RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous))
             .shadow(color: .black.opacity(0.40), radius: 8, y: 3)

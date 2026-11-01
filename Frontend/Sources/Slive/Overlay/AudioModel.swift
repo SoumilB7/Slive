@@ -1,127 +1,58 @@
 import SwiftUI
 
-/// Observable state that drives the overlay. The audio thread pushes raw
-/// levels in via `pushLevels`; a 60 fps timer eases the *displayed* values
-/// toward those targets so the bars feel fluid and alive rather than jittery.
+/// Observable state that drives the overlay: what it shows (`state`) and the
+/// waveform bars. The audio thread pushes raw levels in via `pushLevels`; a
+/// 60 fps timer eases the *displayed* values toward those targets so the bars
+/// feel fluid and alive rather than jittery. Transitions come from
+/// `OverlayPresenter`; the SwiftUI views only read.
 final class AudioModel: ObservableObject {
-
-    /// One displayed conversation turn (role is "user" or "assistant").
-    struct ChatTurn: Identifiable, Equatable {
-        let id = UUID()
-        let role: String
-        let text: String
-    }
-
-    enum Phase: Equatable {
-        case idle
-        case listening
-        case saving
-        case saved(seconds: Double)
-        case tooShort
-        case error(String)
-        /// Waiting on the backend to return the transcript.
-        case transcribing
-        /// Backend returned text — grown into a box and displayed briefly.
-        case result(text: String)
-    }
 
     /// Invoked when the user taps the dismiss (✕) button on a result box.
     var onDismiss: (() -> Void)?
     /// Invoked when the user taps "Continue" under an assistant answer.
     var onContinue: (() -> Void)?
 
-    @Published var phase: Phase = .idle
+    @Published private(set) var state: OverlayState = .idle
     @Published private(set) var levels: [Float]
-    /// Eased RMS driving the bar amplitude. Internal easing state — no view
-    /// reads it directly (views read `levels`), so publishing it only fired
-    /// dead objectWillChange invalidations 60x/sec.
-    private var glow: Float = 0
-    /// True while an assistant answer is streaming in, so the box uses a fixed
-    /// size and auto-scrolls instead of resizing on every token.
-    @Published private(set) var streaming = false
-    /// True while the CURRENT recording is for the assistant (fn+ctrl) rather
-    /// than plain dictation — drives which listening animation the pill shows.
-    @Published private(set) var assistantListening = false
-    /// True while showing an assistant answer (streaming or final) — drives the
-    /// "Continue" footer button.
-    @Published private(set) var assistantResult = false
-    /// Prior conversation turns shown above the current answer when continuing a
-    /// chat (empty for a fresh, single question).
-    @Published private(set) var priorTurns: [ChatTurn] = []
-    /// The current question being answered — shown as a user bubble in chat mode.
-    @Published private(set) var currentQuestion: String = ""
-    /// True while live-streaming dictation is running (a distinct listening pill
-    /// with a caption of the words about to land).
-    @Published private(set) var liveDictating = false
-
-    /// Whether to render the box as a multi-turn transcript.
-    var isChat: Bool { !priorTurns.isEmpty }
 
     let bandCount: Int
-
-    // Targets set from the audio callback; `levels`/`glow` chase these.
-    private var targetLevels: [Float]
-    private var targetGlow: Float = 0
-
+    private var meter: MeterEasing
     private var timer: Timer?
-    private var noisePhase: Double = 0
-
-    // Visualiser dial — the tallest the centre bar can reach.
-    private let waveCeiling: Float = 0.92
-
-    // Fast rise, gentle fall — the classic "lively meter" feel.
-    private let attack: Float = 0.55
-    private let decay: Float = 0.18
 
     init(bandCount: Int = 14) {
         self.bandCount = bandCount
         self.levels = [Float](repeating: 0, count: bandCount)
-        self.targetLevels = [Float](repeating: 0, count: bandCount)
+        self.meter = MeterEasing(bandCount: bandCount)
     }
 
     // MARK: - Lifecycle
 
     func beginListening(assistant: Bool = false) {
-        streaming = false
-        assistantListening = assistant
-        liveDictating = false
-        phase = .listening
+        state = .listening(assistant ? .assistant : .dictation)
         startTimerIfNeeded()
     }
 
     /// Start live-streaming dictation: a listening pill showing live energy.
     func beginLiveDictation() {
-        streaming = false
-        assistantListening = false
-        liveDictating = true
-        phase = .listening
+        state = .listening(.live)
         startTimerIfNeeded()
     }
 
     /// Drive the waveform from the live stream's mic energy (0…~1).
     func pushStreamEnergy(_ energy: Float) {
-        targetGlow = powf(min(1, max(0, energy) * 4), 0.5)
+        meter.pushStreamEnergy(energy)
     }
 
     /// Stop showing the pill: bars ease down and it fades out. No confirmation.
     func finishListening() {
-        phase = .idle
-        liveDictating = false
-        targetLevels = [Float](repeating: 0, count: bandCount)
-        targetGlow = 0
-    }
-
-    func beginSaving() {
-        phase = .saving
-        targetLevels = [Float](repeating: 0, count: bandCount)
-        targetGlow = 0
+        state = .idle
+        meter.silence()
     }
 
     /// Stopped recording; the audio is now on its way to the backend. Keep the
     /// pill on screen (a loading indicator is shown instead of the waveform).
     func beginTranscribing() {
-        transcribingStuck = false
-        phase = .transcribing
+        state = .transcribing(stuck: false)
         settleMeterNow()
     }
 
@@ -130,108 +61,58 @@ final class AudioModel: ObservableObject {
     /// easer NOW instead of publishing a decaying, unseen waveform for ~0.4s.
     /// Mirrors the timer's own idle-stop reset so the next session starts clean.
     private func settleMeterNow() {
-        targetLevels = [Float](repeating: 0, count: bandCount)
-        targetGlow = 0
+        meter.reset()
         stopTimer()
         levels = [Float](repeating: 0, count: bandCount)
-        glow = 0
     }
-
-    /// The result box is a failure message (drawn with an orange edge).
-    @Published private(set) var resultIsError = false
-    /// A short line above a copy box saying why it wasn't typed (nil = none).
-    @Published private(set) var resultNote: String?
-    /// The transcribing pill has waited long enough to offer a ✕ — it's
-    /// click-through otherwise, so a stuck decode left an unclosable pill.
-    @Published private(set) var transcribingStuck = false
 
     /// Show the ✕ on the transcribing pill (no-op once it has moved on).
     func offerTranscribingDismiss() {
-        guard phase == .transcribing else { return }
-        transcribingStuck = true
+        guard state.isTranscribing else { return }
+        state = .transcribing(stuck: true)
     }
 
     /// Backend returned text (dictation, or an error) — grow the pill into a box.
     func showResult(_ text: String, isError: Bool = false, note: String? = nil) {
-        resultIsError = isError
-        resultNote = note
-        streaming = false
-        assistantResult = false
-        priorTurns = []
-        currentQuestion = ""
-        phase = .result(text: text)
+        state = .result(OverlayResult(text: text, note: note, isError: isError))
         settleMeterNow()
     }
 
     /// Final assistant answer — like `showResult` but flags it so the Continue
-    /// footer shows. Keeps the transcript (priorTurns/currentQuestion) in place.
+    /// footer shows. Keeps the transcript (priorTurns/question) in place.
     func showAssistantResult(_ text: String) {
-        resultIsError = false
-        resultNote = nil
-        streaming = false
-        assistantResult = true
-        phase = .result(text: text)
+        let shown = state.result?.answer
+        state = .result(OverlayResult(text: text, answer: .init(
+            streaming: false, priorTurns: shown?.priorTurns ?? [], question: shown?.question ?? "")))
         settleMeterNow()
     }
 
     /// Start streaming an assistant answer into a fixed-size box. `priorTurns`
     /// are shown above the answer when continuing a chat.
     func beginStreaming(priorTurns: [ChatTurn] = [], question: String = "") {
-        streaming = true; resultIsError = false; resultNote = nil
-        assistantResult = true
-        self.priorTurns = priorTurns
-        self.currentQuestion = question
-        phase = .result(text: "")
+        state = .result(OverlayResult(text: "", answer: .init(
+            streaming: true, priorTurns: priorTurns, question: question)))
         settleMeterNow()
     }
 
     /// Update the streaming answer text (box stays fixed size, scrolls).
     func updateStreaming(_ text: String) {
-        guard streaming else { return }
-        phase = .result(text: text)
-    }
-
-    func finishSaved(seconds: Double) {
-        phase = .saved(seconds: seconds)
-    }
-
-    func fail(_ message: String) {
-        phase = .error(message)
-    }
-
-    func tooShort() {
-        phase = .tooShort
+        guard var r = state.result, r.isStreaming else { return }
+        r.text = text
+        state = .result(r)
     }
 
     func reset() {
-        resultIsError = false
-        resultNote = nil
-        transcribingStuck = false
-        phase = .idle
-        streaming = false
-        assistantListening = false
-        assistantResult = false
-        liveDictating = false
-        priorTurns = []
-        currentQuestion = ""
-        targetLevels = [Float](repeating: 0, count: bandCount)
-        targetGlow = 0
+        state = .idle
+        meter.reset()
         stopTimer()
         levels = [Float](repeating: 0, count: bandCount)
-        glow = 0
     }
 
     // MARK: - Feed from audio thread (already dispatched to main)
 
     func pushLevels(_ bands: [Float], rms: Float) {
-        guard bands.count == bandCount else { return }
-        targetLevels = bands
-        // Perceptual loudness curve. Raw RMS is linear, so quiet speech barely
-        // moves the bars while loud speech slams them. A gamma < 1 (here ≈ sqrt)
-        // lifts the low end a lot and eases off up top, so the wave grows on a
-        // smooth curve: clearly alive when soft, still tall when loud.
-        let gain: Float = 34
-        targetGlow = powf(min(1, rms * gain), 0.45)
+        meter.push(bands, rms: rms)
     }
 
     // MARK: - 60 fps easing
@@ -251,13 +132,81 @@ final class AudioModel: ObservableObject {
     }
 
     private func tick() {
+        let listening = state.listenKind != nil
+        levels = meter.step(listening: listening)
+        // Once idle and faded out, stop spinning the timer.
+        if !listening && meter.isFadedOut {
+            stopTimer()
+            levels = [Float](repeating: 0, count: bandCount)
+            meter.glow = 0
+        }
+    }
+}
+
+/// The waveform's easing math, one 60 fps step at a time: raw levels in,
+/// displayed bar heights out.
+struct MeterEasing {
+    let bandCount: Int
+
+    // Targets set from the audio callback; the displayed bars chase these.
+    private var targetLevels: [Float]
+    private var targetGlow: Float = 0
+    /// Eased RMS driving the bar amplitude. Internal easing state — no view
+    /// reads it directly (views read `levels`), so publishing it only fired
+    /// dead objectWillChange invalidations 60x/sec.
+    var glow: Float = 0
+    private var noisePhase: Double = 0
+
+    // Visualiser dial — the tallest the centre bar can reach.
+    private let waveCeiling: Float = 0.92
+
+    // Fast rise, gentle fall — the classic "lively meter" feel.
+    private let attack: Float = 0.55
+    private let decay: Float = 0.18
+
+    init(bandCount: Int) {
+        self.bandCount = bandCount
+        self.targetLevels = [Float](repeating: 0, count: bandCount)
+    }
+
+    /// The bars have eased all the way down.
+    var isFadedOut: Bool { glow < 0.01 }
+
+    mutating func push(_ bands: [Float], rms: Float) {
+        guard bands.count == bandCount else { return }
+        targetLevels = bands
+        // Perceptual loudness curve. Raw RMS is linear, so quiet speech barely
+        // moves the bars while loud speech slams them. A gamma < 1 (here ≈ sqrt)
+        // lifts the low end a lot and eases off up top, so the wave grows on a
+        // smooth curve: clearly alive when soft, still tall when loud.
+        let gain: Float = 34
+        targetGlow = powf(min(1, rms * gain), 0.45)
+    }
+
+    /// The live stream's mic energy (0…~1).
+    mutating func pushStreamEnergy(_ energy: Float) {
+        targetGlow = powf(min(1, max(0, energy) * 4), 0.5)
+    }
+
+    /// Ease toward silence (the bars fall at their own pace).
+    mutating func silence() {
+        targetLevels = [Float](repeating: 0, count: bandCount)
+        targetGlow = 0
+    }
+
+    /// Snap to silence now.
+    mutating func reset() {
+        silence()
+        glow = 0
+    }
+
+    mutating func step(listening: Bool) -> [Float] {
         noisePhase += 0.05   // slow drift for the wobble (vertical, not sideways)
 
         // Ease overall loudness for smooth vertical growth/shrink.
         let gRate: Float = targetGlow > glow ? attack : decay
         glow = glow + (targetGlow - glow) * gRate
 
-        let listening = phase == .listening
         // `glow` is already loudness-shaped, so map it near-linearly here — a
         // second compression (the old tanh) would flatten the curve back out.
         var amp = waveCeiling * glow
@@ -277,16 +226,6 @@ final class AudioModel: ObservableObject {
             let wobble = 1 + 0.11 * Float(noise)                  // ≈ ±22%
             newLevels[i] = amp * (0.38 + 0.62 * arch) * wobble
         }
-        levels = newLevels
-
-        // Once idle and faded out, stop spinning the timer.
-        if !listening && phase != .saving && glow < 0.01 {
-            stopTimer()
-            levels = [Float](repeating: 0, count: bandCount)
-            glow = 0
-        }
+        return newLevels
     }
-
-    /// Keep the timer alive through the brief saving/saved states.
-    func keepAnimating() { startTimerIfNeeded() }
 }

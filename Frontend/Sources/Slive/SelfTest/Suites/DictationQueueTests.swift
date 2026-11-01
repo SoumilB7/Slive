@@ -24,5 +24,20 @@ enum DictationQueueTests {
         t.check(queue.isEmpty, "the queue drains")
         queue.finish(UUID())
         t.check(queue.isEmpty, "finishing an unknown dictation is harmless")
+
+        // Each queued release's task: ✕ cancels only assistant requests.
+        let tracked = DictationQueue()
+        func waiter() -> Task<Void, Never> { Task { try? await Task.sleep(nanoseconds: 60_000_000_000) } }
+        let d = tracked.enqueue(), q = tracked.enqueue()
+        let dictation = waiter(), assist = waiter()
+        tracked.track(dictation, for: d, isAssist: false)
+        tracked.track(assist, for: q, isAssist: true)
+        tracked.cancelAssists()
+        t.check(assist.isCancelled && !dictation.isCancelled, "✕ drops waiting assistant requests, never dictations")
+        let handed = tracked.handOff(q)
+        t.check(handed == assist && tracked.count == 1 && tracked.isLast(d),
+                "an assistant hands its task on and leaves the queue")
+        tracked.cancelAll()
+        t.check(dictation.isCancelled, "quit cancels every queued task")
     }
 }

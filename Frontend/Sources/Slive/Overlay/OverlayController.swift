@@ -110,7 +110,7 @@ final class OverlayController {
 
     /// Replace the panel with a freshly built one, carrying over frame,
     /// interactivity, and on-screen-ness. The SwiftUI content re-binds to the
-    /// same `AudioModel`, so whatever phase the overlay was showing redraws
+    /// same `AudioModel`, so whatever state the overlay was showing redraws
     /// identically on the new window.
     private func rebuildPanel(reason: String) {
         let wasVisible = panel.isVisible
@@ -273,11 +273,7 @@ final class OverlayController {
         let size = panel.frame.size
         // Text always shows bottom-centre; only the pill itself moves to the
         // right edge (upright) when the user turned that on.
-        let showingText: Bool = {
-            if case .result = model.phase { return true }
-            return model.streaming
-        }()
-        if Settings.shared.pillOnRight && !showingText {
+        if Settings.shared.pillOnRight && !model.state.showsText {
             panel.setFrameOrigin(NSPoint(x: frame.maxX - size.width - 2,
                                          y: frame.midY - size.height / 2))
             return
@@ -287,3 +283,5 @@ final class OverlayController {
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
+
+extension OverlayController: OverlaySurface {}

@@ -36,5 +36,9 @@ enum AllSuites {
         ModelLifecycleTests.suite,
         ProblemReportTests.suite,
         SettingsUITests.suite,
+        OverlayStateTests.suite,
+        ModelResidencyTests.suite,
+        SessionCoordinatorTests.suite,
+        ChatSessionTests.suite,
     ]
 }

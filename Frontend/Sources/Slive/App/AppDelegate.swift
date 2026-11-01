@@ -2,77 +2,39 @@ import AppKit
 import AVFoundation
 import Combine
 
+/// App lifecycle, the wiring between the long-lived objects (built by
+/// `AppContainer`), and the three flows a gesture starts — one file each:
+/// AppDelegate+Dictation (hold-to-talk), +Live (streaming), +Assistant.
+/// The gesture rules live in `SessionCoordinator`, the overlay's in
+/// `OverlayPresenter`, model residency in `ModelResidency`. Members the
+/// flow files share are internal; the rest stay private here.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let model = AudioModel()
-    private lazy var overlay = OverlayController(model: model)
-    private let recorder = AudioRecorder()
-    private let hotkey = HotkeyMonitor()
-    private let settingsWindow = SettingsWindowController()
-    private let whisper = TranscriptionModel.shared   // on-device STT (Neural Engine)
-    /// The last dictation / continuous model that was READY. Kept resident
-    /// while a newly picked model downloads + compiles, so dictation keeps
-    /// working on it; replaced (and evicted) the moment the new one is ready.
-    private var servingDictationModel: String?
-    private var servingContinuousModel: String?
-    private let assistant = AssistantClient()
-    private let backend = BackendManager.shared
+    let app = AppContainer()
 
-    private var statusItem: NSStatusItem?
-    private var backendStatusItem: NSMenuItem?
-    private var statusCancellable: AnyCancellable?
+    var presenter: OverlayPresenter { app.presenter }
+    var recorder: AudioRecorder { app.recorder }
+    var whisper: TranscriptionModel { app.whisper }
+    var backend: BackendManager { app.backend }
+    var continuous: ContinuousDictation { app.continuous }
+    var session: SessionCoordinator { app.session }
+    var residency: ModelResidency { app.residency }
+    /// Released dictations, typed in the order they were spoken (see DictationQueue).
+    var waitingDictations: DictationQueue { app.dictations }
+
+    private var activityToken: NSObjectProtocol?   // holds off App Nap
     /// Keeps the problem reporter's settings summary current and tells it
     /// when the server dies on its own.
     private var reporterWatches: Set<AnyCancellable> = []
-    private var recordStart: Date?
-    /// When the current continuous session began speaking (post hold-delay), so
-    /// its pace can be measured on release.
-    private var liveStart: Date?
-    private var armWorkItem: DispatchWorkItem?
-    private var activityToken: NSObjectProtocol?   // holds off App Nap
-    private var transcribeTask: Task<Void, Never>? // in-flight assistant request (dictations queue)
-    private var collapseWorkItem: DispatchWorkItem? // pending result auto-dismiss
-    private var currentAction: HotkeyAction = .dictate  // which shortcut is recording
-
-    /// Continuous (live streaming) dictation — a fully separate flow from the
-    /// main press-and-release dictation so the two never interfere.
-    private let continuous = ContinuousDictation()
-
-    // In-memory assistant conversation (never persisted). `chatActive` is set
-    // only by tapping "Continue"; the next assistant call then continues it.
-    private var conversation: [AssistantClient.HistoryItem] = []
-    private var chatActive = false
-    private var pendingTurn: (question: String, answer: String)?
-
-    /// The mic stays open this long AFTER release so a final syllable still
-    /// sounding at key-up isn't clipped. 0.1s since Sep 27, 2026 (was 0.3):
-    /// `--bench-tail` on 300 recent dictations — the extra 0.2s was true
-    /// silence in 42%, and cutting it changed an ending in 1 of 300 (0.3%,
-    /// an already-garbled final word); Soumil releases the instant he stops
-    /// speaking, so this is 0.2s off every dictation.
-    static let postReleaseCaptureSeconds: TimeInterval = 0.10
-    /// The delayed stop scheduled by `keyUp` (flushed early if a new hold begins).
-    private var pendingStop: DispatchWorkItem?
-    /// When the hotkey lifted — anchor for the always-on release→typed log.
-    private var releasedAt: Date?
-    /// Every released dictation (and an assistant request released while the
-    /// model loads): never cancelled by a newer hold, typed in the order they
-    /// were spoken (see DictationQueue).
-    private let waitingDictations = DictationQueue()
-    private var waitingTasks: [UUID: Task<Void, Never>] = [:]
-    /// The queued entries that are assistant requests — ✕ drops those (an
-    /// answer isn't spoken words; dictations still type).
-    private var waitingAssists: Set<UUID> = []
+    /// The `Settings.changes` subscription (lives as long as the app).
+    private var settingsChanges: AnyCancellable?
+    var transcribeTask: Task<Void, Never>? // in-flight assistant request (dictations queue)
     /// Latency-critical activity assertion held for hold→type, so P-cores stay
     /// clocked and App Nap/timer coalescing can't stretch the pipeline.
-    private var dictationActivity: NSObjectProtocol?
+    var dictationActivity: NSObjectProtocol?
+    var chat = ChatSession()
 
-    /// How long a result box stays on screen before collapsing.
-    private let resultDisplayDuration: TimeInterval = 6.0
-    /// Assistant answers stay up longer — you need time to read them (dismiss
-    /// early with the ✕ button).
-    private let assistantDisplayDuration: TimeInterval = 15.0
-
+    static let micFailedMessage = "Couldn't start the microphone."
 
     // MARK: - Lifecycle
 
@@ -98,9 +60,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // spawns it on demand. At launch just reap any orphan from a crashed
         // session. Saves a resident Python process for dictation-only use.
         backend.reapOrphans()
-        statusCancellable = backend.$status.sink { [weak self] status in
-            self?.updateBackendStatusUI(status)
-        }
         backend.$lastExit.compactMap { $0 }.filter { !$0.wasExpected }.sink { exit in
             let how = exit.reason == .uncaughtSignal ? "signal \(exit.code)" : "exit code \(exit.code)"
             FailureReporter.shared.report("server", "Slive Server stopped unexpectedly.",
@@ -113,12 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { FailureReporter.shared.settingsChanged() }
             .store(in: &reporterWatches)
 
-        setupMainMenu()
-        setupMenuBar()
+        app.menuBar.install()
         wireAudioAndHotkey()
 
         // Settings window + live hotkey switching.
-        settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
+        app.settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
         settingsChanges = Settings.shared.changes.sink { [weak self] change in
             self?.settingsChanged(change)
         }
@@ -130,25 +88,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // continuous model is only kept in memory while a continuous shortcut
         // is actually set — no point holding a second model (RAM + ANE) for a
         // feature that's switched off.
-        // A model finished loading: switch to it if it's the current pick,
-        // then drop whatever it replaced.
-        whisper.onModelReady = { [weak self] model in
-            guard let self else { return }
-            if model == Settings.shared.whisperModel { self.servingDictationModel = model }
-            // The launch stand-in is ready first: dictation runs on it until
-            // the picked model has compiled.
-            else if model == self.launchStandIn(for: Settings.shared.whisperModel),
-                    !self.whisper.isReady(Settings.shared.whisperModel) {
-                self.servingDictationModel = model
-                Log.event("dictating on \(model) until \(Settings.shared.whisperModel) is ready")
-            }
-            if model == Settings.shared.continuousModel { self.servingContinuousModel = model }
-            self.refreshModelResidency()
-        }
+        whisper.onModelReady = { [weak self] model in self?.residency.modelReady(model) }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
-        refreshModelResidency()
+        residency.refresh()
 
-        hotkey.start()   // self-arms once Input Monitoring is granted
+        app.hotkey.start()   // self-arms once Input Monitoring is granted
 
         // Pre-build the feedback tones off-main so the FIRST hold doesn't pay
         // the ~20ms synthesis + engine graph setup on the hot path.
@@ -159,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // First launch, or a missing permission → show the home window so the
         // user sees what Slive does and can grant permissions in place.
         if Settings.shared.isFirstRun || !HotkeyMonitor.inputMonitoringGranted {
-            openSettings()
+            app.menuBar.openSettings()
             Settings.shared.markFirstRunComplete()
             // Ask for the mic here, beside the permission list — otherwise the
             // first prompt came mid-hold and that dictation was lost to it.
@@ -177,9 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the process exits.
     func applicationWillTerminate(_ notification: Notification) {
         FailureReporter.shared.goodbye()   // a normal quit, not a crash
-        hotkey.stop()
+        app.hotkey.stop()
         transcribeTask?.cancel(); transcribeTask = nil
-        waitingTasks.values.forEach { $0.cancel() }
+        waitingDictations.cancelAll()
         continuous.cancel()  // stop any live stream
         TrainingStore.shared.flushPendingWrites()   // labels from a run in flight
         whisper.shutdown()   // release the WhisperKit (Neural Engine) model
@@ -190,1108 +134,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The `Settings.changes` subscription (lives as long as the app).
-    private var settingsChanges: AnyCancellable?
-
-    /// Settings that take effect live. Runs synchronously inside the setter,
-    /// so the monitor and residency see the new value immediately — and
-    /// always bindings first, then residency.
-    private func settingsChanged(_ change: SettingsChange) {
-        switch change {
-        case .bindings:
-            syncBindings()
-            // Recording/removing the continuous shortcut (or flipping a stream
-            // switch) also decides whether its model belongs in memory — a
-            // stream toggle also earns the model RAM.
-            refreshModelResidency()
-        case .dictationModel, .continuousModel:
-            refreshModelResidency()
-        }
-    }
-
-    /// Push the EFFECTIVE bindings into the monitor: a bind whose on/off
-    /// switch is off simply isn't a binding, nor is an action this build
-    /// can't run (Lite: no assistant).
-    private func syncBindings() {
-        hotkey.bindings = HotkeyBinding.effective(from: Settings.shared, capabilities: .current)
-    }
-
-    /// Keep exactly the models that are in use resident: dictation's always,
-    /// continuous's only while its shortcut is set (same name = one shared
-    /// instance). Everything else is evicted from RAM/ANE.
-    private func refreshModelResidency() {
-        let dictation = Settings.shared.whisperModel
-        let continuousOn = (Settings.shared.streamHoldOn && Settings.shared.streamHotkey != nil)
-            || (Settings.shared.streamToggleOn && Settings.shared.streamToggleHotkey != nil)
-        var want: Set<String> = [dictation]
-        if continuousOn { want.insert(Settings.shared.continuousModel) }
-        // Keep the previous pick resident until its replacement is ready.
-        var keep = want
-        if let old = servingDictationModel, !whisper.isReady(dictation) { keep.insert(old) }
-        if continuousOn, let old = servingContinuousModel,
-           !whisper.isReady(Settings.shared.continuousModel) { keep.insert(old) }
-        whisper.retainModels(keep)
-        // Launch stand-in. When macOS has discarded Whisper's compiled copy
-        // (it does within about a day) its Neural Engine compile takes 60–90s,
-        // and macOS compiles one model at a time — so nothing could be
-        // dictated for over a minute after launch (Oct 31: 70s). Parakeet
-        // compiles in ~10s: load it FIRST and dictate on it until Whisper is
-        // ready (`onModelReady` re-runs this and starts Whisper right after).
-        // Only when nothing else can serve and Whisper hasn't started loading.
-        if let standIn = launchStandIn(for: dictation), !whisper.isReady(dictation),
-           !whisper.isReady(standIn), servingDictationModel.map({ !whisper.isReady($0) }) ?? true {
-            switch (whisper.status(for: dictation), whisper.status(for: standIn)) {
-            case (.preparing, _), (.downloading, _): break   // already compiling — queueing behind it helps nobody
-            case (_, .failed): break                          // no stand-in; Whisper as usual
-            default:
-                whisper.select(standIn)
-                // Ready or failed, Whisper goes next.
-                Task { [weak self] in
-                    _ = await self?.whisper.awaitReady(standIn)
-                    self?.refreshModelResidency()
-                }
-                whisper.applySpeedTier()
-                return
-            }
-        }
-        // Dictation first. macOS compiles one model at a time for the Neural
-        // Engine, and after its compile cache is purged (low disk space, OS
-        // update) a cold compile takes minutes — the continuous model must
-        // not make the dictation model wait in line (Sep 29: Parakeet's 18s
-        // compile ran first, dictation was ready 2m25s after launch).
-        // `onModelReady` re-runs this, so continuous loads right after.
-        whisper.select(dictation)
-        if continuousOn, Settings.shared.continuousModel != dictation {
-            switch whisper.status(for: dictation) {
-            case .preparing, .downloading: break   // wait for dictation
-            default: whisper.select(Settings.shared.continuousModel)
-            }
-        }
-        if continuousOn { downloadContinuousModelIfNeeded() }
-        whisper.applySpeedTier()   // arm (or disarm) the Feather-tier idle unload
-    }
-
-    /// Continuous mode is on (a shortcut is set) but its model was never
-    /// downloaded — fetch it. Turning continuous on IS asking for it. A
-    /// failed download is retried only on `retryFailed` (a live-typing
-    /// press): settings refreshes would restart it nonstop and hide the
-    /// failure. True when a download is running or was just started.
-    @discardableResult
-    private func downloadContinuousModelIfNeeded(retryFailed: Bool = false) -> Bool {
-        let model = Settings.shared.continuousModel
-        guard !whisper.isDownloaded(model) else { return false }
-        switch whisper.status(for: model) {
-        case .downloading: return true
-        case .failed where !retryFailed: return false
-        default: break
-        }
-        Log.event("continuous model \(model) not downloaded — downloading it")
-        Task { await whisper.download(model) }
-        return true
-    }
-
-    /// A downloaded Parakeet model to dictate on while a Whisper pick compiles
-    /// — the continuous model if it's one, else any downloaded Parakeet.
-    private func launchStandIn(for dictation: String) -> String? {
-        guard SpeechEngine.of(dictation) == .whisper else { return nil }
-        let candidates = [Settings.shared.continuousModel] + ParakeetModel.allCases.map(\.rawValue)
-        return candidates.first {
-            if case .parakeet = SpeechEngine.of($0) { return whisper.isDownloaded($0) }
-            return false
-        }
-    }
-
     /// Clicking the Dock icon (no windows open) reopens the home window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { openSettings() }
+        if !flag { app.menuBar.openSettings() }
         return true
     }
 
     /// Closing the window must NOT quit Slive — it keeps listening for the key.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
-    }
-
-    // MARK: - Wiring
-
-    private func wireAudioAndHotkey() {
-        // Voice recency for the release tail lives in the recorder itself
-        // (per-callback, no dispatch staleness) — levels here are visuals only.
-        recorder.onLevels = { [weak self] bands, rms in
-            self?.model.pushLevels(bands, rms: rms)
-        }
-        hotkey.onStart = { [weak self] action in self?.keyDown(action) }
-        hotkey.onStop = { [weak self] _ in self?.keyUp() }
-        model.onDismiss = { [weak self] in self?.dismissOverlay() }
-        model.onContinue = { [weak self] in self?.continueChat() }
-        continuous.onEnergy = { [weak self] energy in self?.model.pushStreamEnergy(energy) }
-        continuous.onFailure = { [weak self] in self?.liveStreamFailed() }
-        hotkey.onToggle = { [weak self] action in self?.toggleTapped(action) }
-    }
-
-    // MARK: - Tap-to-toggle flow (click to start, click again to stop)
-
-    /// Which toggle session is live, if any. Toggle sessions reuse the exact
-    /// hold machinery (begin/stop + the post-release capture); only who
-    /// decides "release" differs — the second tap instead of a key-up.
-    private var toggleActive: HotkeyAction?
-
-    private func toggleTapped(_ action: HotkeyAction) {
-        // A double-tap bind shares its gesture with a hold bind (fn hold vs
-        // fn-fn): the second press also armed a pending hold — kill it, the
-        // double-tap owns this press.
-        armWorkItem?.cancel()
-        armWorkItem = nil
-        // Second tap of the live toggle session → the release.
-        if toggleActive == action {
-            toggleActive = nil
-            keyUp()
-            return
-        }
-        guard toggleActive == nil else {
-            Log.hotkey("toggle \(action) ignored — another toggle session is live")
-            return
-        }
-        // Taps slower than holdActivationDelay make the FIRST tap of a double
-        // mature into a real hold session — by the second tap it's recording
-        // (or already winding down / transcribing a short fragment). The
-        // completed double outranks that false start: abort it, type nothing
-        // from it, and give the mic to the toggle. Age-gated so a stray
-        // double-tap can never kill a long-running real dictation.
-        if isSessionLive {
-            guard sessionStartedRecently(within: 1.0) else {
-                Log.hotkey("toggle \(action) ignored — a real session is live")
-                return
-            }
-            abortFalseStartSession()
-        }
-        toggleActive = action
-        currentAction = action
-        // No hold-activation delay for a tap: the tap IS deliberate.
-        if action == .stream { beginLiveDictation() } else { beginRecording() }
-        // Nothing started (mic blocked, model not ready, stream refused): no
-        // toggle is live — else the next tap is eaten as this one's "stop".
-        if !recorder.isRecording && !continuous.isActive { toggleActive = nil }
-    }
-
-    /// True when the live session began moments ago — i.e. it is the first
-    /// tap of this double, not a dictation someone is mid-sentence into.
-    private func sessionStartedRecently(within interval: TimeInterval) -> Bool {
-        if let t = recordStart, Date().timeIntervalSince(t) < interval { return true }
-        if let t = liveStart, Date().timeIntervalSince(t) < interval { return true }
-        return pendingStop != nil   // tap-1's delayed stop is still queued
-    }
-
-    /// Discard a false-start session completely: no transcription, no typing,
-    /// no training capture — the fragment never happened.
-    private func abortFalseStartSession() {
-        pendingStop?.cancel(); pendingStop = nil
-        armWorkItem?.cancel(); armWorkItem = nil
-        transcribeTask?.cancel(); transcribeTask = nil
-        if continuous.isActive { continuous.cancel() }
-        if recorder.isRecording {
-            let capture = recorder.stop()
-            if let url = capture.url { try? FileManager.default.removeItem(at: url) }
-        }
-        endDictationActivityIfIdle()   // the discarded fragment held it
-        Log.hotkey("false-start hold session aborted by double-tap")
-    }
-
-    /// True while any recording/stream session is actually running.
-    private var isSessionLive: Bool {
-        recorder.isRecording || continuous.isActive || pendingStop != nil
-    }
-
-    /// User tapped ✕ — cancel any in-flight work, end the chat, and collapse now.
-    /// Released dictations are NOT cancelled: their words were spoken, so they
-    /// still type (or surface a copy box) when decoded.
-    private func dismissOverlay() {
-        transcribeTask?.cancel(); transcribeTask = nil
-        for id in waitingAssists { waitingTasks[id]?.cancel() }
-        collapseWorkItem?.cancel(); collapseWorkItem = nil
-        toggleActive = nil
-        continuous.cancel()
-        chatActive = false
-        conversation.removeAll()
-        pendingTurn = nil
-        collapseOverlay()
-    }
-
-    // MARK: - Hold-to-talk flow
-
-    private func keyDown(_ action: HotkeyAction) {
-        // A held key takes over from a live toggle session: close the toggle
-        // (schedules its stop), then flush so the new hold starts clean.
-        if toggleActive != nil {
-            toggleActive = nil
-            keyUp()
-        }
-        // A delayed stop may still be pending from the previous release — flush
-        // it now (stop + hand off to transcription immediately) so the new hold
-        // starts from a clean state instead of colliding with a live session.
-        flushPendingStop()
-        // Arm: recording begins only if the key is still held after the delay.
-        armWorkItem?.cancel()
-        currentAction = action
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.armWorkItem = nil
-            if action == .stream { self.beginLiveDictation() }
-            else { self.beginRecording() }
-        }
-        armWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Settings.shared.holdActivationDelay, execute: work)
-    }
-
-    private func keyUp() {
-        if let pending = armWorkItem {
-            // Released before the hold threshold → do nothing at all.
-            pending.cancel()
-            armWorkItem = nil
-            return
-        }
-        // Keep capturing briefly (postReleaseCaptureSeconds) so a final
-        // syllable still sounding at key-up isn't clipped.
-        // The pill stays visible and naturally changes to its processing state
-        // when the delayed stop begins transcription.
-        pendingStop?.cancel()
-        releasedAt = Date()   // anchors the release→typed timing log
-        let action = currentAction
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingStop = nil
-            if action == .stream { self.stopLiveDictation() }
-            else { self.stopRecording() }
-        }
-        pendingStop = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.postReleaseCaptureSeconds, execute: work)
-    }
-
-    /// Run the pending delayed stop right now (if any) — used when a new hold
-    /// begins inside the release-tail window, so sessions never overlap.
-    private func flushPendingStop() {
-        guard pendingStop != nil else { return }
-        pendingStop?.cancel()
-        pendingStop = nil
-        if currentAction == .stream { stopLiveDictation() }
-        else { stopRecording() }
-    }
-
-    private func beginRecording() {
-        guard !recorder.isRecording else { return }
-        guard micAllowed() else { return }
-        // A new recording supersedes an in-flight assistant answer and any
-        // result box. Released dictations are queued and still type.
-        transcribeTask?.cancel()
-        transcribeTask = nil
-        collapseWorkItem?.cancel()
-        collapseWorkItem = nil
-
-        model.beginListening(assistant: currentAction == .assist)
-        if currentAction == .assist {
-            // Boot the lazy backend NOW, overlapped with the user speaking —
-            // by release it's healthy and the answer path skips the
-            // multi-second first-use spawn entirely.
-            Task { _ = await backend.ensureHealthy() }
-        }
-        overlay.show()
-        recordStart = Date()
-        if !recorder.start() {
-            Log.event("mic unavailable — hold aborted")
-            FailureReporter.shared.report("microphone", "The microphone couldn't start.")
-            toggleActive = nil   // else the next tap is eaten as this session's "stop"
-            showNotice(Self.micFailedMessage)
-            return
-        }
-        // Hold the machine at speed for the whole hold→type window (tier
-        // knob): no App Nap, no timer coalescing, P-cores clocked — decode
-        // latency on battery matches plugged-in.
-        if dictationActivity == nil, Settings.shared.resolvedSpeedTier.holdsLatencyAssertion {
-            dictationActivity = ProcessInfo.processInfo.beginActivity(
-                options: [.userInitiated, .latencyCritical], reason: "Slive dictation")
-        }
-        // Prime the Neural Engine while the user is still speaking (tier
-        // knob; also the Feather tier's reload-on-hold path): after minutes
-        // of idle the compiled graph pages back in on first use — pay that
-        // now, in parallel with the hold, not after release.
-        whisper.primeIfCold(Settings.shared.whisperModel)
-        // Subtle audio cue that a call activated — distinct per call type.
-        // Posted on the NEXT runloop turn: its engine restart (auto-shutdown
-        // wake) is a few ms of main-thread work that shouldn't sit between
-        // key-down and the pill/mic being live.
-        let cueAction = currentAction
-        DispatchQueue.main.async { FeedbackPlayer.shared.playActivation(for: cueAction) }
-    }
-
-    /// Drop the latency-critical assertion once a dictation cycle fully ends.
-    private func endDictationActivity() {
-        if let activity = dictationActivity {
-            ProcessInfo.processInfo.endActivity(activity)
-            dictationActivity = nil
-        }
-    }
-
-    /// End the assertion once nothing still needs it: no hold live (a newer
-    /// one is running on it) and no dictation decoding or waiting its turn.
-    /// Every release's task ends through here — the cancelled / empty /
-    /// no-audio exits used to leave it held.
-    private func endDictationActivityIfIdle() {
-        guard waitingDictations.isEmpty, !isSessionLive else { return }
-        endDictationActivity()
-    }
-
-    private func stopRecording() {
-        guard recorder.isRecording else { return }
-        let duration = recordStart.map { Date().timeIntervalSince($0) } ?? 0
-        let capture = recorder.stop()
-        let wavURL = capture.url
-        let samples = capture.samples
-
-        guard let wavURL else {
-            model.finishListening()
-            hideOverlaySoon()
-            endDictationActivityIfIdle()
-            return
-        }
-
-        // Pure zeros: the mic heard nothing at all (blocked, muted at the
-        // hardware, a dead device) — say so instead of fading like silence.
-        if samples.count >= 16_000 / 4, AudioRecorder.isDigitalSilence(samples) {
-            try? FileManager.default.removeItem(at: wavURL)
-            Log.event(String(format: "captured %.1fs of digital silence — no mic signal", duration))
-            showNotice("No sound. Check your microphone.")
-            endDictationActivityIfIdle()
-            return
-        }
-
-        // Keep the overlay up and show a loading state while we save + transcribe.
-        beginTranscribingPill()
-
-        // Which shortcut started this recording decides what we do with the text.
-        let action = currentAction
-        let whisperModel = whisper.servingModel(wanted: Settings.shared.whisperModel,
-                                                fallback: servingDictationModel)
-        let pipeline = DictationPipeline.standard(vocabulary: Settings.shared.hotwords)
-        // Queued: every dictation, and an assistant request released while
-        // the model isn't ready or behind dictations still in line. A queued
-        // release is never cancelled by a newer hold and runs in turn (it
-        // times its own release→typed).
-        let modelReady = whisper.isReady(whisperModel)
-        let queueID: UUID? = DictationQueue.queues(action, modelReady: modelReady,
-                                                   queueEmpty: waitingDictations.isEmpty)
-            ? waitingDictations.enqueue() : nil
-        let releaseTime = releasedAt
-        if queueID != nil { releasedAt = nil }
-        // Released while the model is still being prepared (first launch, or
-        // macOS purged its compiled-model cache — a minute or two): say so
-        // instead of silent "processing" dots. The dictation is kept and
-        // types the moment the model is ready, replacing this box. Only
-        // promised when a load is running or will start: a model that isn't
-        // downloaded or just failed gets its reason from handleNoTranscript.
-        if !modelReady, whisper.canBecomeReady(whisperModel) {
-            let msg = "Loading model. Text will follow."
-            model.showResult(msg)
-            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
-            // Clickable, so a stalled load's box can be closed: ✕ hides it,
-            // the dictation stays queued and still types once the model is up.
-            overlay.setInteractive(true)
-        }
-
-        transcribeTask?.cancel()
-        transcribeTask = nil
-        // Strong `self` capture: the task always returns (breaking any cycle).
-        // An unqueued (assistant) one is cancelled by a new recording so a
-        // stale UI update never lands; a queued one runs to the end.
-        let task = Task {
-            defer { try? FileManager.default.removeItem(at: wavURL) }   // never persisted
-            defer {
-                if let queueID { self.finishWaiting(queueID) }
-                self.endDictationActivityIfIdle()   // every exit, not just the typed one
-            }
-            Log.event(String(format: "captured %.1fs of audio (%@)", duration, action == .assist ? "assistant" : "dictation"))
-            if Task.isCancelled { return }
-
-            // Assistant: capture the screenshot IN PARALLEL with transcription —
-            // both happen post-release, and the screencapture subprocess used to
-            // sit serially (~200-500ms) in front of the HTTP request.
-            let screenshotTask: Task<(mediaType: String, data: String)?, Never>? =
-                (action == .assist && Settings.shared.assistantConfig.attachScreenshot)
-                ? Task.detached(priority: .userInitiated) { ScreenCapture.fullScreenBase64() }
-                : nil
-
-            // 1. Transcribe ON-DEVICE with WhisperKit (Neural Engine) — no backend
-            //    needed for STT. Prefer the in-memory canonical samples the
-            //    recorder accumulated (skips the WAV reopen/read); fall back to
-            //    the file when they're unavailable (native-format fallback, or
-            //    the model needs a load — the file path loads it).
-            let tTranscribe = Date()
-            // Trim leading/trailing silence first: dead air before the first
-            // word (hold → think → speak) and the release tail's quiet both
-            // cost decode windows and trip fallback thresholds for nothing.
-            let voiced = pipeline.prepare(samples)
-            var transcript: String?
-            var waitedForModel = false
-            if voiced.count > 16_000 / 3 {
-                // Released while the model is still being prepared (launch,
-                // purged compile cache, macOS update): wait for it, then take
-                // the NORMAL in-memory path. (Oct 7: the old path decoded the
-                // WAV on a just-compiled model, racing the post-load warm-up,
-                // came back empty and the dictation was silently dropped.)
-                if !whisper.isReady(whisperModel) {
-                    waitedForModel = true
-                    Log.event("dictation waiting for model \(whisperModel)")
-                    _ = await whisper.awaitReady(whisperModel)
-                    Log.event(String(format: "model ready after %.1fs of waiting", Date().timeIntervalSince(tTranscribe)))
-                }
-                transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
-                // The first decode on a freshly compiled model gets one retry.
-                if waitedForModel, !Task.isCancelled,
-                   (transcript ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
-                    Log.event("decode after waiting came back empty — retrying once")
-                    transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
-                }
-            }
-            // File fallback: native-format recordings have no canonical
-            // samples, and a failed samples decode (model still loading) also
-            // lands here. Skipped only when the canonical buffer positively
-            // shows the hold was silence.
-            if transcript == nil, samples.isEmpty || voiced.count > 16_000 / 3 {
-                transcript = await whisper.transcribe(wavURL, model: whisperModel)
-            }
-            // Engine artifacts out, whichever engine and path decoded it
-            // (Whisper's in-memory decode already cleaned: a no-op there).
-            transcript = transcript.map(pipeline.clean)
-            // Unconditional: one line per dictation, and THE number to check
-            // whenever "dictation feels slow" comes up again.
-            let decodeSeconds = Date().timeIntervalSince(tTranscribe)
-            Log.event(String(format: "decoded %.1fs audio in %.2fs (%@) → %@%@",
-                  duration, decodeSeconds, whisperModel,
-                  transcript == nil ? "nil" : ((transcript ?? "").isEmpty ? "EMPTY" : "\((transcript ?? "").count) chars"),
-                  ProcessInfo.processInfo.isLowPowerModeEnabled
-                      ? " [LOW POWER MODE — decode throttled]" : ""))
-            // (Speed-graph calibration happens inside transcribeSamples, where
-            // the pipe is guaranteed resident — timing here can include a
-            // model load, which once poisoned the graph into "~15s".)
-            if Task.isCancelled { Log.event("request cancelled after decode (a newer hold, ✕ or quit)"); return }
-            guard let decoded = transcript, !decoded.isEmpty else {
-                let hadSpeech = voiced.count > 16_000 / 3
-                if let queueID, !self.ownsOverlay(queueID) {
-                    Log.event("queued dictation came back empty (overlay busy, nothing shown)")
-                    return
-                }
-                await MainActor.run { self.handleNoTranscript(afterWaiting: waitedForModel && hadSpeech) }
-                return
-            }
-            // Spell the user's Vocabulary terms the way they typed them
-            // (both engines; a no-op when the list is empty).
-            let text = pipeline.correct(decoded)
-            // Older waiting dictations type first.
-            if let queueID { await self.waitingDictations.turn(queueID) }
-            if Task.isCancelled { return }   // quit, or ✕ on a waiting assistant request
-
-            // 2. Route the transcript: plain dictation types/shows it; the
-            //    assistant shortcut needs the (always-on) Python backend to reach
-            //    the LLM, so ensure it's up first, then stream the answer.
-            switch action {
-            case .dictate, .stream:
-                // `.stream` never reaches here (it uses the live path), but the
-                // file path falls back to plain dictation if it ever did.
-                self.deliverDictation(text, audioURL: wavURL, releasedAt: releaseTime,
-                                      waitedForModel: waitedForModel, seconds: duration,
-                                      ownsOverlay: queueID.map { self.ownsOverlay($0) } ?? !self.isSessionLive)
-            case .assist:
-                if let queueID {
-                    // Hand the turn on NOW that the question is in hand — the
-                    // LLM stream runs for seconds and held every later
-                    // dictation behind it. From here it's an ordinary in-flight
-                    // answer: a newer hold or ✕ cancels it via transcribeTask.
-                    let owns = self.ownsOverlay(queueID)
-                    self.waitingDictations.finish(queueID)
-                    self.waitingAssists.remove(queueID)
-                    let mine = self.waitingTasks.removeValue(forKey: queueID)
-                    guard owns else {
-                        // A newer hold / dictation has the overlay: it
-                        // supersedes this request, as it would an unqueued one.
-                        Log.event("queued assistant request superseded by a newer hold — skipped")
-                        screenshotTask?.cancel()
-                        return
-                    }
-                    self.transcribeTask?.cancel()
-                    self.transcribeTask = mine
-                }
-                if await self.backend.ensureHealthy() {
-                    if Task.isCancelled { return }
-                    await self.runAssistant(on: text, screenshot: screenshotTask)
-                } else {
-                    screenshotTask?.cancel()
-                    await MainActor.run { self.showBackendError() }
-                }
-            }
-        }
-        if let queueID {
-            waitingTasks[queueID] = task
-            if action == .assist { waitingAssists.insert(queueID) }
-        } else {
-            transcribeTask = task
-        }
-    }
-
-    /// A queued dictation is done (typed, empty, failed or cancelled on quit).
-    /// Safe to repeat — a queued assistant hands its turn on early.
-    private func finishWaiting(_ id: UUID) {
-        waitingDictations.finish(id)
-        waitingTasks[id] = nil
-        waitingAssists.remove(id)
-    }
-
-    /// The overlay is this queued dictation's to update: it's the newest one
-    /// waiting and no newer hold is live.
-    private func ownsOverlay(_ id: UUID) -> Bool {
-        waitingDictations.isLast(id) && !isSessionLive
-    }
-
-    // MARK: - Live streaming dictation
-
-    /// Start live dictation: stream transcription from the mic and type each
-    /// confirmed word straight into the focused field as you speak, showing the
-    /// still-forming tail in the overlay. Needs a model already loaded.
-    private func beginLiveDictation() {
-        guard !recorder.isRecording else { return }
-        guard micAllowed() else { return }
-        transcribeTask?.cancel(); transcribeTask = nil
-        collapseWorkItem?.cancel(); collapseWorkItem = nil
-
-        // Streaming can't wait on a first-time model load — it needs one in
-        // memory now. A fresh install's continuous model (Parakeet) isn't even
-        // downloaded, and nothing downloaded it: every press said "Loading
-        // model" forever. So fetch it, and stream meanwhile on whatever IS
-        // loaded — the previous continuous model, else the dictation model.
-        let wanted = Settings.shared.continuousModel
-        let fetching = downloadContinuousModelIfNeeded(retryFailed: true)
-        let fallback = [servingContinuousModel, servingDictationModel]
-            .compactMap { $0 }.first { whisper.isReady($0) }
-        let streamModel = whisper.servingModel(wanted: wanted, fallback: fallback)
-        guard whisper.isReady(streamModel) else {
-            whisper.select(wanted)
-            // The real state: a failed model said "Loading" forever.
-            let msg: String
-            switch whisper.status(for: wanted) {
-            case .downloading(let p):
-                msg = "Downloading model · \(Int(p * 100))%. Try again shortly."
-            case _ where fetching:
-                msg = "Downloading model. Try again shortly."
-            case .failed(let e):
-                msg = "Model failed: \(e)"
-            default:
-                msg = "Loading model. Try again shortly."
-            }
-            model.showResult(msg)
-            overlay.show()
-            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
-            overlay.setInteractive(true)
-            scheduleCollapse(after: 3.5)
-            return
-        }
-
-        model.beginLiveDictation()
-        overlay.show()   // same small waveform pill as normal dictation
-        liveStart = Date()   // for the post-release WPM measurement
-        DispatchQueue.main.async { FeedbackPlayer.shared.playActivation(for: .stream) }
-
-        if !continuous.start(model: streamModel) { liveStreamFailed() }
-    }
-
-    /// The live stream couldn't start (its mic wouldn't open — now, or
-    /// moments later for Whisper's async start). The pill used to keep
-    /// "listening" while nothing ever typed.
-    private func liveStreamFailed() {
-        toggleActive = nil
-        liveStart = nil
-        showNotice(Self.micFailedMessage)
-    }
-
-    /// Stop live dictation: run the final accurate pass (which also catches the
-    /// trailing audio), record the full text, and close the overlay. The pill
-    /// shows the loading dots briefly while that final pass runs. If nothing
-    /// could be typed live (no editable field was focused), the transcript is
-    /// surfaced in the copy/dismiss result box instead — same as normal
-    /// dictation — so the words are never silently lost.
-    private func stopLiveDictation() {
-        guard continuous.isActive else { return }
-        // Timestamp the release now (before the final pass) so the measured pace
-        // reflects speaking time, not the final-pass latency.
-        let heldSeconds = liveStart.map { Date().timeIntervalSince($0) } ?? 0
-        liveStart = nil
-        beginTranscribingPill()
-        Task { @MainActor in
-            let outcome = await continuous.stop()
-            endDictationActivityIfIdle()
-            if let releasedAt {
-                Log.event(String(format: "stream release→final %.2fs (tail+final pass)",
-                      Date().timeIntervalSince(releasedAt)))
-                self.releasedAt = nil
-            }
-            // ✕ during the final pass: the overlay is gone (or a newer
-            // session owns it) — touch nothing.
-            if outcome.cancelled { return }
-            let text = outcome.text
-            if !text.isEmpty {
-                HistoryStore.shared.add(text)
-                SpeakingStats.shared.record(text: text, seconds: heldSeconds)  // after write
-            }
-            if !outcome.typed && !text.isEmpty {
-                let note = PasteEngine.typingBlockedNote
-                model.showResult(text, note: note)
-                overlay.resize(to: OverlayMetrics.panelSize(for: text, note: note))
-                overlay.setInteractive(true)          // copy button clickable
-                scheduleCollapse(after: resultDisplayDuration)
-            } else {
-                model.finishListening()
-                hideOverlaySoon()
-            }
-        }
-    }
-
-    /// Assistant path: stream the LLM's answer into a fixed-size box, growing
-    /// the text as tokens arrive, then settle the box to the final size.
-    @MainActor private func runAssistant(
-        on transcript: String,
-        screenshot screenshotTask: Task<(mediaType: String, data: String)?, Never>? = nil
-    ) async {
-        let question = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty else {
-            model.finishListening(); hideOverlaySoon(); return
-        }
-        let config = Settings.shared.assistantConfig
-        let key = Settings.shared.apiKey(for: config.provider)
-
-        // Continue the previous chat only if the user tapped "Continue" after the
-        // last answer; otherwise this is a fresh conversation.
-        let continuing = chatActive
-        chatActive = false
-        if !continuing { conversation.removeAll() }
-        let history = conversation.isEmpty ? nil : conversation
-
-        // The screenshot was kicked off in parallel with transcription (see
-        // stopRecording); by now it's usually already done — awaiting it here is
-        // ~free instead of a serial ~200-500ms subprocess before the request.
-        var images: [AssistantClient.ImageInput]? = nil
-        if config.attachScreenshot {
-            let shot: (mediaType: String, data: String)?
-            if let screenshotTask {
-                shot = await screenshotTask.value
-            } else {
-                // No pre-capture (e.g. setting flipped mid-flight) — capture now.
-                shot = await Task.detached(priority: .userInitiated, operation: {
-                    ScreenCapture.fullScreenBase64()
-                }).value
-            }
-            if let shot {
-                images = [AssistantClient.ImageInput(media_type: shot.mediaType, data: shot.data)]
-            }
-        }
-
-        // Switch the overlay to the streaming answer box. When continuing, show
-        // the prior turns above the new answer so it reads as one conversation.
-        let priorTurns = conversation.map {
-            AudioModel.ChatTurn(role: $0.role, text: $0.content)
-        }
-        model.beginStreaming(priorTurns: priorTurns, question: question)
-        overlay.resize(to: OverlayMetrics.streamingPanelSize)
-        overlay.setInteractive(true)
-
-        var accumulated = ""
-        var lastRender = Date.distantPast
-        do {
-            for try await delta in assistant.askStream(
-                question, config: config, apiKey: key, images: images, history: history
-            ) {
-                if Task.isCancelled { return }
-                accumulated += delta
-                // Tokens often arrive in bursts; draining them straight through
-                // on the main actor coalesces into a single paint. Update at most
-                // ~30fps and briefly yield to the run loop so each frame actually
-                // draws — the answer visibly types out.
-                if Date().timeIntervalSince(lastRender) >= 0.033 {
-                    lastRender = Date()
-                    model.updateStreaming(accumulated)
-                    try? await Task.sleep(nanoseconds: 3_000_000)
-                }
-            }
-        } catch {
-            if Task.isCancelled { return }
-            let shown = accumulated.isEmpty ? "\(error)" : accumulated + "\n\n\(error)"
-            showAssistantError(shown)
-            return
-        }
-        if Task.isCancelled { return }
-        finalizeAssist(question: question, answer: accumulated)
-    }
-
-    /// Settle the streamed answer into a final, text-sized box with a Continue
-    /// footer, remember the turn (for a possible continuation), and record it.
-    @MainActor private func finalizeAssist(question: String, answer: String) {
-        endDictationActivityIfIdle()
-        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            pendingTurn = nil; model.finishListening(); hideOverlaySoon(); return
-        }
-        HistoryStore.shared.add(trimmed)
-        pendingTurn = (question, trimmed)
-        let wasChat = model.isChat
-        model.showAssistantResult(trimmed)
-        // Chat transcripts use the fixed scrolling box; a fresh single answer
-        // sizes to its text.
-        overlay.resize(to: wasChat ? OverlayMetrics.assistantStreamingPanelSize
-                                   : OverlayMetrics.assistantPanelSize(for: trimmed))
-        overlay.setInteractive(true)
-        scheduleCollapse(after: assistantDisplayDuration)
-    }
-
-    /// Empty/failed transcript. If the model isn't ready, say so (with what to
-    /// do); otherwise just fade the overlay (silence / a mis-hit key).
-    @MainActor private func handleNoTranscript(afterWaiting: Bool = false) {
-        endDictationActivityIfIdle()
-        Log.event("no transcript\(afterWaiting ? " after waiting for the model" : "")")
-        let serving = whisper.servingModel(wanted: Settings.shared.whisperModel,
-                                           fallback: servingDictationModel)
-        if afterWaiting, whisper.isReady(serving) || whisper.status(for: serving) == .ready {
-            // Never drop a real dictation silently: it had speech, it waited
-            // for the model, and still came back empty. (A model that never
-            // became ready says why below instead.)
-            let msg = "Missed that. Please repeat."
-            model.showResult(msg)
-            overlay.resize(to: OverlayMetrics.panelSize(for: msg))
-            overlay.setInteractive(true)
-            scheduleCollapse(after: 6.0)
-            return
-        }
-        let message: String?
-        switch whisper.status(for: serving) {
-        case .notDownloaded:
-            message = "Model not downloaded. Open Settings."
-        case .downloading(let p):
-            message = "Downloading model · \(Int(p * 100))%"
-        case .preparing:
-            message = "Loading model…"
-        case .failed(let e):
-            message = "Model failed: \(e)"
-        case .ready:
-            message = nil   // genuinely empty (silence) — just fade
-        }
-        guard let message else {
-            model.finishListening(); hideOverlaySoon(); return
-        }
-        model.showResult(message)
-        overlay.resize(to: OverlayMetrics.panelSize(for: message))
-        overlay.setInteractive(true)
-        scheduleCollapse(after: 5.0)
-    }
-
-    /// Show an assistant failure (no Continue footer) and collapse soon.
-    @MainActor private func showAssistantError(_ text: String) {
-        pendingTurn = nil
-        model.showResult(text, isError: true)
-        overlay.resize(to: OverlayMetrics.panelSize(for: text))
-        overlay.setInteractive(true)
-        scheduleCollapse(after: 6.0)
-    }
-
-    /// User tapped "Continue": stash this turn into the conversation and hide the
-    /// box (keeping chat state) so the next assistant keybind continues it.
-    private func continueChat() {
-        if let t = pendingTurn {
-            conversation.append(AssistantClient.HistoryItem(role: "user", content: t.question))
-            conversation.append(AssistantClient.HistoryItem(role: "assistant", content: t.answer))
-        }
-        pendingTurn = nil
-        chatActive = true
-        collapseWorkItem?.cancel(); collapseWorkItem = nil
-        overlay.hide()   // hide() resets the model (chat state lives here, untouched)
-    }
-
-    /// Type one released dictation — every dictation lands here, in speaking
-    /// order. There is no overlay-phase guard: by now the overlay may show the
-    /// "Preparing" box or a newer hold, and that guard dropped every waited
-    /// dictation (Oct 29: decoded "→ 18 chars", never typed). The overlay is
-    /// only touched when this dictation owns it; otherwise the text still
-    /// types and lands in history. (The latency assertion is ended by the
-    /// caller's task once nothing else needs it.)
-    @MainActor private func deliverDictation(_ text: String, audioURL: URL, releasedAt: Date?,
-                                             waitedForModel: Bool, seconds: TimeInterval,
-                                             ownsOverlay: Bool) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            if ownsOverlay { model.finishListening(); hideOverlaySoon() }
-            return
-        }
-
-        // TYPE FIRST. The keystrokes are dispatched (or the copy box surfaced)
-        // before any bookkeeping below, so nothing — history, the training
-        // save, stats — can ever sit in front of the typeout. This ordering is
-        // the guarantee; saving happens strictly after the text is on its way.
-        let typed = Settings.shared.autoInsert && PasteEngine.insertIfPossible(trimmed) { [weak self] in
-            DispatchQueue.main.async {
-                guard let self, self.model.phase == .idle else { return }
-                self.showDictationCopyBox(trimmed)
-            }
-        }
-        if let releasedAt {
-            // Unconditional: THE number to check when "dictation feels slow".
-            if waitedForModel {
-                Log.event(String(format: "waited dictation release→%@ %.2fs", typed ? "typed" : "copy box",
-                                 Date().timeIntervalSince(releasedAt)))
-            } else {
-                Log.event(String(format: "release→%@ %.2fs (tail+decode+dispatch)", typed ? "typed" : "copy box",
-                                 Date().timeIntervalSince(releasedAt)))
-            }
-        }
-        if ownsOverlay {
-            if typed { model.finishListening(); hideOverlaySoon() }
-            else {
-                // Say why, when it's something the user can fix (not when
-                // they turned typing off themselves).
-                showDictationCopyBox(trimmed, note: Settings.shared.autoInsert
-                                     ? PasteEngine.typingBlockedNote : nil)
-            }
-        } else if !typed {
-            Log.event("dictation not typed (overlay busy) — kept in history")
-        }
-
-        // ---- Bookkeeping, strictly after the typeout dispatch ----
-        recordDictation(trimmed, audioURL: audioURL, seconds: seconds)
-    }
-
-    /// History, training pair and speaking stats for one delivered dictation.
-    @MainActor private func recordDictation(_ trimmed: String, audioURL: URL?, seconds: TimeInterval) {
-        HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
-        // Training pair (audio + transcript) — only while saving is toggled on
-        // and under the size cap. Records regardless of where the text landed.
-        if Capabilities.current.training, Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
-            TrainingStore.shared.addRecording(transcript: trimmed, audioURL: audioURL)
-        }
-        SpeakingStats.shared.record(text: trimmed, seconds: seconds)
-    }
-
-    @MainActor private func showDictationCopyBox(_ text: String, note: String? = nil) {
-        // Order the panel in first: the late delivery-failure callback lands
-        // after hideOverlaySoon has already hidden it, and the copy box was
-        // built off-screen (words neither typed nor shown).
-        overlay.show()
-        model.showResult(text, note: note)
-        overlay.resize(to: OverlayMetrics.panelSize(for: text, note: note))
-        overlay.setInteractive(true)
-        scheduleCollapse(after: resultDisplayDuration)
-    }
-
-    static let micFailedMessage = "Couldn't start the microphone."
-
-    /// Mic permission, checked before every session: denied or never asked,
-    /// macOS records pure zeros and the hold just faded away. False (after
-    /// saying what to do) when nothing could be heard.
-    private func micAllowed() -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            return true
-        case .notDetermined:
-            // The system prompt takes this hold either way; ask now.
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            showNotice("Allow the microphone, then try again.")
-        default:
-            showNotice("Microphone blocked. Open Settings.")
-        }
-        Log.event("mic not authorized — hold aborted")
-        return false
-    }
-
-    /// A short message in the result box (✕ closes it), shown whether or not
-    /// the pill was already up.
-    private func showNotice(_ message: String, for seconds: TimeInterval = 5.0) {
-        overlay.show()
-        model.showResult(message)
-        overlay.resize(to: OverlayMetrics.panelSize(for: message))
-        overlay.setInteractive(true)
-        scheduleCollapse(after: seconds)
-    }
-
-    /// Pending "offer a ✕" on the transcribing pill.
-    private var stuckWorkItem: DispatchWorkItem?
-    /// How long the dots may spin before the pill offers a ✕.
-    private static let stuckTranscribingSeconds: TimeInterval = 8
-
-    /// Enter the transcribing pill. It's click-through, so a decode or final
-    /// pass that never returned left a pill nobody could close; past
-    /// `stuckTranscribingSeconds` it grows a ✕ (→ dismissOverlay: queued
-    /// dictations still type if they ever decode, a final pass types nothing).
-    private func beginTranscribingPill() {
-        model.beginTranscribing()
-        stuckWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.model.phase == .transcribing else { return }
-            self.model.offerTranscribingDismiss()
-            self.overlay.setInteractive(true)
-        }
-        stuckWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.stuckTranscribingSeconds, execute: work)
-    }
-
-    private func scheduleCollapse(after seconds: TimeInterval) {
-        collapseWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.collapseOverlay() }
-        collapseWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
-    }
-
-    private func collapseOverlay() {
-        collapseWorkItem = nil
-        overlay.hide()   // hide() resets the model
-    }
-
-    private func hideOverlaySoon() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self else { return }
-            guard self.model.phase == .idle else { return }
-            self.overlay.hide()   // hide() resets the model
-        }
-    }
-
-    // MARK: - Main menu (standard app shortcuts)
-
-    private func setupMainMenu() {
-        let mainMenu = NSMenu()
-
-        // Application menu — About, Settings, Hide, Quit.
-        let appItem = NSMenuItem()
-        mainMenu.addItem(appItem)
-        let appMenu = NSMenu()
-        appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About Slive",
-                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-                        keyEquivalent: "")
-        appMenu.addItem(.separator())
-        let settings = appMenu.addItem(withTitle: "Settings…",
-                                       action: #selector(openSettings), keyEquivalent: ",")
-        settings.target = self
-        let report = appMenu.addItem(withTitle: "Report a Problem…",
-                                     action: #selector(reportProblem), keyEquivalent: "")
-        report.target = self
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Slive",
-                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthers = appMenu.addItem(withTitle: "Hide Others",
-                                         action: #selector(NSApplication.hideOtherApplications(_:)),
-                                         keyEquivalent: "h")
-        hideOthers.keyEquivalentModifierMask = [.command, .option]
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Slive",
-                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-
-        // Edit menu — REQUIRED for Cut/Copy/Paste/Select All to work in text
-        // fields. Without it, ⌘V (and ⌘C/⌘X/⌘A/⌘Z) have no menu item carrying
-        // the key equivalent, so AppKit never dispatches them to the focused
-        // field's editor — you literally can't paste an API key. These
-        // nil-target selectors travel the responder chain to the field editor.
-        let editItem = NSMenuItem()
-        mainMenu.addItem(editItem)
-        let editMenu = NSMenu(title: "Edit")
-        editItem.submenu = editMenu
-        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
-        redo.keyEquivalentModifierMask = [.command, .shift]
-        editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-
-        // Window menu — Minimize, Zoom, Close.
-        let windowItem = NSMenuItem()
-        mainMenu.addItem(windowItem)
-        let windowMenu = NSMenu(title: "Window")
-        windowItem.submenu = windowMenu
-        windowMenu.addItem(withTitle: "Minimize",
-                           action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Zoom",
-                           action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
-        windowMenu.addItem(.separator())
-        windowMenu.addItem(withTitle: "Close",
-                           action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-
-        NSApp.mainMenu = mainMenu
-        NSApp.windowsMenu = windowMenu
-    }
-
-    // MARK: - Menu bar
-
-    private func setupMenuBar() {
-        let item = NSStatusItem.button(in: NSStatusBar.system)
-        item.button?.image = NSImage(
-            systemSymbolName: "waveform",
-            accessibilityDescription: "Slive"
-        )
-        item.button?.image?.isTemplate = true
-
-        let menu = NSMenu()
-        let header = NSMenuItem(title: "Slive", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-
-        // Live backend status (updated via the Combine subscription).
-        if Capabilities.current.server {
-            let statusLine = NSMenuItem(title: "…", action: nil, keyEquivalent: "")
-            statusLine.isEnabled = false
-            menu.addItem(statusLine)
-            backendStatusItem = statusLine
-            updateBackendStatusUI(backend.status)
-        }
-
-        menu.addItem(.separator())
-
-        let settingsItem = NSMenuItem(title: "Settings…",
-                                      action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        let reportItem = NSMenuItem(title: "Report a Problem…",
-                                    action: #selector(reportProblem), keyEquivalent: "")
-        reportItem.target = self
-        menu.addItem(reportItem)
-
-        menu.addItem(.separator())
-        // Quit has no explicit target: it travels the responder chain to NSApp.
-        menu.addItem(NSMenuItem(title: "Quit Slive",
-                                action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        item.menu = menu
-        statusItem = item
-    }
-
-    @objc private func openSettings() {
-        settingsWindow.show()
-    }
-
-    /// Opens a GitHub issue prefilled with this build and Slive's recent log
-    /// (through the reporter, which strips anything personal first).
-    @objc private func reportProblem() {
-        FailureReporter.shared.reportManually()
-    }
-
-    /// Reflect the backend status in the menu-bar item (tooltip + menu line).
-    private func updateBackendStatusUI(_ status: BackendManager.Status) {
-        statusItem?.button?.toolTip = "Slive"
-        backendStatusItem?.title = status == .running ? "Ready" : status.rawValue
-    }
-
-    /// Shown when the backend couldn't be brought up in time — a clear message
-    /// instead of an empty result.
-    @MainActor private func showBackendError() {
-        endDictationActivityIfIdle()
-        // A spawn that can't start says what to fix — retrying never helps it.
-        let msg = backend.lastSpawnError ?? "Starting up. Try again shortly."
-        model.showResult(msg)
-        overlay.resize(to: OverlayMetrics.panelSize(for: msg))
-        overlay.setInteractive(true)
-        scheduleCollapse(after: 3.5)
     }
 
     /// Quit and reopen Slive. Required after granting Input Monitoring, because
@@ -1308,11 +159,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? task.run()
         NSApp.terminate(nil)
     }
+
+    // MARK: - Wiring
+
+    /// Settings that take effect live. Runs synchronously inside the setter,
+    /// so the monitor and residency see the new value immediately — and
+    /// always bindings first, then residency.
+    private func settingsChanged(_ change: SettingsChange) {
+        switch change {
+        case .bindings:
+            syncBindings()
+            // Recording/removing the continuous shortcut (or flipping a stream
+            // switch) also decides whether its model belongs in memory — a
+            // stream toggle also earns the model RAM.
+            residency.refresh()
+        case .dictationModel, .continuousModel:
+            residency.refresh()
+        }
+    }
+
+    /// Push the EFFECTIVE bindings into the monitor: a bind whose on/off
+    /// switch is off simply isn't a binding, nor is an action this build
+    /// can't run (Lite: no assistant).
+    private func syncBindings() {
+        app.hotkey.bindings = HotkeyBinding.effective(from: Settings.shared, capabilities: .current)
+    }
+
+    private func wireAudioAndHotkey() {
+        let model = app.overlayModel
+        // Voice recency for the release tail lives in the recorder itself
+        // (per-callback, no dispatch staleness) — levels here are visuals only.
+        recorder.onLevels = { [weak model] bands, rms in
+            model?.pushLevels(bands, rms: rms)
+        }
+        session.handler = self
+        let session = self.session
+        app.hotkey.onStart = { [weak session] action in session?.keyDown(action) }
+        app.hotkey.onStop = { [weak session] _ in session?.keyUp() }
+        model.onDismiss = { [weak self] in self?.dismissOverlay() }
+        model.onContinue = { [weak self] in self?.continueChat() }
+        continuous.onEnergy = { [weak model] energy in model?.pushStreamEnergy(energy) }
+        continuous.onFailure = { [weak self] in self?.liveStreamFailed() }
+        app.hotkey.onToggle = { [weak session] action in session?.toggleTapped(action) }
+    }
+
+    /// User tapped ✕ — cancel any in-flight work, end the chat, and collapse now.
+    /// Released dictations are NOT cancelled: their words were spoken, so they
+    /// still type (or surface a copy box) when decoded.
+    private func dismissOverlay() {
+        transcribeTask?.cancel(); transcribeTask = nil
+        waitingDictations.cancelAssists()
+        session.endToggle()
+        continuous.cancel()
+        chat.end()
+        presenter.dismiss()
+    }
+
+
+    // MARK: - Shared by the flows
+
+    private func endDictationActivity() {
+        if let activity = dictationActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            dictationActivity = nil
+        }
+    }
+
+    /// End the assertion once nothing still needs it: no hold live (a newer
+    /// one is running on it) and no dictation decoding or waiting its turn.
+    /// Every release's task ends through here — the cancelled / empty /
+    /// no-audio exits used to leave it held.
+    func endDictationActivityIfIdle() {
+        guard waitingDictations.isEmpty, !session.isSessionLive else { return }
+        endDictationActivity()
+    }
+
+    /// Mic permission, checked before every session: denied or never asked,
+    /// macOS records pure zeros and the hold just faded away. False (after
+    /// saying what to do) when nothing could be heard.
+    func micAllowed() -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            // The system prompt takes this hold either way; ask now.
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            presenter.notice("Allow the microphone, then try again.")
+        default:
+            presenter.notice("Microphone blocked. Open Settings.")
+        }
+        Log.event("mic not authorized — hold aborted")
+        return false
+    }
 }
 
-private extension NSStatusItem {
-    /// Small helper so `setupMenuBar` reads cleanly.
-    static func button(in bar: NSStatusBar) -> NSStatusItem {
-        bar.statusItem(withLength: NSStatusItem.variableLength)
+// MARK: - Gestures → flows
+
+extension AppDelegate: SessionHandler {
+    func beginSession(_ action: HotkeyAction) {
+        if action == .stream { beginLiveDictation() } else { beginRecording() }
     }
+
+    func endSession(_ action: HotkeyAction) {
+        if action == .stream { stopLiveDictation() } else { stopRecording() }
+    }
+
+    func abortSession() {
+        transcribeTask?.cancel(); transcribeTask = nil
+        if continuous.isActive { continuous.cancel() }
+        if recorder.isRecording {
+            let capture = recorder.stop()
+            if let url = capture.url { try? FileManager.default.removeItem(at: url) }
+        }
+        endDictationActivityIfIdle()   // the discarded fragment held it
+    }
+
+    var isCapturing: Bool { recorder.isRecording || continuous.isActive }
 }

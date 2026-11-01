@@ -8,6 +8,12 @@ import Foundation
 @MainActor final class DictationQueue {
     private var order: [UUID] = []
     private var waiting: [UUID: CheckedContinuation<Void, Never>] = [:]
+    /// Each queued release's decode-and-type task (cancelled only on quit,
+    /// or ✕ for an assistant request).
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+    /// The queued entries that are assistant requests — ✕ drops those (an
+    /// answer isn't spoken words; dictations still type).
+    private var assists: Set<UUID> = []
 
     var isEmpty: Bool { order.isEmpty }
     var count: Int { order.count }
@@ -40,10 +46,37 @@ import Foundation
         await withCheckedContinuation { waiting[id] = $0 }
     }
 
-    /// `id` is done (or gone): drop it and wake the next in line.
+    /// `id` is done (or gone): drop it and wake the next in line. Safe to
+    /// repeat — a queued assistant hands its turn on early.
     func finish(_ id: UUID) {
         order.removeAll { $0 == id }
+        tasks[id] = nil
+        assists.remove(id)
         waiting.removeValue(forKey: id)?.resume()
         if let next = order.first, let resume = waiting.removeValue(forKey: next) { resume.resume() }
+    }
+
+    /// The task that decodes and types `id` (`isAssist`: an assistant request).
+    func track(_ task: Task<Void, Never>, for id: UUID, isAssist: Bool) {
+        tasks[id] = task
+        if isAssist { assists.insert(id) }
+    }
+
+    /// A queued assistant request has its question: it leaves the queue and
+    /// its task becomes the ordinary in-flight answer (returned).
+    func handOff(_ id: UUID) -> Task<Void, Never>? {
+        let task = tasks[id]
+        finish(id)
+        return task
+    }
+
+    /// ✕: drop the waiting assistant requests; dictations still type.
+    func cancelAssists() {
+        for id in assists { tasks[id]?.cancel() }
+    }
+
+    /// Quit.
+    func cancelAll() {
+        tasks.values.forEach { $0.cancel() }
     }
 }
