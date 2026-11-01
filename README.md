@@ -12,6 +12,8 @@
 
 </div>
 
+<p align="center"><img src="docs/images/slive-flow.gif" width="100%" alt="Slive dictating a sentence, which improves as you pick a model, add a custom word and fine-tune on your voice"></p>
+
 ```
  fn ▼ hold                                              release ▲
 ┌─────────┐  16 kHz mono   ┌────────────────┐  keystrokes  ┌───────────────┐
