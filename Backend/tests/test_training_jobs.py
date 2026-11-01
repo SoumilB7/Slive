@@ -170,16 +170,7 @@ def test_readiness_requires_audio_minutes_as_well_as_count(monkeypatch, tmp_path
 
 def test_job_runs_pipeline_and_records_installed_model(tmp_path: Path, monkeypatch) -> None:
     jobs._jobs.clear()
-    monkeypatch.setattr(
-        jobs,
-        "readiness",
-        lambda _=None: {
-            "ready": True,
-            "eligible_count": 50,
-            "remaining_samples": 0,
-            "eligible_audio_minutes": 7.5,
-        },
-    )
+    _ready(monkeypatch)
     installed = tmp_path / "Models" / "Custom" / "balanced-ft-test"
     finished = __import__("threading").Event()
 
@@ -210,6 +201,9 @@ def test_job_runs_pipeline_and_records_installed_model(tmp_path: Path, monkeypat
 
 
 def _ready(monkeypatch) -> None:
+    # Tests never depend on this Mac's real free disk.
+    monkeypatch.setattr(jobs.shutil, "disk_usage",
+                        lambda _p: type("D", (), {"free": 500 * 1024**3})())
     monkeypatch.setattr(
         jobs,
         "readiness",
@@ -338,19 +332,6 @@ def test_require_finite_loss_aborts_on_nan_and_inf() -> None:
         pipeline.require_finite_loss("epoch 2 step 1", loss=1.0, kl=float("inf"))
 
 
-def test_qlora_teacher_forcing_has_single_sot_and_masks_prefix() -> None:
-    # tokenizer(text).input_ids with prefix: SOT en transcribe notimestamps w1 w2 EOT
-    sot, en, transcribe, notimestamps, eot = 50258, 50259, 50360, 50364, 50257
-    sequence = [sot, en, transcribe, notimestamps, 11, 12, eot]
-
-    decoder_ids, labels = pipeline.teacher_forcing_pair(sequence, forced=3)
-
-    assert decoder_ids == [sot, en, transcribe, notimestamps, 11, 12]
-    assert decoder_ids.count(sot) == 1
-    assert labels == [-100, -100, -100, 11, 12, eot]
-    assert len(labels) == len(decoder_ids)
-
-
 def test_configure_prefix_tokens_counts_tokens_after_sot() -> None:
     class Tokenizer:
         def set_prefix_tokens(self, **kwargs):
@@ -439,13 +420,11 @@ def test_install_lays_tokenizer_out_where_whisperkit_looks(monkeypatch, tmp_path
     assert manifest["created_at"][:4].isdigit()
 
 
-def test_qlora_is_refused_up_front_without_cuda(monkeypatch) -> None:
-    monkeypatch.setattr(pipeline, "whisperkit_converter", lambda: "/bin/true")
-    monkeypatch.setattr(
-        jobs, "readiness", lambda _=None: pytest.fail("readiness ran before the preflight"))
-    with pytest.raises(jobs.TrainingUnavailable, match="NVIDIA"):
+def test_qlora_is_no_longer_a_method() -> None:
+    assert pipeline.TRAINING_METHODS == ("hybrid", "decoder")
+    with pytest.raises(ValueError, match="Unsupported training method"):
         jobs.start_job(source_model="tiny", method="qlora")
-
+    assert "qlora_ram_gb" not in training_models_payload()[0]
 
 def test_start_refuses_when_disk_is_too_full(monkeypatch, tmp_path) -> None:
     _ready(monkeypatch)
@@ -596,3 +575,93 @@ def test_install_gate_refuses_a_model_that_got_worse() -> None:
     pipeline.check_improvement({"clips": 60, "base_wer": 0.07, "tuned_wer": 0.074})
     with pytest.raises(RuntimeError, match="7.0% → 8.0%"):
         pipeline.check_improvement({"clips": 60, "base_wer": 0.07, "tuned_wer": 0.08})
+
+
+def test_converter_env_drops_the_servers_python_variables(monkeypatch) -> None:
+    # The app runs the server with PYTHONPATH on its 3.13 venv; the 3.11
+    # converter then imported that torch and died (Nov 2).
+    monkeypatch.setenv("PYTHONPATH", "/server/.venv/lib/python3.13/site-packages")
+    monkeypatch.setenv("PYTHONHOME", "/x")
+    monkeypatch.setenv("VIRTUAL_ENV", "/server/.venv")
+    env = pipeline.converter_env()
+    assert not {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"} & set(env)
+    assert env["PYTHONUNBUFFERED"] == "1"
+
+
+def _failed_run(tmp_path, *, stage="converting", adapter=True):
+    import json
+
+    run = tmp_path / "runs" / "voice"
+    (run / "adapter").mkdir(parents=True)
+    if adapter:
+        (run / "adapter" / "adapter_config.json").write_text("{}")
+    (run / "evaluation.json").write_text(json.dumps(
+        {"clips": 80, "base_wer": 0.11, "tuned_wer": 0.075}))
+    job = jobs.TrainingJob(id="j1", model_name="voice", source_model="tiny", base_model="b",
+                           method="hybrid", max_ram_gb=8, state="error", stage="error",
+                           failed_stage=stage, error="conversion broke", run_dir=str(run))
+    jobs._jobs.clear()
+    jobs._jobs[job.id] = job
+    return job, run
+
+
+def test_only_failures_after_training_with_an_adapter_are_resumable(tmp_path) -> None:
+    job, _ = _failed_run(tmp_path)
+    assert job.resumable and job.to_dict()["resumable"] is True
+    assert not _failed_run(tmp_path / "a", stage="training")[0].resumable
+    assert not _failed_run(tmp_path / "b", adapter=False)[0].resumable
+
+
+def test_resume_finishes_the_run_without_retraining(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path / "Custom")
+    job, run = _failed_run(tmp_path)
+    seen = {}
+
+    def runner(config, run_dir, progress):
+        seen.update(run_dir=run_dir, model=config.model_name, out=config.output_root)
+        progress(stage="converting", message="Converting", value=0.84)
+        return tmp_path / "Custom" / "voice"
+
+    resumed = jobs.resume_job("j1", runner=runner)
+    done = _wait_for_state(resumed.id, "done")
+    assert seen == {"run_dir": run, "model": "voice", "out": run.parent}
+    assert (done.error, done.failed_stage, done.stage) == (None, None, "installed")
+    assert done.evaluation is None or done.evaluation  # untouched by resume
+
+
+def test_resume_refuses_unknown_unresumable_and_installed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pipeline, "custom_models_root", lambda: tmp_path / "Custom")
+    _failed_run(tmp_path)
+    with pytest.raises(LookupError):
+        jobs.resume_job("nope", runner=lambda *a: None)
+    (tmp_path / "Custom" / "voice").mkdir(parents=True)
+    with pytest.raises(jobs.TrainingConflict, match="already installed"):
+        jobs.resume_job("j1", runner=lambda *a: None)
+    _failed_run(tmp_path / "c", stage="training")
+    with pytest.raises(jobs.TrainingConflict, match="Only a run that failed after training"):
+        jobs.resume_job("j1", runner=lambda *a: None)
+
+
+def test_resume_pipeline_skips_a_complete_merge_and_respects_the_gate(monkeypatch, tmp_path) -> None:
+    import json
+
+    monkeypatch.setattr(pipeline, "whisperkit_converter", lambda: "/bin/true")
+    calls = []
+    monkeypatch.setattr(pipeline, "_merge_adapter", lambda *a: calls.append("merge"))
+    monkeypatch.setattr(pipeline, "_convert_whisperkit",
+                        lambda *a: calls.append("convert") or tmp_path / "wk")
+    monkeypatch.setattr(pipeline, "_install_model",
+                        lambda *a, **k: calls.append(("install", k["evaluation"]["tuned_wer"]))
+                        or tmp_path / "installed")
+    _, run = _failed_run(tmp_path)
+    (run / "merged-hf").mkdir()
+    (run / "merged-hf" / pipeline.MERGE_COMPLETE).write_text("")
+    config = PipelineConfig.for_model(model_name="voice", source_model="tiny")
+
+    assert pipeline.resume_pipeline(config, run, lambda **_: None) == tmp_path / "installed"
+    assert calls == ["convert", ("install", 0.075)]
+
+    (run / "evaluation.json").write_text(json.dumps(
+        {"clips": 80, "base_wer": 0.07, "tuned_wer": 0.09}))
+    with pytest.raises(RuntimeError, match="Not installed"):
+        pipeline.resume_pipeline(config, run, lambda **_: None)

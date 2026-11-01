@@ -14,7 +14,6 @@ struct WhisperTrainingModel: Decodable, Identifiable {
     let loraRank: Int
     let klWeight: Double
     let loraRamGB: Double
-    let qloraRamGB: Double
 
     private enum CodingKeys: String, CodingKey {
         case id, label, family, multilingual, detail
@@ -23,7 +22,6 @@ struct WhisperTrainingModel: Decodable, Identifiable {
         case loraRank = "lora_rank"
         case klWeight = "kl_weight"
         case loraRamGB = "lora_ram_gb"
-        case qloraRamGB = "qlora_ram_gb"
     }
 
     init(from decoder: Decoder) throws {
@@ -39,7 +37,6 @@ struct WhisperTrainingModel: Decodable, Identifiable {
         loraRank = try c.decodeIfPresent(Int.self, forKey: .loraRank) ?? 0
         klWeight = try c.decodeIfPresent(Double.self, forKey: .klWeight) ?? 0
         loraRamGB = try c.decodeIfPresent(Double.self, forKey: .loraRamGB) ?? 0
-        qloraRamGB = try c.decodeIfPresent(Double.self, forKey: .qloraRamGB) ?? 0
     }
 
     /// The profile as one mono line, e.g. "lr 0.0001 · r=16 · KL ×0.3".
@@ -56,14 +53,13 @@ struct WhisperTrainingModel: Decodable, Identifiable {
 enum TrainingMethod {
     static let hybrid = "hybrid"
     static let decoder = "decoder"
-    static let qlora = "qlora"
 
     static func label(_ id: String) -> String {
         switch id {
         case hybrid: return "Hybrid"
         case decoder: return "Decoder only"
-        case qlora: return "QLoRA"
         case "lora": return "LoRA"          // jobs from before Oct 2026
+        case "qlora": return "QLoRA"        // jobs from before Nov 2026
         default: return id
         }
     }
@@ -145,6 +141,8 @@ struct WhisperTrainingJob: Decodable {
     let error: String?
     /// The stage that was running when the job failed (the rail marks it).
     let failedStage: String?
+    /// Failed after training with the adapter kept — finishable without retraining.
+    let resumable: Bool
     let evaluation: TrainingEvaluation?
     let metrics: [TrainingMetric]
     let totalUpdates: Int
@@ -164,6 +162,7 @@ struct WhisperTrainingJob: Decodable {
         case totalUpdates = "total_updates"
         case createdAt = "created_at"
         case failedStage = "failed_stage"
+        case resumable
         case evaluation
     }
 
@@ -194,6 +193,7 @@ struct WhisperTrainingJob: Decodable {
         installedModelDir = try c.decodeIfPresent(String.self, forKey: .installedModelDir)
         error = try c.decodeIfPresent(String.self, forKey: .error)
         failedStage = try c.decodeIfPresent(String.self, forKey: .failedStage)
+        resumable = try c.decodeIfPresent(Bool.self, forKey: .resumable) ?? false
         evaluation = try? c.decodeIfPresent(TrainingEvaluation.self, forKey: .evaluation)
         // Tolerate a backend one release behind (no telemetry fields yet).
         metrics = try c.decodeIfPresent([TrainingMetric].self, forKey: .metrics) ?? []
@@ -247,6 +247,15 @@ struct TrainingClient {
         }
         let data = try await request("/training/jobs/latest")
         return try JSONDecoder().decode(OptionalJobEnvelope.self, from: data).job
+    }
+
+    /// Finish a run that failed after training (merge → convert → install).
+    func resume(id: String) async throws -> WhisperTrainingJob {
+        guard await BackendManager.shared.ensureHealthy() else {
+            throw TrainingError(message: "Couldn't start the training backend.")
+        }
+        let data = try await request("/training/jobs/\(id)/resume", method: "POST")
+        return try JSONDecoder().decode(JobEnvelope.self, from: data).job
     }
 
     func status(id: String) async throws -> WhisperTrainingJob {

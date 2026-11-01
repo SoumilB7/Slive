@@ -178,6 +178,14 @@ struct TrainingSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+            if stopped, let job, job.resumable {
+                // Training is the hours-long part; a failure after it keeps
+                // the adapter, so finish from where it stopped.
+                Button("Resume") { resume(job.id) }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .tint(SliveTheme.accent)
+                    .help("Finish from \(stage ?? "where it stopped") — no retraining")
+            }
             Button {
                 jobError = nil
             } label: {
@@ -578,7 +586,7 @@ struct TrainingSettingsView: View {
     private var trainButtonRow: some View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
-            if selectedMethod != TrainingMethod.qlora, let estimate = estimatedMinutes {
+            if let estimate = estimatedMinutes {
                 Text(timeText(estimate))
                     .font(SliveTheme.mono(11))
                     .foregroundStyle(SliveTheme.accent)
@@ -726,6 +734,20 @@ struct TrainingSettingsView: View {
                     maxRamGB: maxRamGB)
                 job = started
                 poll(started.id)
+            } catch {
+                jobError = error.localizedDescription
+                refresh(keepingError: true)
+            }
+        }
+    }
+
+    private func resume(_ id: String) {
+        jobError = nil
+        Task { @MainActor in
+            do {
+                let resumed = try await TrainingClient().resume(id: id)
+                job = resumed
+                poll(resumed.id)
             } catch {
                 jobError = error.localizedDescription
                 refresh(keepingError: true)

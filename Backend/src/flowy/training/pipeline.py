@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import importlib.util
 import math
 import os
 import random
@@ -41,9 +40,6 @@ class PipelineConfig:
     learning_rate: float = 1e-4
     lora_rank: int = 16
     kl_weight: float = 0.3
-    # QLoRA (CUDA host) only — the local methods batch by METHOD_MICRO_BATCH.
-    gradient_accumulation_steps: int = 8
-    kl_every: int = 4
 
     @classmethod
     def for_model(cls, *, model_name: str, source_model: str, **kwargs) -> "PipelineConfig":
@@ -71,7 +67,9 @@ class PipelineConfig:
 #:             sentences where hybrid did not.
 #: Caching costs ~2.7 s/clip once (turbo).
 LOCAL_METHODS = ("hybrid", "decoder")
-TRAINING_METHODS = (*LOCAL_METHODS, "qlora")
+#: QLoRA (bitsandbytes NF4) is CUDA-only, and a torchao NF4 base ran 161
+#: s/clip here — slower than everything else with no memory win — so it's gone.
+TRAINING_METHODS = LOCAL_METHODS
 METHOD_MICRO_BATCH = {"hybrid": 2, "decoder": 8}
 EFFECTIVE_BATCH = 8
 
@@ -180,15 +178,6 @@ def check_improvement(evaluation: dict | None) -> None:
         )
 
 
-def teacher_forcing_pair(sequence: list[int], forced: int) -> tuple[list[int], list[int]]:
-    """One sample's (decoder_input_ids, labels) in `pad_label_batch`'s
-    convention. Passing explicit decoder inputs stops Transformers from
-    right-shifting labels that already begin with SOT (a doubled SOT), and the
-    forced prefix is masked as in the cached trainer."""
-    inputs, labels = pad_label_batch([sequence], pad_id=0, forced=forced)
-    return inputs[0], labels[0]
-
-
 def configure_prefix_tokens(tokenizer, model) -> int:
     """Set the English/transcribe/no-timestamps prefix WhisperKit forces at
     inference and return how many prefix tokens follow SOT (masked in labels)."""
@@ -277,7 +266,12 @@ def converter_env() -> dict[str, str]:
     """The converter's environment: the shim first on PATH (argmaxtools
     shells out to `xcrun coremlcompiler compile`), plus the usual tool dirs a
     GUI-launched server lacks."""
-    env = dict(os.environ)
+    # No PYTHON* variables: the app launches this server with PYTHONPATH on
+    # its own 3.13 venv, and the converter's 3.11 venv then imported THAT
+    # torch and died ("Failed to load PyTorch C extensions", Nov 2).
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("PYTHON") and key not in ("VIRTUAL_ENV", "__PYVENV_LAUNCHER__")}
+    env["PYTHONUNBUFFERED"] = "1"   # stream the converter's log as it works
     extra = [str(_shim_dir())] if os.access(_shim_dir() / "xcrun", os.X_OK) else []
     extra += ["/opt/homebrew/bin", "/usr/local/bin"]
     env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "/usr/bin:/bin")])
@@ -351,40 +345,70 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
         json.dumps({**asdict(config), "store_root": str(config.store_root or "")}, indent=2, default=str),
         encoding="utf-8",
     )
-    manifest_path = write_manifest(report, run_dir / "training-manifest.jsonl")
+    write_manifest(report, run_dir / "training-manifest.jsonl")
     progress(stage="dataset", message=f"Validated {report.eligible_count} samples", value=0.05,
              run_dir=str(run_dir))
 
     adapter_dir = run_dir / "adapter"
+
+    train, heldout = split_heldout(list(report.eligible_samples))
+    (run_dir / "heldout-ids.txt").write_text(
+        "".join(f"{s.id}\n" for s in heldout), encoding="utf-8")
+    cache_dir = run_dir / "encoder-cache"
+    try:
+        evaluation = _train_cached(config, train, adapter_dir, cache_dir,
+                                   progress, memory, heldout=heldout)
+    finally:
+        # ~3.8 MB per clip — never left behind by a failed or aborted run.
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    (run_dir / "evaluation.json").write_text(json.dumps(evaluation, indent=2),
+                                             encoding="utf-8")
+    check_improvement(evaluation)
+    return _finish(config, run_dir, converter, evaluation, progress, memory)
+
+
+#: Stages a failed run can pick up from: everything after training, when the
+#: trained adapter is still on disk.
+RESUMABLE_STAGES = ("merging", "converting", "installing")
+
+
+def resumable(run_dir: Path) -> bool:
+    return (run_dir / "adapter" / "adapter_config.json").is_file()
+
+
+def resume_pipeline(config: PipelineConfig, run_dir: Path, progress: Progress) -> Path:
+    """Finish a run that failed after training — merge (unless a complete
+    merge is on disk), convert, install — without retraining for hours."""
+    converter = whisperkit_converter()
+    if not resumable(run_dir):
+        raise ValueError("This run has no trained adapter left — start a new training run.")
+    evaluation_path = run_dir / "evaluation.json"
+    evaluation = (json.loads(evaluation_path.read_text(encoding="utf-8"))
+                  if evaluation_path.is_file() else None)
+    check_improvement(evaluation)
+    return _finish(config, run_dir, converter, evaluation, progress,
+                   MemoryGuard(config.max_ram_gb))
+
+
+def _finish(config: PipelineConfig, run_dir: Path, converter: str, evaluation: dict | None,
+            progress: Progress, memory: MemoryGuard) -> Path:
+    """Merge → convert → install → tidy, shared by a fresh run and a resume."""
+    adapter_dir = run_dir / "adapter"
     merged_dir = run_dir / "merged-hf"
     converted_dir = run_dir / "whisperkit"
-
-    evaluation = None
-    if config.method == "qlora":
-        _train_lora(config, report.eligible_samples, adapter_dir, progress, memory)
+    if (merged_dir / MERGE_COMPLETE).is_file():
+        progress(stage="merging", message="Merged model already on disk", value=0.82)
     else:
-        train, heldout = split_heldout(list(report.eligible_samples))
-        (run_dir / "heldout-ids.txt").write_text(
-            "".join(f"{s.id}\n" for s in heldout), encoding="utf-8")
-        cache_dir = run_dir / "encoder-cache"
-        try:
-            evaluation = _train_cached(config, train, adapter_dir, cache_dir,
-                                       progress, memory, heldout=heldout)
-        finally:
-            # ~3.8 MB per clip — never left behind by a failed or aborted run.
-            shutil.rmtree(cache_dir, ignore_errors=True)
-        (run_dir / "evaluation.json").write_text(json.dumps(evaluation, indent=2),
-                                                 encoding="utf-8")
-        check_improvement(evaluation)
-    memory.check("adapter merge")
-    progress(stage="merging", message="Merging", value=0.76)
-    _merge_adapter(config, adapter_dir, merged_dir)
+        memory.check("adapter merge")
+        progress(stage="merging", message="Merging", value=0.76)
+        shutil.rmtree(merged_dir, ignore_errors=True)
+        _merge_adapter(config, adapter_dir, merged_dir)
     memory.check("WhisperKit conversion")
     progress(stage="converting", message="Converting", value=0.84)
     model_folder = _convert_whisperkit(merged_dir, converted_dir, converter, progress)
     progress(stage="installing", message="Installing", value=0.96)
-    installed = _install_model(config, model_folder, merged_dir, run_dir, manifest_path,
-                               evaluation=evaluation)
+    installed = _install_model(config, model_folder, merged_dir, run_dir,
+                               run_dir / "training-manifest.jsonl", evaluation=evaluation)
     # The installed copy is what Slive serves; the run keeps adapter + logs.
     log = converted_dir / "conversion.log"
     if log.is_file():
@@ -397,12 +421,7 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
 def _training_imports():
     try:
         import torch
-        from peft import (
-            LoraConfig,
-            PeftModel,
-            get_peft_model,
-            prepare_model_for_kbit_training,
-        )
+        from peft import LoraConfig, PeftModel, get_peft_model
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
     except ImportError as exc:
         raise RuntimeError(
@@ -414,7 +433,6 @@ def _training_imports():
         LoraConfig,
         PeftModel,
         get_peft_model,
-        prepare_model_for_kbit_training,
         WhisperForConditionalGeneration,
         WhisperProcessor,
     )
@@ -443,116 +461,6 @@ class MemoryGuard:
             )
 
 
-def _train_lora(
-    config: PipelineConfig, samples, adapter_dir: Path, progress: Progress, memory: MemoryGuard
-) -> None:
-    torch, LoraConfig, _, get_peft_model, prepare_kbit, Model, Processor = _training_imports()
-    device = _device(torch)
-    processor = Processor.from_pretrained(config.base_model)
-    if config.method == "qlora":
-        if device.type != "cuda":
-            raise RuntimeError(
-                "QLoRA needs a supported 4-bit backend. Apple MPS is not supported "
-                "by bitsandbytes NF4; choose LoRA on this Mac or run QLoRA on CUDA."
-            )
-        if importlib.util.find_spec("bitsandbytes") is None:
-            raise RuntimeError("QLoRA requires bitsandbytes on the CUDA host.")
-        try:
-            from transformers import BitsAndBytesConfig
-
-            quantization = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
-            model = Model.from_pretrained(
-                config.base_model,
-                quantization_config=quantization,
-                device_map={"": device.index or 0},
-            )
-        except (ImportError, OSError) as exc:
-            raise RuntimeError("QLoRA requires bitsandbytes on the CUDA host.") from exc
-        model = prepare_kbit(model)
-    else:
-        model = Model.from_pretrained(config.base_model).to(device)
-    memory.check("model loading")
-    model.config.use_cache = False
-    forced = configure_prefix_tokens(processor.tokenizer, model)
-    lora = LoraConfig(
-        r=config.lora_rank,
-        lora_alpha=config.lora_rank * 2,
-        lora_dropout=0.05,
-        bias="none",
-        target_modules=["q_proj", "v_proj"],
-    )
-    model = get_peft_model(model, lora)
-    model.train()
-    optimizer = torch.optim.AdamW(
-        (p for p in model.parameters() if p.requires_grad), lr=config.learning_rate
-    )
-    total_updates = max(1, config.epochs * len(samples))
-    optimizer.zero_grad(set_to_none=True)
-    update = 0
-    kl_every = config.kl_every
-    for epoch in range(config.epochs):
-        epoch_samples = list(samples)
-        random.Random(17 + epoch).shuffle(epoch_samples)
-        for index, sample in enumerate(epoch_samples):
-            memory.check(f"epoch {epoch + 1} sample {index + 1}")
-            audio, rate = _load_audio(sample.audio.path)
-            features = processor.feature_extractor(
-                audio, sampling_rate=rate, return_tensors="pt"
-            ).input_features
-            decoder_ids, labels = teacher_forcing_pair(
-                processor.tokenizer(sample.reference_text).input_ids, forced)
-            inputs = {
-                "input_features": features.to(device),
-                "decoder_input_ids": torch.tensor([decoder_ids], device=device),
-                "labels": torch.tensor([labels], device=device),
-            }
-            outputs = model(**inputs)
-            memory.check(f"epoch {epoch + 1} forward pass")
-            loss_value = outputs.loss.item()
-            require_finite_loss(f"epoch {epoch + 1} sample {index + 1}", loss=loss_value)
-            loss = outputs.loss / config.gradient_accumulation_steps
-            loss.backward()
-            if ((index + 1) % config.gradient_accumulation_steps == 0
-                    or index + 1 == len(epoch_samples)):
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-            update += 1
-            # KL(fine-tuned ‖ base) per token: how far the adapted token
-            # distribution has drifted from stock Balanced. The base forward
-            # reuses the SAME weights with the LoRA adapter disabled — no
-            # second model in memory.
-            kl = None
-            if update % kl_every == 0 or update == total_updates:
-                with torch.no_grad(), model.disable_adapter():
-                    base_logits = model(**inputs).logits
-                log_p = torch.log_softmax(outputs.logits.detach(), dim=-1)
-                log_q = torch.log_softmax(base_logits, dim=-1)
-                kl = (log_p.exp() * (log_p - log_q)).sum(-1).mean().item()
-                require_finite_loss(f"epoch {epoch + 1} sample {index + 1}", kl=kl)
-            progress(
-                stage="training",
-                message=f"Epoch {epoch + 1}/{config.epochs} · sample {index + 1}/{len(samples)}",
-                value=0.08 + 0.66 * (update / total_updates),
-                total_updates=total_updates,
-                metric={
-                    "update": update,
-                    "epoch": epoch + 1,
-                    "loss": round(loss_value, 4),
-                    "kl": round(kl, 5) if kl is not None else None,
-                },
-            )
-    adapter_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(adapter_dir)
-    processor.save_pretrained(adapter_dir)
-    del model
-
-
 def _train_cached(
     config: PipelineConfig,
     samples,
@@ -568,7 +476,7 @@ def _train_cached(
     adapter disabled (no second model in memory)."""
     import numpy as np
 
-    torch, LoraConfig, _, get_peft_model, _, Model, Processor = _training_imports()
+    torch, LoraConfig, _, get_peft_model, Model, Processor = _training_imports()
     device = _device(torch)
     if device.type == "mps":
         memory.extra_bytes = torch.mps.driver_allocated_memory
@@ -772,7 +680,7 @@ def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) 
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import EntryNotFoundError
 
-    _, _, PeftModel, _, _, Model, _ = _training_imports()
+    _, _, PeftModel, _, Model, _ = _training_imports()
     base = Model.from_pretrained(config.base_model)
     merged = PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()
     merged.save_pretrained(merged_dir, safe_serialization=True)
@@ -782,6 +690,11 @@ def _merge_adapter(config: PipelineConfig, adapter_dir: Path, merged_dir: Path) 
         except EntryNotFoundError:
             continue
         shutil.copy2(source, merged_dir / name)
+    (merged_dir / MERGE_COMPLETE).write_text("", encoding="utf-8")
+
+
+#: Written last by _merge_adapter: a merged dir without it is partial.
+MERGE_COMPLETE = ".merge-complete"
 
 
 #: WhisperKit needs all three to load a model folder.

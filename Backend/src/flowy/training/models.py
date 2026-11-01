@@ -16,7 +16,6 @@ class TrainingModel:
     lora_rank: int
     kl_weight: float
     lora_ram_gb: float
-    qlora_ram_gb: float
     detail: str
 
     def public_dict(self) -> dict:
@@ -38,14 +37,14 @@ def _model(
     # Smaller checkpoints get a higher LR (unmeasured, conventional scaling).
     # RAM = peak process + Metal allocations for the local (cached) methods.
     profiles = {
-        # lr, rank, KL weight, local RAM, QLoRA host RAM
-        "tiny": (3e-4, 16, 0.3, 2.0, 2.0),
-        "base": (2e-4, 16, 0.3, 3.0, 2.0),
-        "small": (1.5e-4, 16, 0.3, 4.0, 3.0),
-        "medium": (1e-4, 16, 0.3, 6.0, 4.0),
-        "large": (1e-4, 16, 0.3, 10.0, 6.0),
+        # lr, rank, KL weight, local RAM
+        "tiny": (3e-4, 16, 0.3, 2.0),
+        "base": (2e-4, 16, 0.3, 3.0),
+        "small": (1.5e-4, 16, 0.3, 4.0),
+        "medium": (1e-4, 16, 0.3, 6.0),
+        "large": (1e-4, 16, 0.3, 10.0),
     }
-    learning_rate, rank, kl_weight, lora_ram, qlora_ram = profiles[family]
+    learning_rate, rank, kl_weight, lora_ram = profiles[family]
     suffix = ".en" if english_only else ""
     hf_variant = f"{variant}{suffix}"
     return TrainingModel(
@@ -58,7 +57,6 @@ def _model(
         lora_rank=rank,
         kl_weight=kl_weight,
         lora_ram_gb=lora_ram,
-        qlora_ram_gb=qlora_ram,
         detail=detail,
     )
 

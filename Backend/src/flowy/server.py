@@ -457,6 +457,22 @@ async def training_start_endpoint(req: TrainingStartRequest) -> JSONResponse:
     return JSONResponse(status_code=202, content={"job": job.to_dict()})
 
 
+@app.post("/training/jobs/{job_id}/resume")
+async def training_resume_endpoint(job_id: str) -> JSONResponse:
+    """Finish a run that failed after training (merge → convert → install)."""
+    try:
+        job = await run_in_threadpool(training_jobs.resume_job, job_id)
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except training_jobs.TrainingConflict as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except training_jobs.TrainingUnavailable as exc:
+        return JSONResponse(status_code=424, content={"error": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"error": str(exc)})
+    return JSONResponse(status_code=202, content={"job": job.to_dict()})
+
+
 @app.get("/training/jobs/latest")
 async def training_latest_job_endpoint() -> JSONResponse:
     job = training_jobs.latest_job()

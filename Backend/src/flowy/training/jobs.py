@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import math
@@ -101,7 +100,14 @@ class TrainingJob:
     created_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return {**asdict(self), "resumable": self.resumable}
+
+    @property
+    def resumable(self) -> bool:
+        """Failed after training with the adapter still on disk — the app can
+        finish it (merge → convert → install) without retraining."""
+        return (self.state == "error" and self.failed_stage in pipeline.RESUMABLE_STAGES
+                and self.run_dir is not None and pipeline.resumable(Path(self.run_dir)))
 
     @classmethod
     def from_dict(cls, data: dict) -> "TrainingJob":
@@ -145,7 +151,7 @@ def start_job(
         raise ValueError(f"Unsupported training method: {method}")
     if not math.isfinite(max_ram_gb) or not 2 <= max_ram_gb <= 128:
         raise ValueError("SFT RAM limit must be between 2 and 128 GB")
-    recommended = profile.qlora_ram_gb if method == "qlora" else profile.lora_ram_gb
+    recommended = profile.lora_ram_gb
     if max_ram_gb < recommended:
         raise ValueError(
             f"{profile.label} needs about {recommended:g} GB RAM. "
@@ -166,8 +172,6 @@ def start_job(
     # runners don't convert, so they skip the check.
     if runner is run_pipeline:
         pipeline.whisperkit_converter()
-        if method == "qlora":
-            _require_cuda_qlora()
 
     ready = readiness(store_root)
     if not ready["ready"]:
@@ -223,19 +227,6 @@ def start_job(
     )
     thread.start()
     return job
-
-
-def _require_cuda_qlora() -> None:
-    try:
-        import torch
-
-        cuda = torch.cuda.is_available()
-    except ImportError:
-        cuda = False
-    if not cuda or importlib.util.find_spec("bitsandbytes") is None:
-        raise TrainingUnavailable(
-            "QLoRA needs an NVIDIA GPU."
-        )
 
 
 #: Run-dir artifacts too big to keep once a run has failed (logs stay).
@@ -317,9 +308,57 @@ def recover_interrupted(output_root: Path | None = None) -> int:
     return interrupted
 
 
-def _run_job(job_id: str, config: PipelineConfig, runner) -> None:
+def resume_job(job_id: str, runner=None) -> TrainingJob:
+    """Pick a failed run back up after training (see TrainingJob.resumable)."""
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            raise LookupError(f"Unknown training job {job_id}")
+        active = next((j for j in _jobs.values() if j.state in {"queued", "running"}), None)
+        if active is not None:
+            raise TrainingConflict(f"Training job {active.id} is already running")
+        if not job.resumable:
+            raise TrainingConflict(
+                "Only a run that failed after training, with its trained adapter still "
+                "on disk, can resume — start a new training run.")
+        if (pipeline.custom_models_root() / job.model_name).exists():
+            raise TrainingConflict(f"“{job.model_name}” is already installed.")
+    run_dir = Path(job.run_dir)
+    if runner is None:
+        pipeline.whisperkit_converter()
+        runner = pipeline.resume_pipeline
+        # Converter output + the run's copy + the installed copy, each about
+        # the size of the merged weights.
+        weights = run_dir / "merged-hf" / "model.safetensors"
+        need = 3 * (weights.stat().st_size / 1024**3 if weights.is_file() else 1.6) + 1.0
+        free = shutil.disk_usage(run_dir).free / 1024**3
+        if free < need:
+            raise TrainingUnavailable(
+                f"Finishing this model needs about {need:.0f} GB free disk ({free:.0f} free).")
+    config = PipelineConfig.for_model(
+        model_name=job.model_name, source_model=job.source_model, method=job.method,
+        max_ram_gb=job.max_ram_gb, output_root=run_dir.parent)
+    with _lock:
+        resumed_from = job.failed_stage
+        job.state, job.stage, job.progress = "queued", resumed_from, 0.76
+        job.error = job.failed_stage = None
+        job.message = "Resuming after training"
+        # The live ETA measures from created_at — restart the clock.
+        job.created_at = datetime.now().astimezone().isoformat()
+    threading.Thread(
+        target=_run_job,
+        args=(job.id, config, lambda c, p: runner(c, run_dir, p)),
+        kwargs={"start": ("merging", "Resuming after training")},
+        name=f"slive-resume-{job.id[:8]}",
+        daemon=True,
+    ).start()
+    return job
+
+
+def _run_job(job_id: str, config: PipelineConfig, runner,
+             start: tuple[str, str] = ("preparing", "Preparing training data")) -> None:
     try:
-        _run_job_inner(job_id, config, runner)
+        _run_job_inner(job_id, config, runner, start)
     except Exception as exc:  # noqa: BLE001 - last resort: never leave a job "running"
         logger.exception("Training job %s failed outside the pipeline", job_id)
         with _lock:
@@ -329,8 +368,9 @@ def _run_job(job_id: str, config: PipelineConfig, runner) -> None:
             job.error = job.message = str(exc) or type(exc).__name__
 
 
-def _run_job_inner(job_id: str, config: PipelineConfig, runner) -> None:
-    _update(job_id, state="running", stage="preparing", message="Preparing training data")
+def _run_job_inner(job_id: str, config: PipelineConfig, runner,
+                   start: tuple[str, str]) -> None:
+    _update(job_id, state="running", stage=start[0], message=start[1])
 
     def progress(*, stage: str, message: str, value: float, **extra) -> None:
         _update(job_id, stage=stage, message=message, progress=value, **extra)
