@@ -82,26 +82,44 @@ final class ProviderStore: ObservableObject {
         guard !id.isEmpty, localDownloading == nil else { return }
         localError = nil
         guard await BackendManager.shared.ensureHealthy() else {
-            localError = "Local server didn't start."
+            localError = BackendManager.shared.lastSpawnError ?? "Local server didn't start."
             return
         }
         localDownloading = id
         defer { localDownloading = nil }
+        var failure: String?
         do {
             let jobID = try await localClient.startDownload(repoID: id, token: huggingFaceToken)
+            // No time cap: a multi-GB model on a slow line can take hours. The
+            // loop ends on done/error, a vanished job (server restarted), or a
+            // server that stays unreachable — one blip doesn't end it.
+            var misses = 0
             while true {
                 try await Task.sleep(nanoseconds: 1_500_000_000)
-                let job = try await localClient.downloadStatus(jobID: jobID)
+                let job: LocalDownloadJob
+                do {
+                    job = try await localClient.downloadStatus(jobID: jobID)
+                    misses = 0
+                } catch let error as LocalModelsClient.ServerError {
+                    throw error
+                } catch {
+                    misses += 1
+                    if misses >= 5 { throw error }
+                    continue
+                }
                 if job.state == "done" { break }
                 if job.state == "error" {
-                    localError = job.message.isEmpty ? "Download failed." : job.message
+                    failure = job.message.isEmpty ? "Download failed." : job.message
                     break
                 }
             }
-            await refreshLocalCache()
         } catch {
-            localError = error.localizedDescription
+            failure = error.localizedDescription
         }
+        // Re-read the cache first: it clears localError, and the failure
+        // must stay on screen (it used to vanish in the same turn).
+        await refreshLocalCache()
+        localError = failure
     }
 
     /// Remove a cached model from disk, then refresh.

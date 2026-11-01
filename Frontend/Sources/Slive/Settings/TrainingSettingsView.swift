@@ -29,6 +29,9 @@ struct TrainingSettingsView: View {
     @State private var maxRamGB = 12.0
     /// The small print (profile, RAM, time, name) is tucked one tap away.
     @State private var showAdvanced = false
+    /// The one live job poller. Every appear used to start another, and none
+    /// ever stopped while the job ran.
+    @State private var pollTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -40,6 +43,10 @@ struct TrainingSettingsView: View {
         .onAppear {
             transcription.refreshCustomModels()
             refresh()
+        }
+        .onDisappear {
+            pollTask?.cancel()
+            pollTask = nil
         }
     }
 
@@ -756,9 +763,10 @@ struct TrainingSettingsView: View {
     }
 
     private func poll(_ id: String) {
-        Task { @MainActor in
+        pollTask?.cancel()
+        pollTask = Task { @MainActor in
             var failures = 0
-            while true {
+            while !Task.isCancelled {
                 do {
                     let latest = try await TrainingClient().status(id: id)
                     failures = 0
@@ -774,6 +782,7 @@ struct TrainingSettingsView: View {
                     }
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                 } catch {
+                    if Task.isCancelled { return }   // page closed: not an error
                     // One blip (server busy converting, a respawn) must not end
                     // live updates for an hour-long run.
                     failures += 1

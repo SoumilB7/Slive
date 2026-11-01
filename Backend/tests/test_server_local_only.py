@@ -53,3 +53,54 @@ def test_health_reports_busy_while_a_download_runs(monkeypatch):
     assert client.get("/health").json() == {"status": "ok", "busy": False}
     monkeypatch.setattr(local, "busy", lambda: True)
     assert client.get("/health").json()["busy"] is True
+
+
+def test_health_reports_busy_while_a_request_is_in_flight(monkeypatch):
+    import asyncio
+
+    from flowy import local
+    from flowy.training import jobs
+
+    monkeypatch.setattr(local, "busy", lambda: False)
+    monkeypatch.setattr(jobs, "busy", lambda: False)
+    seen: list[bool] = []
+
+    async def inner(scope, receive, send) -> None:
+        seen.append(server.health()["busy"])
+
+    middleware = server._InFlightMiddleware(inner)
+    asyncio.run(middleware({"type": "http", "path": "/assistant/stream"}, None, None))
+    # /health itself never counts, or the idle check would always see busy.
+    asyncio.run(middleware({"type": "http", "path": "/health"}, None, None))
+    assert seen == [True, False]
+    assert server.health()["busy"] is False
+
+
+def test_in_flight_count_drops_when_a_request_fails():
+    import asyncio
+
+    async def inner(scope, receive, send) -> None:
+        raise RuntimeError("boom")
+
+    middleware = server._InFlightMiddleware(inner)
+    with pytest.raises(RuntimeError):
+        asyncio.run(middleware({"type": "http", "path": "/assistant"}, None, None))
+    assert server._in_flight == 0
+
+
+def test_error_messages_are_never_blank(client: TestClient, monkeypatch) -> None:
+    async def fail(**_kwargs):
+        raise TimeoutError()
+
+    monkeypatch.setattr(server, "assistant_list_models", fail)
+    resp = client.post("/models", json={"provider": "openai", "api_key": "k"})
+    assert resp.status_code == 502
+    assert resp.json()["error"] == "TimeoutError"
+
+
+def test_parent_watch_fires_once_the_app_is_gone(monkeypatch) -> None:
+    ppids = iter([4242, 4242, 1])
+    monkeypatch.setattr(server.os, "getppid", lambda: next(ppids))
+    gone: list[bool] = []
+    server._watch_parent(4242, lambda: gone.append(True), interval=0)
+    assert gone == [True]

@@ -19,6 +19,9 @@ import binascii
 import json
 import logging
 import os
+import signal
+import threading
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
@@ -81,7 +84,40 @@ class _LocalOnlyMiddleware:
         await self.inner(scope, receive, send)
 
 
+#: Requests being served right now (``/health`` excluded). Only touched on the
+#: event loop, so a plain int is safe.
+_in_flight = 0
+
+
+class _InFlightMiddleware:
+    """Count requests until their last byte is sent (streams included), so
+    ``/health`` reports busy while one runs and the app's idle shutdown can't
+    kill a long local-model generation mid-reply."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope.get("path") == "/health":
+            await self.inner(scope, receive, send)
+            return
+        global _in_flight
+        _in_flight += 1
+        try:
+            await self.inner(scope, receive, send)
+        finally:
+            _in_flight -= 1
+
+
+# Added last = outermost: a forbidden request never counts as in flight.
+app.add_middleware(_InFlightMiddleware)
 app.add_middleware(_LocalOnlyMiddleware)
+
+
+def _message(exc: BaseException) -> str:
+    """An exception's text for the app — never blank (a bare ``TimeoutError()``
+    stringifies to "" and used to show the user an empty error)."""
+    return str(exc).strip() or type(exc).__name__
 
 
 # NOTE: no model loading at startup. Dictation STT runs on-device (WhisperKit)
@@ -93,12 +129,12 @@ app.add_middleware(_LocalOnlyMiddleware)
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    # `busy`: a download or training job is running — the app's idle shutdown
-    # waits for it instead of killing it.
+    # `busy`: a download, training job or request is running — the app's idle
+    # shutdown waits for it instead of killing it.
     from flowy import local
     from flowy.training import jobs
 
-    return {"status": "ok", "busy": local.busy() or jobs.busy()}
+    return {"status": "ok", "busy": _in_flight > 0 or local.busy() or jobs.busy()}
 
 
 def _decode_header(value: str | None) -> str | None:
@@ -130,7 +166,7 @@ async def transcribe_endpoint(request: Request) -> JSONResponse:
         )
     except Exception as exc:  # noqa: BLE001 - surface any engine error as JSON
         logger.exception("Transcription failed")
-        return JSONResponse(status_code=500, content={"error": str(exc)})
+        return JSONResponse(status_code=500, content={"error": _message(exc)})
     return JSONResponse(status_code=200, content={"text": text})
 
 
@@ -196,10 +232,10 @@ async def assistant_endpoint(req: AssistantRequest) -> JSONResponse:
         )
     except ValueError as exc:
         # Bad input or a provider error we could parse — client's problem.
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        return JSONResponse(status_code=400, content={"error": _message(exc)})
     except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
         logger.exception("Assistant request failed")
-        return JSONResponse(status_code=502, content={"error": str(exc)})
+        return JSONResponse(status_code=502, content={"error": _message(exc)})
     return JSONResponse(status_code=200, content={"text": reply})
 
 
@@ -232,7 +268,7 @@ async def assistant_stream_endpoint(req: AssistantRequest) -> StreamingResponse:
                 yield json.dumps({"delta": delta}) + "\n"
         except Exception as exc:  # noqa: BLE001 - report any failure inline
             logger.exception("Assistant stream failed")
-            yield json.dumps({"error": str(exc)}) + "\n"
+            yield json.dumps({"error": _message(exc)}) + "\n"
         else:
             yield json.dumps({"done": True}) + "\n"
 
@@ -286,10 +322,10 @@ async def transcribe_llm_endpoint(req: TranscribeLLMRequest) -> JSONResponse:
             prompt_override=req.prompt_override,
         )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        return JSONResponse(status_code=400, content={"error": _message(exc)})
     except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
         logger.exception("LLM transcription failed")
-        return JSONResponse(status_code=502, content={"error": str(exc)})
+        return JSONResponse(status_code=502, content={"error": _message(exc)})
     # The exact instruction the model saw rides back — the UI shows it so
     # "what went in" is inspectable, vocabulary hint included.
     return JSONResponse(status_code=200, content={"text": text, "prompt": prompt_used})
@@ -329,12 +365,12 @@ async def label_consensus_endpoint(req: LabelConsensusRequest) -> JSONResponse:
     except LabelFatalError as exc:
         # A key problem fails every clip the same way — flagged so the app
         # stops the whole run instead of counting a thousand failures.
-        return JSONResponse(status_code=401, content={"error": str(exc), "fatal": exc.kind})
+        return JSONResponse(status_code=401, content={"error": _message(exc), "fatal": exc.kind})
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        return JSONResponse(status_code=400, content={"error": _message(exc)})
     except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
         logger.exception("Consensus label failed")
-        return JSONResponse(status_code=502, content={"error": str(exc)})
+        return JSONResponse(status_code=502, content={"error": _message(exc)})
     return JSONResponse(status_code=200, content=result)
 
 
@@ -353,10 +389,10 @@ async def models_endpoint(req: ModelsRequest) -> JSONResponse:
             provider=req.provider, api_key=req.api_key, base_url=req.base_url
         )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        return JSONResponse(status_code=400, content={"error": _message(exc)})
     except Exception as exc:  # noqa: BLE001 - surface any upstream error as JSON
         logger.exception("Model list request failed")
-        return JSONResponse(status_code=502, content={"error": str(exc)})
+        return JSONResponse(status_code=502, content={"error": _message(exc)})
     return JSONResponse(status_code=200, content={"models": models})
 
 
@@ -451,12 +487,12 @@ async def training_start_endpoint(req: TrainingStartRequest) -> JSONResponse:
             max_ram_gb=req.max_ram_gb,
         )
     except training_jobs.TrainingConflict as exc:
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return JSONResponse(status_code=409, content={"error": _message(exc)})
     except training_jobs.TrainingUnavailable as exc:
         # A missing dependency (converter, CUDA, disk) — not the request's fault.
-        return JSONResponse(status_code=424, content={"error": str(exc)})
+        return JSONResponse(status_code=424, content={"error": _message(exc)})
     except ValueError as exc:
-        return JSONResponse(status_code=422, content={"error": str(exc)})
+        return JSONResponse(status_code=422, content={"error": _message(exc)})
     return JSONResponse(status_code=202, content={"job": job.to_dict()})
 
 
@@ -466,13 +502,13 @@ async def training_resume_endpoint(job_id: str) -> JSONResponse:
     try:
         job = await run_in_threadpool(training_jobs.resume_job, job_id)
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+        return JSONResponse(status_code=404, content={"error": _message(exc)})
     except training_jobs.TrainingConflict as exc:
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return JSONResponse(status_code=409, content={"error": _message(exc)})
     except training_jobs.TrainingUnavailable as exc:
-        return JSONResponse(status_code=424, content={"error": str(exc)})
+        return JSONResponse(status_code=424, content={"error": _message(exc)})
     except ValueError as exc:
-        return JSONResponse(status_code=422, content={"error": str(exc)})
+        return JSONResponse(status_code=422, content={"error": _message(exc)})
     return JSONResponse(status_code=202, content={"job": job.to_dict()})
 
 
@@ -490,6 +526,32 @@ async def training_job_endpoint(job_id: str) -> JSONResponse:
     return JSONResponse(status_code=200, content={"job": job.to_dict()})
 
 
+def _watch_parent(parent_pid: int, on_gone, interval: float = 2.0) -> None:
+    """Call ``on_gone`` once the app that spawned us is gone. A crashed or
+    force-quit app never runs its stop(), and we'd otherwise sit on the port
+    (and RAM) until the next launch reaps us. Reparenting to launchd changes
+    our ppid, so polling it needs no cooperation from the dead parent."""
+    while os.getppid() == parent_pid:
+        time.sleep(interval)
+    on_gone()
+
+
+def _exit_with_app() -> None:
+    """The app died: stop the way its stop() would — SIGTERM to our process
+    group when we lead one (so a training converter goes too), else just us —
+    and hard-exit if a clean uvicorn shutdown doesn't land in time."""
+    logger.warning("Slive app is gone — shutting down.")
+    try:
+        if os.getpgrp() == os.getpid():
+            os.killpg(os.getpid(), signal.SIGTERM)
+        else:
+            os.kill(os.getpid(), signal.SIGTERM)
+    except OSError:
+        pass
+    time.sleep(10)
+    os._exit(0)
+
+
 def main() -> None:
     import uvicorn
 
@@ -500,6 +562,15 @@ def main() -> None:
             os.setpgid(0, 0)
         except OSError:
             pass
+    # The app passes its pid so we leave with it, crash included.
+    try:
+        parent_pid = int(os.environ.get("SLIVE_PARENT_PID", ""))
+    except ValueError:
+        parent_pid = 0
+    if parent_pid > 1:
+        threading.Thread(
+            target=_watch_parent, args=(parent_pid, _exit_with_app), daemon=True
+        ).start()
 
     logging.basicConfig(level=logging.INFO)
     # Jobs live in memory: mark runs a previous server died during as

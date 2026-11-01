@@ -266,7 +266,6 @@ struct TrainingClient {
     private struct JobEnvelope: Decodable { let job: WhisperTrainingJob }
     private struct OptionalJobEnvelope: Decodable { let job: WhisperTrainingJob? }
     private struct ModelEnvelope: Decodable { let models: [WhisperTrainingModel] }
-    private struct ErrorEnvelope: Decodable { let error: String }
     private struct StartRequest: Encodable {
         let sourceModel: String
         let method: String
@@ -289,7 +288,8 @@ struct TrainingClient {
             throw TrainingError(message: "Training backend returned no HTTP response.")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data).error)
+            // `error` from our handlers, `detail` from FastAPI validation.
+            let message = AssistantClient.serverMessage(in: data)
                 ?? "Training backend returned HTTP \(http.statusCode)."
             throw TrainingError(message: message)
         }

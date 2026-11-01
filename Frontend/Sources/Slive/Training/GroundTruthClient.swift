@@ -66,8 +66,32 @@ struct GroundTruthClient {
         var request = URLRequest(
             url: URL(string: "http://127.0.0.1:50711/transcribe_llm/prompt")!)
         request.timeoutInterval = 15
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.checkStatus(response, data)
         return try JSONDecoder().decode(Resp.self, from: data).prompt
+    }
+
+    /// Throw the server's own message for a non-2xx reply. FastAPI's 422
+    /// carries `detail`, not `error`, and used to decode as an empty label.
+    static func checkStatus(_ response: URLResponse, _ data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw GroundTruthError.server("No response from the server.")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw GroundTruthError.server(
+                AssistantClient.serverMessage(in: data) ?? "Server error \(http.statusCode).")
+        }
+    }
+
+    /// Map a /transcribe_llm reply to text + prompt, or the right error —
+    /// split out so the self-test can check it without a server.
+    static func decodeTranscription(_ data: Data, _ response: URLResponse) throws -> (text: String, prompt: String?) {
+        try checkStatus(response, data)
+        let decoded = try JSONDecoder().decode(ResponseBody.self, from: data)
+        if let error = decoded.error { throw GroundTruthError.server(error) }
+        let text = (decoded.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw GroundTruthError.server("No text returned.") }
+        return (text, decoded.prompt)
     }
 
     /// The consensus speaker line when the user hasn't edited it. Mirrors
@@ -166,11 +190,8 @@ struct GroundTruthClient {
         // first-use load (multi-GB weights) before it can transcribe.
         request.timeoutInterval = provider.isLocal ? 600 : 120
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let decoded = try JSONDecoder().decode(ResponseBody.self, from: data)
-        if let error = decoded.error { throw GroundTruthError.server(error) }
-        return ((decoded.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                decoded.prompt)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return try Self.decodeTranscription(data, response)
     }
 
     // MARK: - 3-way consensus (POST /label_consensus)

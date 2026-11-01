@@ -97,6 +97,17 @@ def _snapshot_bytes(repo_id: str) -> int:
         return 0
 
 
+def _require_cached(repo_id: str) -> None:
+    """Refuse a model that isn't in the HF cache. Downloads belong to the
+    Models page (a job the user sees); loading stays offline."""
+    from huggingface_hub import try_to_load_from_cache
+
+    if not isinstance(try_to_load_from_cache(repo_id, "config.json"), str):
+        raise LocalInferenceError(
+            f"{repo_id} isn't downloaded. Download it in Models first."
+        )
+
+
 def _apply_memory_cap(device: str, mem_gb: float) -> None:
     """Cap the MPS allocator so exceeding the limit raises a catchable OOM
     instead of paging the whole machine out."""
@@ -143,6 +154,9 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
         if _current is not None and (_current.repo_id, _current.quantized) == (repo_id, quantized):
             _apply_memory_cap("mps", mem_gb)   # limit may have moved — re-apply
             return _current
+        # Before evicting anything: a model that isn't on disk fails here,
+        # cleanly, instead of a silent multi-GB download inside the request.
+        _require_cached(repo_id)
         if _current is not None:               # free the previous model first
             _current = None
             _free_accelerator()
@@ -161,7 +175,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
         # Capability is declared by the model's config — a processor that fails
         # to import must NOT silently demote a multimodal model to text-only.
         try:
-            config = AutoConfig.from_pretrained(repo_id, token=tok)
+            config = AutoConfig.from_pretrained(repo_id, token=tok, local_files_only=True)
         except Exception as exc:
             raise LocalInferenceError(
                 f"Couldn't read {repo_id}'s config: {_short(exc)}"
@@ -172,7 +186,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
 
         if multimodal:
             try:
-                processor = AutoProcessor.from_pretrained(repo_id, token=tok)
+                processor = AutoProcessor.from_pretrained(repo_id, token=tok, local_files_only=True)
             except Exception as exc:
                 raise LocalInferenceError(
                     f"{repo_id} is multimodal but its processor failed to load "
@@ -181,7 +195,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
                 ) from exc
         else:
             try:
-                processor = AutoTokenizer.from_pretrained(repo_id, token=tok)
+                processor = AutoTokenizer.from_pretrained(repo_id, token=tok, local_files_only=True)
             except Exception as exc:
                 raise LocalInferenceError(
                     f"Couldn't load a tokenizer for {repo_id}: {_short(exc)}"
@@ -189,7 +203,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
 
         _check_fits(repo_id, quantized, mem_gb)
 
-        kwargs: dict = {"token": tok, "dtype": dtype}
+        kwargs: dict = {"token": tok, "dtype": dtype, "local_files_only": True}
         if quantized:
             from torchao.quantization import Int8WeightOnlyConfig
             from transformers import TorchAoConfig

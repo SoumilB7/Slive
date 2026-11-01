@@ -387,8 +387,8 @@ def _run_job_inner(job_id: str, config: PipelineConfig, runner,
             state="error",
             stage="error",
             failed_stage=failed_stage,
-            message=str(exc),
-            error=str(exc),
+            message=str(exc) or type(exc).__name__,
+            error=str(exc) or type(exc).__name__,
         )
         return
     _update(

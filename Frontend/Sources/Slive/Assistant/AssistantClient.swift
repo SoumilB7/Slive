@@ -85,15 +85,22 @@ struct AssistantClient {
     /// sent one — `{"error": …}` from our handlers, or FastAPI's `{"detail": …}`
     /// (a string, or a list of validation items) — else the bare status.
     private static func failure(status: Int, body: Data) -> AssistantError {
-        if let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
-            if let e = obj["error"] as? String, !e.isEmpty { return .server(e) }
-            if let d = obj["detail"] as? String, !d.isEmpty { return .server(d) }
-            if let items = obj["detail"] as? [[String: Any]],
-               let msg = items.first?["msg"] as? String, !msg.isEmpty {
-                return .server(msg)
-            }
+        serverMessage(in: body).map { .server($0) } ?? .badStatus(status)
+    }
+
+    /// The message in a backend error body, or nil. Shared by every client of
+    /// the local server (ground truth, local models, training).
+    static func serverMessage(in body: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return nil
         }
-        return .badStatus(status)
+        if let e = obj["error"] as? String, !e.isEmpty { return e }
+        if let d = obj["detail"] as? String, !d.isEmpty { return d }
+        if let items = obj["detail"] as? [[String: Any]],
+           let msg = items.first?["msg"] as? String, !msg.isEmpty {
+            return msg
+        }
+        return nil
     }
 
     /// Fetch the provider's LIVE list of model ids (via the backend `/models`).

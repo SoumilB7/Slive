@@ -25,6 +25,30 @@ final class BackendManager: ObservableObject {
     /// and the UI can say what to fix instead of "still starting".
     @Published private(set) var lastSpawnError: String?
 
+    /// How the last server we spawned ended. `wasExpected` = we stopped it
+    /// (quit, idle shutdown) — anything else is a crash a reporter can flag.
+    struct Exit: Equatable {
+        let code: Int32
+        let reason: Process.TerminationReason
+        let wasExpected: Bool
+        /// Seconds it ran (0 when a stop() had already let go of it).
+        let uptime: TimeInterval
+    }
+    @Published private(set) var lastExit: Exit?
+
+    /// A server that dies this soon after spawning is a quick death; this many
+    /// in a row means it can't start (bad install, port taken), so respawning
+    /// pauses for `crashCooldown` instead of looping through the whole
+    /// ensureHealthy timeout (it used to respawn ~60× in 25s).
+    nonisolated static let quickDeathSeconds: TimeInterval = 10
+    nonisolated static let quickDeathLimit = 3
+    private let crashCooldown: TimeInterval = 30
+    private var quickDeaths = 0
+    private var crashedOutUntil: Date?
+    private var spawnedAt = Date()
+    /// PIDs of servers we signalled ourselves, so their exit isn't a crash.
+    private var expectedExits: Set<pid_t> = []
+
     /// Last time anything asked for the server. Idle this long with no
     /// download or training job running, it's stopped — it used to stay up
     /// until quit once anything (even opening Settings) had started it.
@@ -65,6 +89,7 @@ final class BackendManager: ObservableObject {
     /// who only dictates never pays for a resident Python process at all.
     func reapOrphans() {
         status = .offline
+        guard Edition.hasServer else { return }   // Lite ships no server to reap
         // PID-snapshot, then kill — far safer than killing by PATTERN later
         // (`pkill -f` would match our own future child), and it keeps the
         // fork/exec+wait off the launch path. Honest caveat: the snapshot is
@@ -101,8 +126,12 @@ final class BackendManager: ObservableObject {
     /// SIGKILL for anything left. Blocking is fine here: it runs at quit, and
     /// the server must be gone before the app exits.
     func stop() {
+        guard Edition.hasServer else { return }
         var pids = Set(Self.serverPIDs())
-        if let p = process, p.isRunning { pids.insert(p.processIdentifier) }
+        if let p = process, p.isRunning {
+            pids.insert(p.processIdentifier)
+            expectedExits.insert(p.processIdentifier)
+        }
         process = nil
         for pid in pids { Self.signal(pid, SIGTERM) }
         let deadline = Date().addingTimeInterval(1.5)
@@ -128,8 +157,12 @@ final class BackendManager: ObservableObject {
         while Date() < deadline {
             try? await Task.sleep(nanoseconds: 400_000_000)   // 0.4s
             if await probeHealth() { status = .running; return true }
-            // If our process died while we waited, bring it back.
-            if !(process?.isRunning ?? false) { spawnIfNeeded() }
+            // If our process died while we waited, bring it back — unless it
+            // keeps dying on start, which retrying can't fix.
+            if !(process?.isRunning ?? false) {
+                spawnIfNeeded()
+                if lastSpawnError != nil, process == nil { break }
+            }
         }
         status = .offline
         return false
@@ -138,7 +171,15 @@ final class BackendManager: ObservableObject {
     // MARK: - Spawn
 
     private func spawnIfNeeded() {
-        if let p = process, p.isRunning { return }   // already ours
+        if let p = process {
+            if p.isRunning { return }   // already ours
+            processEnded(p)             // dead, handler not run yet — book it now
+        }
+        if let until = crashedOutUntil {
+            if Date() < until { return }   // keeps dying on start; lastSpawnError says why
+            crashedOutUntil = nil
+            quickDeaths = 0
+        }
         spawn()
     }
 
@@ -186,28 +227,36 @@ final class BackendManager: ObservableObject {
         p.executableURL = exe
         p.arguments = arguments
         p.currentDirectoryURL = directory
+        var environment = environment
+        // The server watches this pid and leaves with us, crash included.
+        environment["SLIVE_PARENT_PID"] = String(getpid())
         p.environment = environment
 
-        let logURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("slive-backend.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        // Keep the previous run's log: a server that died is only explained
+        // by what it printed, and each respawn used to truncate it.
+        let fm = FileManager.default
+        let logURL = Self.logURL
+        let prevURL = logURL.deletingLastPathComponent()
+            .appendingPathComponent("slive-backend.prev.log")
+        let logSize = ((try? fm.attributesOfItem(atPath: logURL.path))?[.size] as? NSNumber)?.intValue
+        if (logSize ?? 0) > 0 {
+            try? fm.removeItem(at: prevURL)
+            try? fm.moveItem(at: logURL, to: prevURL)
+        }
+        fm.createFile(atPath: logURL.path, contents: nil)
         if let handle = try? FileHandle(forWritingTo: logURL) {
             p.standardOutput = handle
             p.standardError = handle
         }
 
         p.terminationHandler = { [weak self] ended in
-            Task { @MainActor in
-                // Only forget the process that ended — not a newer respawn.
-                guard let self, self.process === ended else { return }
-                self.process = nil
-                self.status = .offline
-            }
+            Task { @MainActor in self?.processEnded(ended) }
         }
 
         do {
             try p.run()
             process = p
+            spawnedAt = Date()
             status = .starting
             lastSpawnError = nil
             lastUsed = Date()
@@ -217,6 +266,60 @@ final class BackendManager: ObservableObject {
             NSLog("Slive: failed to start backend — \(error)")
             lastSpawnError = "Server didn't start: \(error.localizedDescription)"
         }
+    }
+
+    nonisolated static var logURL: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("slive-backend.log")
+    }
+
+    // MARK: - Exit bookkeeping
+
+    /// Book a server's exit exactly once: record how it ended, forget it if
+    /// it's still the current one, and stop respawning a server that keeps
+    /// dying on start.
+    private func processEnded(_ ended: Process) {
+        let expected = expectedExits.remove(ended.processIdentifier) != nil
+        let isCurrent = process === ended
+        // Not current and not ours to stop = the respawn path booked it already.
+        guard isCurrent || expected else { return }
+        let uptime = isCurrent ? Date().timeIntervalSince(spawnedAt) : 0
+        lastExit = Exit(code: ended.terminationStatus, reason: ended.terminationReason,
+                        wasExpected: expected, uptime: uptime)
+        // stop() has already let go of it.
+        guard isCurrent else { return }
+        process = nil
+        status = .offline
+        guard !expected else { return }
+        NSLog("Slive: backend quit unexpectedly (\(Self.exitText(ended.terminationStatus, ended.terminationReason))) after \(Int(uptime))s.")
+        quickDeaths = uptime < Self.quickDeathSeconds ? quickDeaths + 1 : 0
+        guard quickDeaths >= Self.quickDeathLimit else { return }
+        crashedOutUntil = Date().addingTimeInterval(crashCooldown)
+        lastSpawnError = Self.deathReason(code: ended.terminationStatus,
+                                          reason: ended.terminationReason,
+                                          logTail: Self.logTail())
+    }
+
+    /// One short line for a server that keeps dying on start.
+    nonisolated static func deathReason(code: Int32, reason: Process.TerminationReason,
+                                        logTail: String) -> String {
+        let log = logTail.lowercased()
+        if log.contains("address already in use") || log.contains("errno 48") {
+            return "Port 50711 is in use by another app."
+        }
+        return "Slive Server quit on start (\(exitText(code, reason)))."
+    }
+
+    nonisolated private static func exitText(_ code: Int32, _ reason: Process.TerminationReason) -> String {
+        reason == .uncaughtSignal ? "signal \(code)" : "exit \(code)"
+    }
+
+    /// The last few KB of the server log, where a start-up failure lands.
+    nonisolated private static func logTail() -> String {
+        guard let handle = try? FileHandle(forReadingFrom: logURL) else { return "" }
+        defer { try? handle.close() }
+        let end = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: end > 4096 ? end - 4096 : 0)
+        return String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
     }
 
     /// Release Full build: Python, its packages and the server source live in
@@ -314,6 +417,7 @@ final class BackendManager: ObservableObject {
         guard process === p, Date().timeIntervalSince(lastUsed) > Self.idleShutdownSeconds else { return }
         Log.event("backend idle 10 min — stopping it")
         idleTimer?.invalidate(); idleTimer = nil
+        expectedExits.insert(p.processIdentifier)
         Self.signal(p.processIdentifier, SIGTERM)   // terminationHandler clears state
     }
 
