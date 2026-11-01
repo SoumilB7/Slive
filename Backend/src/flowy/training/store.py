@@ -93,7 +93,16 @@ LABEL_QUALITY_REASONS = (
     "label-meta-reply",
     "label-length-mismatch",
     "label-low-similarity",
+    "label-low-agreement",
 )
+
+#: A consensus label whose transcribers agreed less than this is excluded
+#: (Nov 1 2026 challenge: 9 of the 12 clips under it were wrong, carrying a
+#: third of all label errors).
+MIN_LABEL_AGREEMENT = 0.8
+#: Cloud labels need more words than human ones: clips with a 1–3 word label
+#: are mostly mis-fires, and the transcribers got 1 in 3 of their words wrong.
+MIN_CLOUD_LABEL_WORDS = 4
 
 _WORD_RE = re.compile(r"[\w']+")
 _NUMBER_WORDS = {
@@ -153,6 +162,8 @@ class StoredSample:
     llm_transcript: str | None
     llm_model: str | None
     line_number: int
+    #: Consensus labels only: how closely the transcribers agreed (0…1).
+    llm_agreement: float | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +345,10 @@ class TrainingStore:
                 elif label_source == "llmTranscript":
                     # Human-corrected finalText is trusted as-is; only cloud
                     # labels must agree with what Slive heard.
+                    if len(label.split()) < MIN_CLOUD_LABEL_WORDS:
+                        reasons.append("label-too-short")
+                    if sample.llm_agreement is not None and sample.llm_agreement < MIN_LABEL_AGREEMENT:
+                        reasons.append("label-low-agreement")
                     reasons.extend(label_quality_issues(label, sample.transcript))
 
                 audio_path, path_error = self._resolve_audio(sample.audio_file)
@@ -448,7 +463,13 @@ def _parse_sample(payload: Any, line_number: int) -> StoredSample:
         llm_transcript=(_optional_string(payload, "llmTranscript") or "").strip() or None,
         llm_model=_optional_string(payload, "llmModel"),
         line_number=line_number,
+        llm_agreement=_optional_float(payload, "llmAgreement"),
     )
+
+
+def _optional_float(payload: dict[str, Any], key: str) -> float | None:
+    value = payload.get(key)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _select_label(sample: StoredSample, policy: LabelPolicy) -> tuple[str | None, str | None]:

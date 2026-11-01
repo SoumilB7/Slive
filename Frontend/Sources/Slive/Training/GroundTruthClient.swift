@@ -146,9 +146,8 @@ struct GroundTruthClient {
 
     // MARK: - 3-way consensus (POST /label_consensus)
 
-    /// One consensus label: gpt-transcribe (steered by the Vocabulary) and
-    /// whisper-1 run in parallel server-side, and the transcript closest to
-    /// the other two — Slive's own typed text being the third vote — wins.
+    /// One consensus label: gpt-transcribe (steered by the Vocabulary) writes it,
+    /// and whisper-1 plus Slive's own typed text vote on how far to trust it.
     struct ConsensusResult: Decodable {
         let text: String
         /// "gpt-transcribe" | "whisper-1" | "typed"

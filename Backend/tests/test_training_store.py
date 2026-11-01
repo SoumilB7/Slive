@@ -78,8 +78,8 @@ def test_best_available_prefers_final_text_then_llm(tmp_path: Path) -> None:
             ),
             _row(
                 "llm",
-                transcript="llm reference text",
-                llmTranscript="LLM reference text",
+                transcript="the llm reference text here",
+                llmTranscript="The LLM reference text here",
                 llmModel="provider/model",
             ),
         ],
@@ -90,7 +90,7 @@ def test_best_available_prefers_final_text_then_llm(tmp_path: Path) -> None:
     assert report.eligible_count == 2
     assert report.eligible_samples[0].reference_text == "human corrected text"
     assert report.eligible_samples[0].label_source == "finalText:high"
-    assert report.eligible_samples[1].reference_text == "LLM reference text"
+    assert report.eligible_samples[1].reference_text == "The LLM reference text here"
     assert report.eligible_samples[1].label_source == "llmTranscript"
 
 
@@ -270,3 +270,25 @@ def test_cli_inspect_and_empty_manifest_failure(tmp_path: Path, capsys) -> None:
     assert "manifest was not written" in captured.err
     assert not (tmp_path / "manifest.jsonl").exists()
 
+
+
+def test_gate_drops_low_agreement_and_short_cloud_labels(tmp_path: Path) -> None:
+    root = tmp_path / "training"
+    spoken = "please check the helm charts in the staging cluster"
+    for seconds, name in enumerate(("trusted", "doubted", "short", "human"), start=1):
+        _write_wav(root / "audio" / f"{name}.wav", seconds=float(seconds))   # distinct audio
+    _write_rows(root, [
+        _row("trusted", transcript=spoken, llmTranscript=spoken, llmModel="consensus · gpt-transcribe",
+             llmAgreement=0.95),
+        _row("doubted", transcript=spoken, llmTranscript=spoken, llmModel="consensus · gpt-transcribe",
+             llmAgreement=0.62),
+        _row("short", transcript="do it now", llmTranscript="Do it now.", llmModel="gpt-transcribe"),
+        _row("human", transcript="do it now", finalText="Do it now."),
+    ])
+
+    report = TrainingStore(root).inspect(label_policy=LabelPolicy.BEST_AVAILABLE)
+
+    reasons = {item.id: item.reasons for item in report.rejected_samples}
+    assert "label-low-agreement" in reasons["doubted"]
+    assert "label-too-short" in reasons["short"]
+    assert "trusted" not in reasons and "human" not in reasons   # 3-word human labels still train

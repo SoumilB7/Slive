@@ -83,41 +83,37 @@ def _label(**kwargs):
 
 # --- Pure selection ----------------------------------------------------------
 
-def test_medoid_outvotes_the_odd_one_out() -> None:
+def test_gpt_transcribe_is_the_label_even_when_outvoted() -> None:
     text, chosen, agreement = lc.choose({
-        "gpt-transcribe": "Ship the build today.",           # truncated
-        "whisper-1": "Ship the build today and tell Asha.",
+        "gpt-transcribe": "Ship the build today.",
+        "whisper-1": "ship the build today and tell asha",
         "typed": "ship the build today and tell asha",
     })
-    assert chosen == "whisper-1"
-    assert text == "Ship the build today and tell Asha."
-    assert 0 < agreement < 1
+    assert chosen == "gpt-transcribe"
+    assert text == "Ship the build today."
+    assert agreement < 0.8   # outvoted → low trust, flagged and kept out of training
 
 
-def test_same_words_keep_the_best_formatting() -> None:
+def test_full_agreement_keeps_gpt_formatting() -> None:
     text, chosen, agreement = lc.choose({
         "gpt-transcribe": "Okay, open the z-docs folder.",
         "whisper-1": "okay open the z docs folder",
         "typed": "Okay open the z docs folder.",
     })
-    assert chosen == "gpt-transcribe"
-    assert text == "Okay, open the z-docs folder."
-    assert agreement == 1.0
+    assert (chosen, text, agreement) == ("gpt-transcribe", "Okay, open the z-docs folder.", 1.0)
 
 
-def test_style_tie_break_prefers_whisper_over_typed() -> None:
-    _, chosen, _ = lc.choose({
-        "gpt-transcribe": "Totally different words here.",
-        "whisper-1": "Run the tests now.",
-        "typed": "run the tests now",
-    })
-    assert chosen == "whisper-1"
-
-
-def test_two_candidates_never_pick_typed() -> None:
+def test_whisper_labels_when_gpt_is_missing_and_typed_never_does() -> None:
     _, chosen, agreement = lc.choose({"whisper-1": "Run it.", "typed": "Run it twice please."})
     assert chosen == "whisper-1"
     assert agreement < 1
+    with pytest.raises(ValueError):
+        lc.choose({"typed": "Run it."})
+
+
+def test_a_lone_label_has_no_agreement() -> None:
+    _, chosen, agreement = lc.choose({"whisper-1": "Thank you."})
+    assert (chosen, agreement) == ("whisper-1", 0.0)
 
 
 def test_normalize_words_treats_hyphens_as_spaces() -> None:

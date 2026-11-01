@@ -240,7 +240,7 @@ struct DataSettingsView: View {
                   ? "Models are downloaded in Models" : "Keys are managed in Models")
         }) {
             Text(isConsensus
-                 ? "gpt-transcribe + Whisper + what Slive typed; keeps the version they agree on."
+                 ? "gpt-transcribe writes the label; Whisper and what Slive typed check it."
                  : settings.groundTruthProvider == .whisper
                  ? "A bigger Whisper re-judges your audio on-device — dictate on Tiny, ground-truth with Accurate. No cloud, no key."
                  : "A model with ears re-transcribes your audio into the Should-be column — the answer key Slive learns from.")

@@ -2,8 +2,9 @@
 
 One clip goes to two hosted transcribers in parallel — OpenAI's
 ``gpt-transcribe`` (steered by the user's Custom words and context) and
-``whisper-1`` — and the label is the medoid of those two plus what Slive
-itself typed: the candidate closest, word for word, to the other two.
+``whisper-1``. gpt-transcribe's transcript is the label; whisper-1 and what
+Slive itself typed vote on it, and their agreement decides whether the label
+is trusted for training.
 
 Why (label bench, Oct 29 2026, Soumil's blind picks as truth): the old label
 model gpt-4o-transcribe scored 13.5% WER (it randomly truncates), the best
@@ -35,9 +36,8 @@ GPT_TRANSCRIBE = "gpt-transcribe"
 WHISPER = "whisper-1"
 TYPED = "typed"
 
-#: Who wins a tie, and whose formatting is kept when several candidates say
-#: the same words: whisper-1 sometimes drops casing and punctuation, and
-#: Slive's typed text is the very thing the label is meant to check.
+#: Which transcript becomes the label: gpt-transcribe, else whisper-1. Slive's
+#: typed text only ever votes — it is the very thing the label checks.
 PREFERENCE = (GPT_TRANSCRIBE, WHISPER, TYPED)
 
 #: The generic speaker line gpt-transcribe is seeded with; the user's own
@@ -131,34 +131,28 @@ def word_distance(a: list[str], b: list[str]) -> int:
 def choose(candidates: dict[str, str]) -> tuple[str, str, float]:
     """Pick the label: ``(text, chosen, agreement)``.
 
-    The medoid — the candidate with the smallest summed word distance to the
-    others — wins; ties go by ``PREFERENCE``. If several candidates say
-    exactly the medoid's words, the most preferred one's text is returned so
-    the label keeps proper punctuation and casing. ``agreement`` is 1 minus
-    the medoid's mean length-normalised distance to the others (1.0 = all
-    said the same words).
+    gpt-transcribe IS the label (whisper-1 when it failed — Slive's typed text
+    never labels alone); the other candidates only vote on how far to trust
+    it. ``agreement`` is 1 minus the label's mean length-normalised word
+    distance to the others, 0 when there is nothing to compare against.
 
-    With only two candidates every pick ties, so the API transcript wins
-    over Slive's typed text — typed alone is never a label.
+    Nov 1 2026 challenge (50 blind clips): picking the medoid let a worse
+    whisper-1/typed version outvote gpt-transcribe on hard clips (5.6% vs
+    4.6% WER) and brought back lowercase, unpunctuated labels; the vote is
+    worth more as a trust score than as a picker.
     """
     names = [n for n in PREFERENCE if n in candidates]
     names += [n for n in candidates if n not in names]
-    if not names:
-        raise ValueError("No candidates to choose from")
+    label_from = next((n for n in names if n != TYPED), None)
+    if label_from is None:
+        raise ValueError("No transcriber candidate to label from")
     words = {n: normalize_words(candidates[n]) for n in names}
-
-    def dist(a: str, b: str) -> int:
-        return word_distance(words[a], words[b])
-
-    def norm(a: str, b: str) -> float:
-        return dist(a, b) / max(len(words[a]), len(words[b]), 1)
-
-    # min() keeps the first of equal sums, and names are in preference order.
-    medoid = min(names, key=lambda n: sum(dist(n, o) for o in names if o != n))
-    others = [o for o in names if o != medoid]
-    agreement = 1.0 - (sum(norm(medoid, o) for o in others) / len(others) if others else 0.0)
-    chosen = next(n for n in names if words[n] == words[medoid])
-    return candidates[chosen].strip(), chosen, round(max(0.0, agreement), 3)
+    others = [o for o in names if o != label_from]
+    if not others:
+        return candidates[label_from].strip(), label_from, 0.0
+    mean = sum(word_distance(words[label_from], words[o])
+               / max(len(words[label_from]), len(words[o]), 1) for o in others) / len(others)
+    return candidates[label_from].strip(), label_from, round(max(0.0, 1.0 - mean), 3)
 
 
 # ---------------------------------------------------------------------------
