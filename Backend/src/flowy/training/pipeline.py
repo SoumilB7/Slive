@@ -21,8 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-import psutil
-
+from flowy.errors import Unavailable
+from flowy.settings import Settings
 from flowy.training.models import DEFAULT_TRAINING_MODEL, get_training_model
 from flowy.training.store import LabelPolicy, TrainingStore, write_manifest
 
@@ -198,7 +198,7 @@ def require_finite_loss(where: str, **values: float) -> None:
         )
 
 
-class TrainingUnavailable(ValueError):
+class TrainingUnavailable(Unavailable, ValueError):
     """Something training depends on is missing (toolchain, CUDA, disk) — not
     bad input; the server answers 424."""
 
@@ -215,10 +215,7 @@ INSTALL_TOOLS_HINT = "run Backend/scripts/install-whisperkit-tools.sh"
 
 
 def whisperkit_tools_root() -> Path:
-    override = os.environ.get("SLIVE_WHISPERKIT_TOOLS")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / "Library" / "Application Support" / "Slive" / "tools" / "whisperkittools"
+    return Settings.from_env().whisperkit_tools_dir
 
 
 def whisperkit_converter() -> str:
@@ -227,7 +224,7 @@ def whisperkit_converter() -> str:
     compile can run (Xcode's coremlcompiler, or the Slive xcrun shim).
     Raises ConverterUnavailable BEFORE training, so a missing tool never
     surfaces only after an hour of work."""
-    configured = os.environ.get("WHISPERKIT_GENERATE_MODEL")
+    configured = Settings.from_env().whisperkit_generate_model
     if configured:
         executable = shutil.which(configured)
         if not executable:
@@ -315,17 +312,11 @@ Progress = Callable[..., None]
 
 
 def default_output_root() -> Path:
-    override = os.environ.get("SLIVE_TRAINING_OUTPUT_DIR")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / "Library" / "Application Support" / "Slive" / "training-runs"
+    return Settings.from_env().training_output_dir
 
 
 def custom_models_root() -> Path:
-    override = os.environ.get("SLIVE_CUSTOM_MODELS_DIR")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / "Library" / "Application Support" / "Slive" / "Models" / "Custom"
+    return Settings.from_env().custom_models_dir
 
 
 def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
@@ -447,6 +438,8 @@ class MemoryGuard:
     def __init__(self, limit_gb: float):
         self.limit_gb = limit_gb
         self.limit_bytes = int(limit_gb * 1024**3)
+        import psutil  # training extra — imported only once a run starts
+
         self.process = psutil.Process()
         self.extra_bytes: Callable[[], int] = lambda: 0
 

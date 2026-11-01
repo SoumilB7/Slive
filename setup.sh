@@ -31,7 +31,7 @@ fi
 
 # 3. Backend virtualenv + dependencies.
 step "Setting up the Python backend (uv sync)…"
-( cd Backend && uv sync )
+( cd Backend && uv sync --extra training )
 
 # 4. Stable self-signed identity so macOS remembers the permissions.
 if ! security find-certificate -c "Slive Local Signing" >/dev/null 2>&1; then

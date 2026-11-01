@@ -11,8 +11,8 @@ model gpt-4o-transcribe scored 13.5% WER (it randomly truncates), the best
 single transcriber 1.7%, and this consensus 1.4% — each model's slips are
 outvoted by the other two, and no local decode is needed.
 
-Same per-request key model as ``assistant``: the OpenAI key travels with the
-request and nothing is stored server-side.
+Same per-request key model as the assistant providers: the OpenAI key travels
+with the request and nothing is stored server-side.
 """
 
 from __future__ import annotations
@@ -26,7 +26,10 @@ from typing import Any
 
 import httpx
 
-from flowy.assistant import TIMEOUT_SECONDS, _truncate, _validate_audio_payload
+from flowy.errors import FatalLabel
+from flowy.providers.base import TIMEOUT_SECONDS
+from flowy.providers.transcription import validate_audio_payload
+from flowy.util import truncate
 
 logger = logging.getLogger("flowy.label_consensus")
 
@@ -55,13 +58,10 @@ BACKOFF_SECONDS = 1.0
 RETRY_AFTER_CAP = 8.0
 
 
-class LabelFatalError(Exception):
+class LabelFatalError(FatalLabel):
     """The key itself is unusable (rejected, or out of quota) — every further
-    clip would fail the same way, so the caller must stop the whole run."""
-
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind  # "auth" | "quota"
+    clip would fail the same way, so the caller must stop the whole run
+    (401 with ``fatal: kind``)."""
 
 
 class _CallFailed(Exception):
@@ -234,7 +234,7 @@ async def _transcribe(
                 if not text:
                     raise _CallFailed(f"{name}: empty transcript")
                 return text
-            last_error = f"{name} {status}: {_truncate(response.text, 200)}"
+            last_error = f"{name} {status}: {truncate(response.text, 200)}"
             if status != 429 and status < 500:
                 raise _CallFailed(last_error)  # a bad request won't get better
         if attempt < MAX_RETRIES:
@@ -256,7 +256,7 @@ async def label(
     ``ValueError`` when neither hosted transcriber produced text."""
     if not api_key:
         raise LabelFatalError("auth", "No OpenAI key — add it in Models → OpenAI.")
-    _validate_audio_payload(audio_b64)
+    validate_audio_payload(audio_b64)
     audio = base64.b64decode(audio_b64)
     is_mp3 = "mp3" in media_type or "mpeg" in media_type
     mime = "audio/mpeg" if is_mp3 else "audio/wav"

@@ -12,7 +12,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from flowy import assistant, server
+from flowy import providers as assistant
+from flowy import server
 
 KEY = "AIzaSy-super-secret-test-key"
 

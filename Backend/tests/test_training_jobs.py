@@ -518,7 +518,7 @@ def test_start_endpoint_status_reflects_the_kind_of_failure(monkeypatch) -> None
         def refuse(**_kwargs):
             raise error
 
-        monkeypatch.setattr(server.training_jobs, "start_job", refuse)
+        monkeypatch.setattr(jobs, "start_job", refuse)
         response = client.post("/training/start", json={"source_model": "tiny"})
         assert response.status_code == status
         assert response.json() == {"error": str(error)}

@@ -81,4 +81,4 @@ Heavy imports stay lazy (inside functions) so an idle server stays tens of MB.
 
 - Swift: `swift build && .build/debug/Slive --self-test` (pure-logic suite in
   `SelfTest.swift` — no XCTest; CLT-only toolchain).
-- Python: `cd Backend && uv run pytest`.
+- Python: `cd Backend && uv run --extra dev pytest -q`.

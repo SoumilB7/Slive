@@ -3,7 +3,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from flowy import server
+from flowy import lifecycle, server
+from flowy.api.middleware import InFlightMiddleware
+from flowy.api.routes.health import is_busy
 
 
 @pytest.fixture
@@ -65,15 +67,17 @@ def test_health_reports_busy_while_a_request_is_in_flight(monkeypatch):
     monkeypatch.setattr(jobs, "busy", lambda: False)
     seen: list[bool] = []
 
-    async def inner(scope, receive, send) -> None:
-        seen.append(server.health()["busy"])
+    state = server.app.state
 
-    middleware = server._InFlightMiddleware(inner)
+    async def inner(scope, receive, send) -> None:
+        seen.append(is_busy(state))
+
+    middleware = InFlightMiddleware(inner, state.in_flight)
     asyncio.run(middleware({"type": "http", "path": "/assistant/stream"}, None, None))
     # /health itself never counts, or the idle check would always see busy.
     asyncio.run(middleware({"type": "http", "path": "/health"}, None, None))
     assert seen == [True, False]
-    assert server.health()["busy"] is False
+    assert is_busy(state) is False
 
 
 def test_in_flight_count_drops_when_a_request_fails():
@@ -82,17 +86,18 @@ def test_in_flight_count_drops_when_a_request_fails():
     async def inner(scope, receive, send) -> None:
         raise RuntimeError("boom")
 
-    middleware = server._InFlightMiddleware(inner)
+    counter = server.app.state.in_flight
+    middleware = InFlightMiddleware(inner, counter)
     with pytest.raises(RuntimeError):
         asyncio.run(middleware({"type": "http", "path": "/assistant"}, None, None))
-    assert server._in_flight == 0
+    assert counter.count == 0
 
 
 def test_error_messages_are_never_blank(client: TestClient, monkeypatch) -> None:
-    async def fail(**_kwargs):
+    async def fail(*_args, **_kwargs):
         raise TimeoutError()
 
-    monkeypatch.setattr(server, "assistant_list_models", fail)
+    monkeypatch.setattr(server.app.state.services.ai, "list_models", fail)
     resp = client.post("/models", json={"provider": "openai", "api_key": "k"})
     assert resp.status_code == 502
     assert resp.json()["error"] == "TimeoutError"
@@ -100,7 +105,7 @@ def test_error_messages_are_never_blank(client: TestClient, monkeypatch) -> None
 
 def test_parent_watch_fires_once_the_app_is_gone(monkeypatch) -> None:
     ppids = iter([4242, 4242, 1])
-    monkeypatch.setattr(server.os, "getppid", lambda: next(ppids))
+    monkeypatch.setattr(lifecycle.os, "getppid", lambda: next(ppids))
     gone: list[bool] = []
-    server._watch_parent(4242, lambda: gone.append(True), interval=0)
+    lifecycle.watch_parent(4242, lambda: gone.append(True), interval=0)
     assert gone == [True]

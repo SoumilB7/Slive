@@ -211,7 +211,7 @@ def test_label_gate_passes_punctuation_casing_and_number_word_fixes() -> None:
 
 
 def test_label_gate_markers_cover_the_assistant_guard() -> None:
-    from flowy.assistant import _META_REPLY_MARKERS
+    from flowy.providers.transcription import META_REPLY_MARKERS as _META_REPLY_MARKERS
 
     assert set(_META_REPLY_MARKERS) <= set(LABEL_META_MARKERS)
 

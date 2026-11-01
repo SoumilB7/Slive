@@ -6,13 +6,14 @@ import json
 import logging
 import math
 import shutil
-import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from flowy.errors import Conflict, NotFound
+from flowy.jobs import JobRunner
 from flowy.training import pipeline
 from flowy.training.pipeline import (
     TRAINING_METHODS,
@@ -31,7 +32,7 @@ MIN_TRAINING_AUDIO_MINUTES = 5.0
 logger = logging.getLogger(__name__)
 
 
-class TrainingConflict(ValueError):
+class TrainingConflict(Conflict, ValueError):
     """The request clashes with existing state (a running job, a taken name)
     — the server answers 409. Plain ValueError is bad input (422);
     TrainingUnavailable is a missing dependency (424)."""
@@ -117,8 +118,13 @@ class TrainingJob:
         return cls(**{key: value for key, value in data.items() if key in known})
 
 
-_jobs: dict[str, TrainingJob] = {}
-_lock = threading.Lock()
+#: One job at a time; every change is mirrored to the run's job.json (the
+#: writer is looked up at call time so tests can swap it).
+runs: JobRunner[TrainingJob] = JobRunner(
+    active_states=("queued", "running"), persist=lambda job: _write_job_file(job)
+)
+_jobs = runs.jobs
+_lock = runs.lock
 
 
 def readiness(store_root: Path | str | None = None) -> dict:
@@ -192,8 +198,7 @@ def start_job(
         )
 
     with _lock:
-        active = next((j for j in _jobs.values() if j.state in {"queued", "running"}), None)
-        if active is not None:
+        if runs.active() is not None:
             raise TrainingConflict("Already training.")
 
         # No job is running, so any leftover run folder for this name is a
@@ -211,7 +216,7 @@ def start_job(
             max_ram_gb=max_ram_gb,
             eligible_samples=ready["eligible_count"],
         )
-        _jobs[job.id] = job
+        runs.add(job)
 
     config = PipelineConfig.for_model(
         model_name=job.model_name,
@@ -221,13 +226,7 @@ def start_job(
         store_root=Path(store_root).expanduser() if store_root else None,
         output_root=Path(output_root).expanduser() if output_root else None,
     )
-    thread = threading.Thread(
-        target=_run_job,
-        args=(job.id, config, runner),
-        name=f"slive-train-{job.id[:8]}",
-        daemon=True,
-    )
-    thread.start()
+    runs.spawn(_run_job, job.id, config, runner, name=f"slive-train-{job.id[:8]}")
     return job
 
 
@@ -263,18 +262,15 @@ def _set_aside_failed_run(run_dir: Path, models_root: Path, model_name: str) -> 
 
 def busy() -> bool:
     """A training job is queued or running (the app must not idle-stop the server)."""
-    with _lock:
-        return any(job.state in {"queued", "running"} for job in _jobs.values())
+    return runs.busy()
 
 
 def get_job(job_id: str) -> TrainingJob | None:
-    with _lock:
-        return _jobs.get(job_id)
+    return runs.get(job_id)
 
 
 def latest_job() -> TrainingJob | None:
-    with _lock:
-        return next(reversed(_jobs.values()), None) if _jobs else None
+    return runs.latest()
 
 
 def recover_interrupted(output_root: Path | None = None) -> int:
@@ -304,9 +300,7 @@ def recover_interrupted(output_root: Path | None = None) -> int:
     models_root = pipeline.custom_models_root()
     for staging in models_root.glob(".*.staging") if models_root.is_dir() else []:
         shutil.rmtree(staging, ignore_errors=True)
-    with _lock:
-        for job in sorted(found, key=lambda job: job.created_at):
-            _jobs.setdefault(job.id, job)
+    runs.restore(sorted(found, key=lambda job: job.created_at))
     return interrupted
 
 
@@ -315,8 +309,8 @@ def resume_job(job_id: str, runner=None) -> TrainingJob:
     with _lock:
         job = _jobs.get(job_id)
         if job is None:
-            raise LookupError(f"Unknown training job {job_id}")
-        active = next((j for j in _jobs.values() if j.state in {"queued", "running"}), None)
+            raise NotFound(f"Unknown training job {job_id}")
+        active = runs.active()
         if active is not None:
             raise TrainingConflict(f"Training job {active.id} is already running")
         if not job.resumable:
@@ -347,13 +341,8 @@ def resume_job(job_id: str, runner=None) -> TrainingJob:
         job.message = "Resuming after training"
         # The live ETA measures from created_at — restart the clock.
         job.created_at = datetime.now().astimezone().isoformat()
-    threading.Thread(
-        target=_run_job,
-        args=(job.id, config, lambda c, p: runner(c, run_dir, p)),
-        kwargs={"start": ("merging", "Resuming after training")},
-        name=f"slive-resume-{job.id[:8]}",
-        daemon=True,
-    ).start()
+    runs.spawn(_run_job, job.id, config, lambda c, p: runner(c, run_dir, p),
+               start=("merging","Resuming after training"), name=f"slive-resume-{job.id[:8]}")
     return job
 
 
@@ -417,15 +406,17 @@ def _clean_metric(metric: dict) -> dict | None:
 
 def _update(job_id: str, **changes) -> None:
     metric = changes.pop("metric", None)
-    with _lock:
-        job = _jobs[job_id]
-        if metric is not None and (metric := _clean_metric(metric)) is not None:
+    metric = _clean_metric(metric) if metric is not None else None
+
+    def apply(job: TrainingJob) -> None:
+        if metric is not None:
             job.metrics.append(metric)
         for key, value in changes.items():
             # Non-finite scalars (progress) keep the last good value.
             if hasattr(job, key) and not _non_finite(value):
                 setattr(job, key, value)
-        _write_job_file(job)
+
+    runs.mutate(job_id, apply)
 
 
 def _write_job_file(job: TrainingJob) -> None:

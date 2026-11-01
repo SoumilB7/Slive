@@ -36,7 +36,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from flowy.assistant import TRANSCRIBE_PROMPT
+from flowy.providers.transcription import TRANSCRIBE_PROMPT
+from flowy.util import error_text
 
 
 class LocalInferenceError(ValueError):
@@ -178,7 +179,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
             config = AutoConfig.from_pretrained(repo_id, token=tok, local_files_only=True)
         except Exception as exc:
             raise LocalInferenceError(
-                f"Couldn't read {repo_id}'s config: {_short(exc)}"
+                f"Couldn't read {repo_id}'s config: {error_text(exc, 300)}"
             ) from exc
         supports_image = getattr(config, "vision_config", None) is not None
         supports_audio = getattr(config, "audio_config", None) is not None
@@ -190,7 +191,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
             except Exception as exc:
                 raise LocalInferenceError(
                     f"{repo_id} is multimodal but its processor failed to load "
-                    f"({_short(exc)}) — the backend may be missing a helper "
+                    f"({error_text(exc, 300)}) — the backend may be missing a helper "
                     f"library it needs."
                 ) from exc
         else:
@@ -198,7 +199,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
                 processor = AutoTokenizer.from_pretrained(repo_id, token=tok, local_files_only=True)
             except Exception as exc:
                 raise LocalInferenceError(
-                    f"Couldn't load a tokenizer for {repo_id}: {_short(exc)}"
+                    f"Couldn't load a tokenizer for {repo_id}: {error_text(exc, 300)}"
                 ) from exc
 
         _check_fits(repo_id, quantized, mem_gb)
@@ -237,7 +238,7 @@ def _load(repo_id: str, token: str | None, quantized: bool, mem_gb: float) -> _L
                 ) from last_exc
             raise LocalInferenceError(
                 f"Couldn't load {repo_id} for generation "
-                f"({_short(last_exc) if last_exc else 'no loader matched'}) — "
+                f"({error_text(last_exc, 300) if last_exc else 'no loader matched'}) — "
                 f"it may not be a text-generation model."
             )
         model.to(device)
@@ -441,7 +442,3 @@ def _remove(path: str) -> None:
         Path(path).unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def _short(exc: Exception) -> str:
-    return (str(exc).strip() or exc.__class__.__name__)[:300]

@@ -15,7 +15,7 @@ backend** for you — you never run a server by hand.
 `../setup.sh` does all of this for you. To do it by hand:
 
 ```bash
-cd Backend  && uv sync              # the venv the app auto-launches (see ../Backend)
+cd Backend  && uv sync --extra training   # the venv the app auto-launches (see ../Backend)
 cd ../Frontend
 ./setup-signing.sh                  # one time: create the stable signing identity
 ./build.sh install                  # build → sign → copy to /Applications → launch

@@ -17,14 +17,13 @@ import difflib
 import hashlib
 import json
 import math
-import os
 import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-import soundfile
+from flowy.settings import Settings
 
 
 class LabelPolicy(StrEnum):
@@ -67,9 +66,9 @@ LABEL_MAX_WORD_RATIO = 1.6
 LABEL_MIN_WORD_SIMILARITY = 0.5
 
 #: Phrases that mark a reply ABOUT transcribing rather than a transcript.
-#: Mirrors ``flowy.assistant._META_REPLY_MARKERS`` (duplicated so the store
-#: stays free of the assistant's HTTP stack; a test keeps them in sync) plus
-#: preamble variants seen in stored labels.
+#: Mirrors ``flowy.providers.transcription.META_REPLY_MARKERS`` (duplicated so
+#: the store stays free of the assistant's HTTP stack; a test keeps them in
+#: sync) plus preamble variants seen in stored labels.
 LABEL_META_MARKERS = (
     "provide the audio",
     "share the audio",
@@ -259,10 +258,7 @@ class StoreReport:
 def default_store_root() -> Path:
     """Return Slive's default per-user training-store directory."""
 
-    override = os.environ.get("SLIVE_TRAINING_DIR")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / "Library" / "Application Support" / "Slive" / "training"
+    return Settings.from_env().training_dir
 
 
 class TrainingStore:
@@ -483,6 +479,8 @@ def _select_label(sample: StoredSample, policy: LabelPolicy) -> tuple[str | None
 
 
 def _inspect_audio(path: Path) -> AudioInfo:
+    import soundfile  # local/training extra — the base server never reads clips
+
     info = soundfile.info(str(path))
     if info.frames <= 0 or info.samplerate <= 0 or info.channels <= 0:
         raise ValueError("audio metadata is empty or invalid")
