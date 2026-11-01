@@ -35,5 +35,6 @@ enum AllSuites {
         CaptureConsumerTests.suite,
         ModelLifecycleTests.suite,
         ProblemReportTests.suite,
+        SettingsUITests.suite,
     ]
 }

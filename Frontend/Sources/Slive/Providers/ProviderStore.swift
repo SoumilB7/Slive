@@ -92,6 +92,15 @@ final class ProviderStore: ObservableObject {
         await modelLists.refreshModels(for: provider)
     }
 
+    /// The same refresh, started from a view (Refresh / Fetch buttons, picking
+    /// a provider) — views never start the task themselves. `onlyIfEmpty`:
+    /// picking Local is explicit intent, so list what's downloaded unless a
+    /// list is already remembered.
+    func requestModels(for provider: AssistantProvider, onlyIfEmpty: Bool = false) {
+        if onlyIfEmpty && !models(for: provider).isEmpty { return }
+        Task { await fetchModels(for: provider) }
+    }
+
     // MARK: - Migration
 
     /// Ground truth used to keep its own base-URL setting; the Models module

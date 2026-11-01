@@ -1,18 +1,34 @@
 import AppKit
 import SwiftUI
 
+extension SettingsPageID {
+    static let assistant = SettingsPageID("assistant")
+}
+
+extension SettingsPageSpec {
+    static let assistant = SettingsPageSpec(
+        id: .assistant, title: "Ask", icon: "smallcircle.filled.circle", section: .modes,
+        requires: \.assistant
+    ) { ctx in
+        let env = ctx.env
+        return AnyView(AssistantSettingsView(
+            settings: env.settings, backend: env.backend, providers: env.providers,
+            promptLog: env.promptLog, openModels: { ctx.open(.providers) }))
+    }
+}
+
 /// The Assistant page: one top-down setup flow — shortcut, brain (provider +
 /// model only; credentials live in the Models page), prompt. Renders just its
 /// stack of cards — the host supplies the scroll container, padding, and width.
 struct AssistantSettingsView: View {
     @ObservedObject var settings: Settings
-    @ObservedObject private var backend = BackendManager.shared
-    @ObservedObject private var providers = ProviderStore.shared
+    @ObservedObject var backend: BackendManager
+    @ObservedObject var providers: ProviderStore
+    @ObservedObject var promptLog: AssistantPromptLog
     /// Navigates to the Models page (key entry lives there).
     var openModels: () -> Void = {}
 
     @State private var promptNames: [String] = []
-    @ObservedObject private var promptLog = AssistantPromptLog.shared
     @State private var sentPromptExpanded = false
 
     var body: some View {
@@ -103,7 +119,7 @@ struct AssistantSettingsView: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Button {
-                            Task { await providers.fetchModels(for: settings.assistantConfig.provider) }
+                            providers.requestModels(for: settings.assistantConfig.provider)
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                                 .font(SliveTheme.font(11, .semibold))
@@ -178,9 +194,7 @@ struct AssistantSettingsView: View {
                 settings.assistantConfig.provider = $0
                 // Picking Local is explicit intent — list what's downloaded
                 // right away instead of waiting for a manual refresh.
-                if $0.isLocal && currentFetched.isEmpty {
-                    Task { await ProviderStore.shared.fetchModels(for: .local) }
-                }
+                if $0.isLocal { providers.requestModels(for: .local, onlyIfEmpty: true) }
             }
         )
     }

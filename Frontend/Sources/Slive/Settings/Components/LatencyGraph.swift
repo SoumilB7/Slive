@@ -9,7 +9,7 @@ import SwiftUI
 /// demo-sized model.
 struct LatencyGraphView: View {
     @ObservedObject var settings: Settings
-    @ObservedObject private var transcription = TranscriptionModel.shared
+    @ObservedObject var transcription: TranscriptionModel
 
     private var tiers: [SpeedTier] { SpeedTier.allCases }
     /// Measured on this machine when calibration exists, else the estimate.
@@ -96,7 +96,7 @@ struct LatencyGraphView: View {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 settings.speedTier = tier.rawValue
                             }
-                            TranscriptionModel.shared.applySpeedTier(tierPicked: true)
+                            transcription.applySpeedTier(tierPicked: true)
                         }
                         .help("\(tier.label) — \(Self.ms(latencies[index]))")
                 }

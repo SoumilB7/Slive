@@ -1,6 +1,25 @@
 import AppKit
 import SwiftUI
 
+extension SettingsPageID {
+    static let providers = SettingsPageID("providers")
+}
+
+extension SettingsPageSpec {
+    static let providers = SettingsPageSpec(
+        id: .providers, title: "Providers", icon: "key.fill", section: .lab,
+        requires: \.providers,
+        width: .list,
+        status: { env in
+            let n = ProviderCatalog.keyed.filter { env.providers.hasKey($0) }.count
+            return SettingsPageStatus(text: n > 0 ? "\(n) connected" : "None connected",
+                                      color: n > 0 ? SliveTheme.textSecondary : SliveTheme.warn)
+        }
+    ) { ctx in
+        AnyView(ModelsSettingsView(settings: ctx.env.settings, providers: ctx.env.providers))
+    }
+}
+
 /// The Models page — where you connect the AI providers Slive can think with.
 ///
 /// Redesigned as a **connections list**, not a wall of forms: add a key once to
@@ -10,7 +29,7 @@ import SwiftUI
 /// aren't") instead of presenting five identical empty forms.
 struct ModelsSettingsView: View {
     @ObservedObject var settings: Settings
-    @ObservedObject private var providers = ProviderStore.shared
+    @ObservedObject var providers: ProviderStore
     @Environment(\.sliveLayout) private var layout
 
     /// Which rows are expanded (by provider rawValue / "huggingface").
@@ -26,12 +45,14 @@ struct ModelsSettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 group("CLOUD") {
                     ForEach(cloud) { p in
-                        ProviderRow(provider: p, expanded: binding(for: p.rawValue))
+                        ProviderRow(provider: p, expanded: binding(for: p.rawValue),
+                                    providers: providers, settings: settings)
                     }
                 }
                 .help("Keys are stored in your Keychain")
                 group("ON THIS MAC") {
-                    LocalProviderRow(expanded: binding(for: "huggingface"))
+                    LocalProviderRow(expanded: binding(for: "huggingface"),
+                                     providers: providers, settings: settings)
                 }
             }
         }
@@ -80,8 +101,8 @@ private struct ProviderRow: View {
     let provider: AssistantProvider
     @Binding var expanded: Bool
 
-    @ObservedObject private var providers = ProviderStore.shared
-    @ObservedObject private var settings = Settings.shared
+    @ObservedObject var providers: ProviderStore
+    @ObservedObject var settings: Settings
     @State private var keyDraft = ""
 
     /// What's actually in the keychain, not the draft: a failed write must
@@ -205,7 +226,7 @@ private struct ProviderRow: View {
                         .foregroundStyle(SliveTheme.textSecondary)
                 } else {
                     Button {
-                        Task { await providers.fetchModels(for: provider) }
+                        providers.requestModels(for: provider)
                     } label: {
                         Label("Refresh",
                               systemImage: "arrow.clockwise")
@@ -262,7 +283,9 @@ private struct ProviderRow: View {
 
 private struct LocalProviderRow: View {
     @Binding var expanded: Bool
-    @ObservedObject private var providers = ProviderStore.shared
+    @ObservedObject var providers: ProviderStore
+    /// For the runtime knobs (LocalInferenceControls observes it).
+    let settings: Settings
 
     @State private var tokenDraft = ""
     @State private var modelIDDraft = ""
@@ -419,7 +442,7 @@ private struct LocalProviderRow: View {
                 .font(SliveTheme.font(10, .bold))
                 .foregroundStyle(SliveTheme.textTertiary)
                 .tracking(1.1)
-            LocalInferenceControls(settings: .shared)
+            LocalInferenceControls(settings: settings)
         }
     }
 

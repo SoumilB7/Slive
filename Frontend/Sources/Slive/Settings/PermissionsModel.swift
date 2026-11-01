@@ -3,14 +3,35 @@ import AppKit
 import ApplicationServices
 import IOKit.hid
 
-/// Live view of the two permissions Slive needs, so the Settings window can
+/// Live view of the permissions Slive needs, so the Settings window can
 /// show real status and offer one-tap granting. Polls while the window is open.
 final class PermissionsModel: ObservableObject {
     @Published var micGranted = false
     @Published var inputMonitoringGranted = false
     @Published var accessibilityGranted = false
 
+    /// Input Monitoring, Microphone, Accessibility.
+    static let required = 3
+
     private var timer: Timer?
+    /// True once the event tap has delivered a keystroke — proof Input
+    /// Monitoring works even when IOHIDCheckAccess's cached answer says no.
+    private let hotkeyActive: () -> Bool
+
+    init(hotkeyActive: @escaping () -> Bool = { false }) {
+        self.hotkeyActive = hotkeyActive
+    }
+
+    /// Input Monitoring as the user experiences it: granted, or demonstrably
+    /// working.
+    var inputMonitoringWorks: Bool { inputMonitoringGranted || hotkeyActive() }
+
+    var grantedCount: Int {
+        [inputMonitoringWorks, micGranted, accessibilityGranted].filter { $0 }.count
+    }
+
+    /// Something is still missing — the sidebar's orange dot.
+    var needsAttention: Bool { grantedCount < Self.required }
 
     /// Idempotent: the window controller (every show) and SettingsView's
     /// onAppear both call this — a second timer would never be invalidated.

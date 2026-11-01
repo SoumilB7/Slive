@@ -1,12 +1,25 @@
 import AppKit
 import SwiftUI
 
+extension SettingsPageID {
+    static let liveTyping = SettingsPageID("liveTyping")
+}
+
+extension SettingsPageSpec {
+    static let liveTyping = SettingsPageSpec(
+        id: .liveTyping, title: "Live typing", icon: "pencil.line", section: .modes,
+        status: { env in .model(env.settings.continuousModel, env.transcription) }
+    ) { ctx in
+        AnyView(ContinuousSettingsView(settings: ctx.env.settings, transcription: ctx.env.transcription))
+    }
+}
+
 /// The "Continuous" page under Dictation: live streaming dictation with its own
 /// shortcut, transcription model, and typing-speed control. Renders just its
 /// stack of cards — the host supplies the scroll container, padding, and width.
 struct ContinuousSettingsView: View {
     @ObservedObject var settings: Settings
-    @ObservedObject private var transcription = TranscriptionModel.shared
+    let transcription: TranscriptionModel
 
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
@@ -14,6 +27,7 @@ struct ContinuousSettingsView: View {
             ModelPickerCard(
                 title: "MODEL",
                 model: $settings.continuousModel,
+                transcription: transcription,
                 help: "Parakeet keeps up best. Same as Dictation = less memory",
                 use: .continuous
             )

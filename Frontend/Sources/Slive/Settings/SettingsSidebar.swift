@@ -1,83 +1,19 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Navigation model
-
-/// Sidebar groups, by what you're doing rather than by subsystem.
-enum SettingsSection: String, CaseIterable, Identifiable {
-    case app = "App"
-    case modes = "Modes"
-    case library = "Library"
-    case lab = "Lab"
-    var id: String { rawValue }
-}
-
-extension SettingsSection {
-    /// The sections this edition has — Lite has no Lab (it needs the server).
-    static var available: [SettingsSection] {
-        allCases.filter { !SettingsPage.pages(in: $0).isEmpty }
-    }
-}
-
-/// Every page the window can show — the single source of truth for navigation.
-enum SettingsPage: String, CaseIterable, Identifiable {
-    case general = "General"
-    case permissions = "Permissions"
-    case continuous = "Live typing"
-    case assistant = "Ask"
-    case vocabulary = "Vocabulary"
-    case history = "History"
-    case models = "Providers"
-    case data = "Data"
-    case training = "Training"
-    var id: String { rawValue }
-
-    var section: SettingsSection {
-        switch self {
-        case .general, .permissions: return .app
-        case .continuous, .assistant: return .modes
-        case .vocabulary, .history: return .library
-        case .models, .data, .training: return .lab
-        }
-    }
-
-    /// Pages that talk to the Python server — absent from the Lite edition.
-    var needsServer: Bool {
-        switch self {
-        case .assistant, .models, .data, .training: return true
-        default: return false
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .general: return "gearshape.fill"
-        case .continuous: return "pencil.line"
-        case .permissions: return "lock.shield.fill"
-        case .vocabulary: return "character.book.closed.fill"
-        case .history: return "clock.fill"
-        case .assistant: return "smallcircle.filled.circle"
-        case .models: return "key.fill"
-        case .data: return "tray.full.fill"
-        case .training: return "waveform.path.ecg"
-        }
-    }
-
-    /// The pages of a section that this edition shows.
-    static func pages(in section: SettingsSection) -> [SettingsPage] {
-        allCases.filter { $0.section == section && (Edition.hasServer || !$0.needsServer) }
-    }
-}
-
 // MARK: - Sidebar
 
 /// The regular/wide-tier navigation: brand lockup with a live model-status dot,
 /// grouped page list, footer pinned to the bottom. Custom-drawn (not
 /// NavigationSplitView) so it stays on the charcoal gradient.
 struct SettingsSidebar: View {
-    @Binding var page: SettingsPage
+    @Binding var page: SettingsPageID
+    /// The registry's pages for this edition, grouped by section.
+    let sections: [SettingsSidebarGroup]
     /// Pages that need attention get an orange dot (missing permissions).
-    var attention: Set<SettingsPage> = []
+    var attention: Set<SettingsPageID> = []
+    let settings: Settings
+    let transcription: TranscriptionModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -89,13 +25,13 @@ struct SettingsSidebar: View {
                 Text("Slive")
                     .font(SliveTheme.font(17, .bold))
                     .foregroundStyle(SliveTheme.textPrimary)
-                WhisperStatusDot()
+                WhisperStatusDot(settings: settings, transcription: transcription)
             }
             .padding(.horizontal, 6)
             .padding(.bottom, 12)
 
-            ForEach(SettingsSection.available) { section in
-                Text(section.rawValue.uppercased())
+            ForEach(sections) { group in
+                Text(group.section.rawValue.uppercased())
                     .font(SliveTheme.font(10, .bold))
                     .foregroundStyle(SliveTheme.textTertiary)
                     .tracking(1.1)
@@ -103,8 +39,10 @@ struct SettingsSidebar: View {
                     .padding(.top, 14)
                     .padding(.bottom, 6)
                 VStack(spacing: 2) {
-                    ForEach(SettingsPage.pages(in: section)) { p in
-                        SidebarRow(page: p, selected: page == p, attention: attention.contains(p)) { page = p }
+                    ForEach(group.pages) { p in
+                        SidebarRow(page: p, selected: page == p.id, attention: attention.contains(p.id)) {
+                            page = p.id
+                        }
                     }
                 }
             }
@@ -128,8 +66,21 @@ struct SettingsSidebar: View {
 
 }
 
+/// One sidebar (and compact-menu) section with the pages this edition shows.
+struct SettingsSidebarGroup: Identifiable {
+    let section: SettingsSection
+    let pages: [SettingsPageSpec]
+    var id: SettingsSection { section }
+
+    static func groups(for capabilities: Capabilities) -> [SettingsSidebarGroup] {
+        SettingsRegistry.sections(for: capabilities).map {
+            SettingsSidebarGroup(section: $0, pages: SettingsRegistry.pages(in: $0, for: capabilities))
+        }
+    }
+}
+
 private struct SidebarRow: View {
-    let page: SettingsPage
+    let page: SettingsPageSpec
     let selected: Bool
     var attention = false
     let action: () -> Void
@@ -143,7 +94,7 @@ private struct SidebarRow: View {
                     .font(SliveTheme.controlFont)
                     .foregroundStyle(SliveTheme.accentText)
                     .frame(width: 16)
-                Text(page.rawValue)
+                Text(page.title)
                     .font(SliveTheme.rowFont)
                     .foregroundStyle(selected ? SliveTheme.textStrong : SliveTheme.textMid)
                 Spacer(minLength: 0)
