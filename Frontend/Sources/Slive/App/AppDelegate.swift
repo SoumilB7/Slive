@@ -119,30 +119,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Settings window + live hotkey switching.
         settingsWindow.onRelaunch = { [weak self] in self?.relaunchApp() }
-        Settings.shared.onHotkeyChange = { [weak self] hk in self?.hotkey.hotkey = hk }
-        Settings.shared.onAssistantHotkeyChange = { [weak self] hk in
-            self?.hotkey.assistantHotkey = Edition.hasServer ? hk : nil   // Lite: no assistant
+        settingsChanges = Settings.shared.changes.sink { [weak self] change in
+            self?.settingsChanged(change)
         }
-        Settings.shared.onStreamHotkeyChange = { [weak self] _ in
-            self?.syncBindings()
-            // Recording/removing the continuous shortcut also decides whether its
-            // model belongs in memory.
-            self?.refreshModelResidency()
-        }
-        Settings.shared.onToggleBindingsChange = { [weak self] in
-            self?.syncBindings()
-            self?.refreshModelResidency()   // a stream toggle also earns the model RAM
-        }
-        hotkey.hotkey = Settings.shared.hotkey
-        hotkey.assistantHotkey = Edition.hasServer ? Settings.shared.assistantHotkey : nil
         syncBindings()
 
         // Preload the on-device transcription model IF it's already downloaded
         // (never auto-downloads — the user does that from Settings), and refresh
-        // residency whenever a selection changes. The continuous model is only
-        // kept in memory while a continuous shortcut is actually set — no point
-        // holding a second model (RAM + ANE) for a feature that's switched off.
-        Settings.shared.onWhisperModelChange = { [weak self] _ in self?.refreshModelResidency() }
+        // residency whenever a selection changes (`settingsChanged`). The
+        // continuous model is only kept in memory while a continuous shortcut
+        // is actually set — no point holding a second model (RAM + ANE) for a
+        // feature that's switched off.
         // A model finished loading: switch to it if it's the current pick,
         // then drop whatever it replaced.
         whisper.onModelReady = { [weak self] model in
@@ -158,7 +145,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if model == Settings.shared.continuousModel { self.servingContinuousModel = model }
             self.refreshModelResidency()
         }
-        Settings.shared.onContinuousModelChange = { [weak self] _ in self?.refreshModelResidency() }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
         refreshModelResidency()
 
@@ -204,15 +190,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The `Settings.changes` subscription (lives as long as the app).
+    private var settingsChanges: AnyCancellable?
+
+    /// Settings that take effect live. Runs synchronously inside the setter,
+    /// so the monitor and residency see the new value immediately — and
+    /// always bindings first, then residency.
+    private func settingsChanged(_ change: SettingsChange) {
+        switch change {
+        case .bindings:
+            syncBindings()
+            // Recording/removing the continuous shortcut (or flipping a stream
+            // switch) also decides whether its model belongs in memory — a
+            // stream toggle also earns the model RAM.
+            refreshModelResidency()
+        case .dictationModel, .continuousModel:
+            refreshModelResidency()
+        }
+    }
+
     /// Push the EFFECTIVE bindings into the monitor: a bind whose on/off
-    /// switch is off simply isn't a binding (hold-dictate keeps its key but
-    /// gets an enabled flag, since it's non-optional).
+    /// switch is off simply isn't a binding, nor is an action this build
+    /// can't run (Lite: no assistant).
     private func syncBindings() {
-        let s = Settings.shared
-        hotkey.dictateHoldEnabled = s.dictateHoldOn
-        hotkey.streamHotkey = s.streamHoldOn ? s.streamHotkey : nil
-        hotkey.dictateToggleHotkey = s.dictateToggleOn ? s.dictateToggleHotkey : nil
-        hotkey.streamToggleHotkey = s.streamToggleOn ? s.streamToggleHotkey : nil
+        hotkey.bindings = HotkeyBinding.effective(from: Settings.shared, capabilities: .current)
     }
 
     /// Keep exactly the models that are in use resident: dictation's always,
@@ -1067,7 +1068,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HistoryStore.shared.add(trimmed)          // always keep it in the catalogue
         // Training pair (audio + transcript) — only while saving is toggled on
         // and under the size cap. Records regardless of where the text landed.
-        if Edition.hasServer, Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
+        if Capabilities.current.training, Settings.shared.captureEdits, !TrainingStore.shared.isOverLimit, let audioURL {
             TrainingStore.shared.addRecording(transcript: trimmed, audioURL: audioURL)
         }
         SpeakingStats.shared.record(text: trimmed, seconds: seconds)
@@ -1237,7 +1238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
 
         // Live backend status (updated via the Combine subscription).
-        if Edition.hasServer {
+        if Capabilities.current.server {
             let statusLine = NSMenuItem(title: "…", action: nil, keyEquivalent: "")
             statusLine.isEnabled = false
             menu.addItem(statusLine)

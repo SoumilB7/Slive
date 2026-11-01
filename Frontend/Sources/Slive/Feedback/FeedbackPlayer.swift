@@ -1,15 +1,62 @@
 import AppKit
 import AVFoundation
 
+/// The sound an action makes as it goes live (`ActionSpec.cue`). Both are
+/// deep, soft "dhum" thumps — a low fundamental that glides down in pitch
+/// (the drop is what makes it feel premium, not tinny):
+/// - `.dhum` (dictation, live typing): ~150→95 Hz, ~200 ms — a short deep "dhum".
+/// - `.deepDhum` (assistant): ~128→72 Hz, ~300 ms — a deeper, longer "dhummm".
+enum ActivationCue: CaseIterable {
+    case dhum
+    case deepDhum
+
+    /// The synthesized tone (see `FeedbackPlayer.makeTone`).
+    var tone: Tone {
+        switch self {
+        // A deep, soft "dhum" — a low fundamental that drops in pitch for a
+        // warm thump. No bright harmonics (those read as "tinny").
+        case .dhum:
+            return Tone(startFrequency: 150,       // starts low…
+                        endFrequency: 95,          // …and glides down → "dhum"
+                        harmonic2Amplitude: 0.14,  // just a little body, kept warm
+                        duration: 0.200,           // ~200 ms
+                        attack: 0.006,             // 6 ms attack to avoid a start click
+                        decay: 10)                 // smooth decay
+        // Deeper and longer — a rounded "dhummm" with more resonance.
+        case .deepDhum:
+            return Tone(startFrequency: 128,
+                        endFrequency: 72,          // deeper drop
+                        harmonic2Amplitude: 0.16,
+                        duration: 0.300,           // ~300 ms
+                        attack: 0.008,             // 8 ms attack
+                        decay: 6.5)                // long, gentle tail
+        }
+    }
+
+    /// The system sound played when the engine can't.
+    var fallbackSound: NSSound.Name {
+        switch self {
+        case .dhum:     return NSSound.Name("Bottle")      // deeper than Tink
+        case .deepDhum: return NSSound.Name("Submarine")   // deep sonar-ish
+        }
+    }
+
+    /// Parameters for `FeedbackPlayer.makeTone`.
+    struct Tone {
+        let startFrequency: Double
+        let endFrequency: Double
+        let harmonic2Amplitude: Double
+        let duration: Double
+        let attack: Double
+        let decay: Double
+    }
+}
+
 /// Plays a subtle, short synthesized audio cue when a hotkey action activates.
 ///
-/// The cues are generated in code (no external audio assets) and cached as PCM
-/// buffers so playback is instant. Both are deep, soft "dhum" thumps — a low
-/// fundamental that glides down in pitch (the drop is what makes it feel
-/// premium, not tinny) — kept quiet (~0.25 gain) since one plays right as
-/// recording begins:
-/// - `.dictate`: ~150→95 Hz, ~200 ms — a short deep "dhum".
-/// - `.assist`: ~128→72 Hz, ~300 ms — a deeper, longer "dhummm".
+/// The cues (`ActivationCue`) are generated in code (no external audio
+/// assets) and cached as PCM buffers so playback is instant, kept quiet
+/// (~0.25 gain) since one plays right as recording begins.
 ///
 /// Playback routes through a single persistent `AVAudioEngine` + player node.
 /// If starting the engine fails for a cue, that cue falls back to a system
@@ -45,8 +92,8 @@ final class FeedbackPlayer {
 
     // MARK: - Cached tone buffers
 
-    private var dictateBuffer: AVAudioPCMBuffer?
-    private var assistBuffer: AVAudioPCMBuffer?
+    /// One buffer per cue, built once at init.
+    private var buffers: [ActivationCue: AVAudioPCMBuffer] = [:]
 
     private init() {
         // Mono, Float32, 44.1 kHz.
@@ -57,32 +104,9 @@ final class FeedbackPlayer {
             interleaved: false
         )!
 
-        // Dictate: a deep, soft "dhum" — a low fundamental that drops in pitch
-        // for a warm thump. No bright harmonics (those read as "tinny").
-        dictateBuffer = Self.makeTone(
-            format: format,
-            sampleRate: sampleRate,
-            startFrequency: 150,       // starts low…
-            endFrequency: 95,          // …and glides down → "dhum"
-            harmonic2Amplitude: 0.14,  // just a little body, kept warm
-            duration: 0.200,           // ~200 ms
-            attack: 0.006,             // 6 ms attack to avoid a start click
-            decay: 10,                 // smooth decay
-            gain: gain
-        )
-
-        // Assist: deeper and longer — a rounded "dhummm" with more resonance.
-        assistBuffer = Self.makeTone(
-            format: format,
-            sampleRate: sampleRate,
-            startFrequency: 128,
-            endFrequency: 72,          // deeper drop
-            harmonic2Amplitude: 0.16,
-            duration: 0.300,           // ~300 ms
-            attack: 0.008,             // 8 ms attack
-            decay: 6.5,                // long, gentle tail
-            gain: gain
-        )
+        for cue in ActivationCue.allCases {
+            buffers[cue] = Self.makeTone(cue.tone, format: format, sampleRate: sampleRate, gain: gain)
+        }
 
         setupEngine()
 
@@ -116,15 +140,9 @@ final class FeedbackPlayer {
     }
 
     private func play(for action: HotkeyAction) {
-        let buffer: AVAudioPCMBuffer?
-        switch action {
-        case .dictate: buffer = dictateBuffer
-        case .assist:  buffer = assistBuffer
-        case .stream:  buffer = dictateBuffer   // shares the dictation "dhum"
-        }
-
-        guard let buffer else {
-            playFallback(for: action)
+        let cue = action.spec.cue
+        guard let buffer = buffers[cue] else {
+            playFallback(cue)
             return
         }
 
@@ -140,7 +158,7 @@ final class FeedbackPlayer {
             } catch {
                 NSLog("Slive: feedback engine start failed — fallback cue: \(error)")
                 needsRebuild = true
-                playFallback(for: action)
+                playFallback(cue)
                 return
             }
         }
@@ -185,13 +203,8 @@ final class FeedbackPlayer {
 
     // MARK: - Fallback
 
-    private func playFallback(for action: HotkeyAction) {
-        let name: NSSound.Name
-        switch action {
-        case .dictate: name = NSSound.Name("Bottle")      // deeper than Tink
-        case .assist:  name = NSSound.Name("Submarine")   // deep sonar-ish
-        case .stream:  name = NSSound.Name("Bottle")
-        }
+    private func playFallback(_ cue: ActivationCue) {
+        let name = cue.fallbackSound
         DispatchQueue.main.async { NSSound(named: name)?.play() }
     }
 
@@ -202,7 +215,7 @@ final class FeedbackPlayer {
     /// warm "dhum" thump), with an optional light 2nd harmonic for body, shaped
     /// by a short attack and an exponential decay.
     ///
-    /// - Parameters:
+    /// - Parameters (`tone`'s fields, then the output's):
     ///   - startFrequency / endFrequency: Pitch glides between these (Hz), giving
     ///     the downward "dhum". Set them equal for a steady tone.
     ///   - harmonic2Amplitude: Relative amplitude of the 2nd harmonic (0 = pure sine).
@@ -210,17 +223,18 @@ final class FeedbackPlayer {
     ///   - attack: Linear fade-in time in seconds (avoids a start-of-buffer click).
     ///   - decay: Exponential decay rate; larger = faster fade to silence.
     ///   - gain: Overall output scaling (kept low for a subtle cue).
-    private static func makeTone(
+    static func makeTone(
+        _ tone: ActivationCue.Tone,
         format: AVAudioFormat,
         sampleRate: Double,
-        startFrequency: Double,
-        endFrequency: Double,
-        harmonic2Amplitude: Double,
-        duration: Double,
-        attack: Double,
-        decay: Double,
         gain: Float
     ) -> AVAudioPCMBuffer? {
+        let startFrequency = tone.startFrequency
+        let endFrequency = tone.endFrequency
+        let harmonic2Amplitude = tone.harmonic2Amplitude
+        let duration = tone.duration
+        let attack = tone.attack
+        let decay = tone.decay
         let frameCount = AVAudioFrameCount(duration * sampleRate)
         guard frameCount > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),

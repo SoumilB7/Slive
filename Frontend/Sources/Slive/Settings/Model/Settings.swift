@@ -1,161 +1,145 @@
+import Combine
 import CoreGraphics
 import Foundation
 import ServiceManagement
 
-/// App-wide, persisted preferences. Backed by `UserDefaults`; observable so the
-/// SwiftUI Settings window stays in sync.
-final class Settings: ObservableObject {
+/// What changed, for subscribers of `Settings.changes`. Delivered
+/// synchronously, on the thread that set the value (main), right after the
+/// new value is stored — so a subscriber reads it back already current.
+enum SettingsChange: Equatable {
+    /// Any shortcut or its on/off switch (see `bindings`).
+    case bindings
+    /// `whisperModel` — the dictation model.
+    case dictationModel
+    /// `continuousModel` — the live-typing model.
+    case continuousModel
+}
+
+/// App-wide, persisted preferences. Backed by a `KeyValueStore`
+/// (`UserDefaults.standard` in the app); observable so the SwiftUI Settings
+/// window stays in sync.
+///
+/// Adding a setting = one `@Stored(key, default:)` line (+ `emits:` if
+/// something must react live, + a `didSet` for a side effect). Shortcuts are
+/// declared by `ActionSpec` instead and reached through `shortcut(for:)`.
+final class Settings: ObservableObject, StoredSettingsOwner {
     static let shared = Settings()
 
-    private enum Keys {
-        static let hotkey = "hotkey"
-        static let assistantHotkey = "assistantHotkey"
-        static let streamHotkey = "streamHotkey"
-        static let dictateToggleHotkey = "dictateToggleHotkey"
-        static let streamToggleHotkey = "streamToggleHotkey"
-        static let dictateHoldOn = "dictateHoldOn"
-        static let dictateToggleOn = "dictateToggleOn"
-        static let streamHoldOn = "streamHoldOn"
-        static let streamToggleOn = "streamToggleOn"
-        static let assistantConfig = "assistantConfig"
-        static let launchAtLogin = "launchAtLogin"
-        static let autoInsert = "autoInsert"
-        static let hotwords = "hotwords"
-        static let contextPrompt = "contextPrompt"
-        static let holdActivationDelay = "holdActivationDelay"
-        static let overlayOpacity = "overlayOpacity"
-        static let pillOnRight = "pillOnRight"
-        static let whisperModel = "whisperModel"
-        static let continuousModel = "continuousModel"
-        static let continuousTypeCPS = "continuousTypeCPS"
-        static let verboseLogging = "verboseLogging"
-        static let reportProblems = "reportProblems"
-        static let captureEdits = "captureEdits"
-        static let captureMaxGB = "captureMaxGB"
-        static let echoCancellation = "echoCancellation"
-        static let inputDeviceUID = "inputDeviceUID"
-        static let inputDeviceName = "inputDeviceName"
-        static let groundTruthProvider = "groundTruthProvider"
-        static let groundTruthModel = "groundTruthModel"
-        static let groundTruthBaseURL = "groundTruthBaseURL"
-        static let groundTruthPrompt = "groundTruthPrompt"
-        static let consensusPrompt = "consensusPrompt"
-        static let groundTruthRecipe = "groundTruthRecipe"
-        static let localQuantized = "localQuantized"
-        static let localMemLimitGB = "localMemLimitGB"
-        static let speedTier = "speedTier"
-        static let didFirstRun = "didFirstRun"
+    let store: KeyValueStore
+    let objectWillChange = ObservableObjectPublisher()
+
+    /// Every change that something outside the Settings window must act on.
+    /// Any number of subscribers; delivery is synchronous (no scheduler).
+    var changes: AnyPublisher<SettingsChange, Never> { changeSubject.eraseToAnyPublisher() }
+    private let changeSubject = PassthroughSubject<SettingsChange, Never>()
+
+    func publish(_ change: SettingsChange) { changeSubject.send(change) }
+
+    // MARK: Shortcuts (declared by ActionSpec)
+
+    private var shortcuts: [BindingSlot: Hotkey?] = [:]
+    private var switches: [BindingSlot: Bool] = [:]
+
+    /// The recorded shortcut for a slot (nil = not set / cleared).
+    func shortcut(for slot: BindingSlot) -> Hotkey? {
+        shortcuts[slot] ?? nil
     }
 
-    /// Fired whenever the dictation hotkey changes, so the monitor can re-target.
-    var onHotkeyChange: ((Hotkey) -> Void)?
-    /// Fired whenever the assistant hotkey changes (nil = disabled).
-    var onAssistantHotkeyChange: ((Hotkey?) -> Void)?
-    /// Fired whenever the live-streaming dictation hotkey changes (nil = disabled).
-    var onStreamHotkeyChange: ((Hotkey?) -> Void)?
-    /// Fired when the transcription model changes, so the backend can restart
-    /// with the new FLOWY_WHISPER_MODEL.
-    var onWhisperModelChange: ((String) -> Void)?
-    /// Fired when the continuous (live streaming) dictation model changes, so the
-    /// registry can preload the new one and evict any model no longer referenced.
-    var onContinuousModelChange: ((String) -> Void)?
+    /// Record or clear a slot's shortcut. A required slot (hold-to-dictate)
+    /// can't be cleared.
+    func setShortcut(_ hotkey: Hotkey?, for slot: BindingSlot) {
+        guard let spec = slot.spec, hotkey != nil || !spec.required else { return }
+        objectWillChange.send()
+        shortcuts[slot] = .some(hotkey)
+        spec.writeShortcut(hotkey, to: store)
+        publish(.bindings)
+    }
+
+    /// A slot's on/off switch (slots without one are always on).
+    func isEnabled(_ slot: BindingSlot) -> Bool {
+        switches[slot] ?? true
+    }
+
+    func setEnabled(_ on: Bool, for slot: BindingSlot) {
+        guard let key = slot.spec?.switchKey else { return }
+        objectWillChange.send()
+        switches[slot] = on
+        on.write(to: store, key: key)
+        publish(.bindings)
+    }
+
+    /// Every slot as a binding, in `ActionSpec` order. What the HotkeyMonitor
+    /// matches (after capability filtering).
+    var bindings: [HotkeyBinding] {
+        ActionSpec.all.flatMap(\.slots).map {
+            HotkeyBinding(action: $0.action, style: $0.style,
+                          hotkey: shortcut(for: $0), enabled: isEnabled($0))
+        }
+    }
 
     /// The user-recorded push-to-talk shortcut. Persisted as JSON.
-    @Published var hotkey: Hotkey {
-        didSet {
-            if let data = try? JSONEncoder().encode(hotkey) {
-                UserDefaults.standard.set(data, forKey: Keys.hotkey)
-            }
-            onHotkeyChange?(hotkey)
-        }
+    var hotkey: Hotkey {
+        get { shortcut(for: .dictation) ?? .fnDefault }
+        set { setShortcut(newValue, for: .dictation) }
     }
 
     /// Optional second shortcut that routes your speech through an LLM instead of
     /// typing it back. nil = assistant mode disabled. Persisted as JSON.
-    @Published var assistantHotkey: Hotkey? {
-        didSet {
-            if let hk = assistantHotkey, let data = try? JSONEncoder().encode(hk) {
-                UserDefaults.standard.set(data, forKey: Keys.assistantHotkey)
-            } else {
-                UserDefaults.standard.set(Data(), forKey: Keys.assistantHotkey)   // cleared ≠ never set
-            }
-            onAssistantHotkeyChange?(assistantHotkey)
-        }
+    var assistantHotkey: Hotkey? {
+        get { shortcut(for: .assistant) }
+        set { setShortcut(newValue, for: .assistant) }
     }
 
     /// Optional third shortcut for live-streaming dictation: transcribes as you
     /// speak and types the words straight into the focused field. nil = disabled.
     /// Persisted as JSON.
-    @Published var streamHotkey: Hotkey? {
-        didSet {
-            if let hk = streamHotkey, let data = try? JSONEncoder().encode(hk) {
-                UserDefaults.standard.set(data, forKey: Keys.streamHotkey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: Keys.streamHotkey)
-            }
-            onStreamHotkeyChange?(streamHotkey)
-        }
+    var streamHotkey: Hotkey? {
+        get { shortcut(for: .stream) }
+        set { setShortcut(newValue, for: .stream) }
     }
 
     // MARK: Toggle bindings (tap to start, tap again to stop)
 
-    /// Fired when any toggle bind or any of the four on/off switches changes —
-    /// the AppDelegate resyncs the monitor's effective bindings.
-    var onToggleBindingsChange: (() -> Void)?
-
     /// Tap-to-toggle bind for one-shot dictation (nil = not set). Persisted JSON.
-    @Published var dictateToggleHotkey: Hotkey? {
-        didSet {
-            if let hk = dictateToggleHotkey, let data = try? JSONEncoder().encode(hk) {
-                UserDefaults.standard.set(data, forKey: Keys.dictateToggleHotkey)
-            } else {
-                UserDefaults.standard.set(Data(), forKey: Keys.dictateToggleHotkey)   // cleared ≠ never set
-            }
-            onToggleBindingsChange?()
-        }
+    var dictateToggleHotkey: Hotkey? {
+        get { shortcut(for: .dictationToggle) }
+        set { setShortcut(newValue, for: .dictationToggle) }
     }
 
     /// Tap-to-toggle bind for continuous dictation (nil = not set). Persisted JSON.
-    @Published var streamToggleHotkey: Hotkey? {
-        didSet {
-            if let hk = streamToggleHotkey, let data = try? JSONEncoder().encode(hk) {
-                UserDefaults.standard.set(data, forKey: Keys.streamToggleHotkey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: Keys.streamToggleHotkey)
-            }
-            onToggleBindingsChange?()
-        }
+    var streamToggleHotkey: Hotkey? {
+        get { shortcut(for: .streamToggle) }
+        set { setShortcut(newValue, for: .streamToggle) }
     }
 
     /// The four on/off switches — one per config row (hold/toggle × modes).
-    @Published var dictateHoldOn: Bool {
-        didSet { UserDefaults.standard.set(dictateHoldOn, forKey: Keys.dictateHoldOn)
-                 onToggleBindingsChange?() }
+    var dictateHoldOn: Bool {
+        get { isEnabled(.dictation) }
+        set { setEnabled(newValue, for: .dictation) }
     }
-    @Published var dictateToggleOn: Bool {
-        didSet { UserDefaults.standard.set(dictateToggleOn, forKey: Keys.dictateToggleOn)
-                 onToggleBindingsChange?() }
+    var dictateToggleOn: Bool {
+        get { isEnabled(.dictationToggle) }
+        set { setEnabled(newValue, for: .dictationToggle) }
     }
-    @Published var streamHoldOn: Bool {
-        didSet { UserDefaults.standard.set(streamHoldOn, forKey: Keys.streamHoldOn)
-                 onToggleBindingsChange?() }
+    var streamHoldOn: Bool {
+        get { isEnabled(.stream) }
+        set { setEnabled(newValue, for: .stream) }
     }
-    @Published var streamToggleOn: Bool {
-        didSet { UserDefaults.standard.set(streamToggleOn, forKey: Keys.streamToggleOn)
-                 onToggleBindingsChange?() }
+    var streamToggleOn: Bool {
+        get { isEnabled(.streamToggle) }
+        set { setEnabled(newValue, for: .streamToggle) }
     }
+
+    // MARK: Stored settings
 
     /// Non-secret assistant settings (provider, model, base URL, system prompt).
     /// API keys are stored separately in the Keychain. Persisted as JSON.
-    @Published var assistantConfig: AssistantConfig {
-        didSet {
-            if let data = try? JSONEncoder().encode(assistantConfig) {
-                UserDefaults.standard.set(data, forKey: Keys.assistantConfig)
-            }
-        }
-    }
+    @Stored("assistantConfig", default: .default) var assistantConfig: AssistantConfig
 
-    @Published var launchAtLogin: Bool {
+    /// Not a stored default: mirrors the real login-item state
+    /// (`SMAppService`), read at launch.
+    var launchAtLogin: Bool {
+        willSet { objectWillChange.send() }
         didSet {
             guard !syncingLaunchAtLogin else { return }
             applyLaunchAtLogin(launchAtLogin)
@@ -167,188 +151,147 @@ final class Settings: ObservableObject {
 
     /// When enabled, transcripts are inserted straight into the focused editable
     /// text field (when possible) instead of surfacing the copy box.
-    @Published var autoInsert: Bool {
-        didSet { UserDefaults.standard.set(autoInsert, forKey: Keys.autoInsert) }
-    }
+    /// Default TRUE: absent key means the user hasn't opted out yet.
+    @Stored("autoInsert", default: true) var autoInsert: Bool
 
     /// Custom vocabulary — names, jargon, acronyms. Every dictation is
     /// spelling-corrected against it (`VocabularyCorrector`) and the
     /// ground-truth labeler is told to prefer these spellings.
-    @Published var hotwords: String {
-        didSet { UserDefaults.standard.set(hotwords, forKey: Keys.hotwords) }
-    }
+    @Stored("hotwords", default: "") var hotwords: String
 
     /// A sentence of context that steers the transcription (optional).
-    @Published var contextPrompt: String {
-        didSet { UserDefaults.standard.set(contextPrompt, forKey: Keys.contextPrompt) }
-    }
+    @Stored("contextPrompt", default: "") var contextPrompt: String
 
     /// How long you must hold the key before recording begins (seconds). Brief
     /// taps under this do nothing. Default 0.2s.
-    @Published var holdActivationDelay: Double {
-        didSet { UserDefaults.standard.set(holdActivationDelay, forKey: Keys.holdActivationDelay) }
-    }
+    @Stored("holdActivationDelay", default: 0) var holdActivationDelay: Double
 
     /// Opacity of the floating overlay chrome — the pill, transcribing dots, and
     /// answer box backgrounds. 1 = solid; lower = more see-through. Text stays
     /// fully opaque so answers remain readable. Default 0.92.
-    @Published var overlayOpacity: Double {
-        didSet { UserDefaults.standard.set(overlayOpacity, forKey: Keys.overlayOpacity) }
-    }
+    @Stored("overlayOpacity", default: 0.4) var overlayOpacity: Double
 
     /// The pill stands upright on the right edge instead of bottom-centre.
     /// Text (results, the copy box, messages) always shows at the bottom.
-    @Published var pillOnRight: Bool {
-        didSet { UserDefaults.standard.set(pillOnRight, forKey: Keys.pillOnRight) }
-    }
+    @Stored("pillOnRight", default: false) var pillOnRight: Bool
 
     /// WhisperKit model the on-device (Neural Engine) transcriber loads. Changing
     /// it reloads WhisperKit; the new model downloads once.
-    @Published var whisperModel: String {
-        didSet {
-            UserDefaults.standard.set(whisperModel, forKey: Keys.whisperModel)
-            onWhisperModelChange?(whisperModel)
-        }
-    }
+    /// Default to the bundled tiny model so the first launch works instantly
+    /// and fully offline — the user can switch to a bigger one in Settings.
+    @Stored("whisperModel", default: ModelCatalog.defaultDictation, emits: .dictationModel) var whisperModel: String
 
     /// WhisperKit model used by continuous (live streaming) dictation — fully
     /// independent of `whisperModel`. When set to the same name, the two share one
     /// resident instance; when different, both load. Changing it reloads its model.
-    @Published var continuousModel: String {
-        didSet {
-            UserDefaults.standard.set(continuousModel, forKey: Keys.continuousModel)
-            onContinuousModelChange?(continuousModel)
-        }
-    }
+    /// Continuous dictation defaults to the same bundled tiny model (so both
+    /// sections share one instance until the user changes either one).
+    @Stored("continuousModel", default: ModelCatalog.defaultContinuous, emits: .continuousModel)
+    var continuousModel: String
 
     /// Characters-per-second the live typist eases the field toward during
     /// continuous dictation. `>= 120` means "Instant" (whole diff flushed at once).
     /// Default 30.
-    @Published var continuousTypeCPS: Double {
-        didSet { UserDefaults.standard.set(continuousTypeCPS, forKey: Keys.continuousTypeCPS) }
-    }
+    @Stored("continuousTypeCPS", default: 80) var continuousTypeCPS: Double
 
     /// Developer-only: emit verbose diagnostic logs (filter "Slive." in Console /
     /// `log stream`). Off for normal users. Also forced on by `SLIVE_DEBUG=1`.
-    @Published var verboseLogging: Bool {
-        didSet {
-            UserDefaults.standard.set(verboseLogging, forKey: Keys.verboseLogging)
-            Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"
-        }
+    @Stored("verboseLogging", default: false) var verboseLogging: Bool {
+        didSet { applyLogGate() }
     }
 
     /// Offer a prefilled GitHub issue when Slive crashes, freezes or hits a
     /// failure (see FailureReporter). Nothing is sent unless the user submits
     /// it on GitHub. "Report a Problem…" works either way.
-    @Published var reportProblems: Bool {
-        didSet {
-            UserDefaults.standard.set(reportProblems, forKey: Keys.reportProblems)
-            FailureReporter.shared.settingsChanged()
-        }
+    @Stored("reportProblems", default: true) var reportProblems: Bool {
+        didSet { FailureReporter.shared.settingsChanged() }
     }
 
     /// Developer/research: save each dictation's audio + transcript as training
     /// data. Off by default; stored locally only. See TrainingStore.
-    @Published var captureEdits: Bool {
-        didSet { UserDefaults.standard.set(captureEdits, forKey: Keys.captureEdits) }
-    }
+    @Stored("captureEdits", default: true) var captureEdits: Bool
 
     /// Hard cap on how much captured training data (audio + index) may occupy on
     /// disk, in gigabytes. When usage reaches this, capture stops until you free
     /// space or raise the limit. Default 1 GB.
-    @Published var captureMaxGB: Double {
-        didSet { UserDefaults.standard.set(captureMaxGB, forKey: Keys.captureMaxGB) }
-    }
+    @Stored("captureMaxGB", default: 2.0) var captureMaxGB: Double
 
     /// Run the mic through the system voice-processing chain (the FaceTime echo
     /// canceller): what the Mac itself is playing over the speakers is
     /// subtracted from what the mic hears, so music/videos don't pollute the
     /// transcription in open-mic (no headphones) use. Default true. Applies from
     /// the next recording.
-    @Published var echoCancellation: Bool {
-        didSet { UserDefaults.standard.set(echoCancellation, forKey: Keys.echoCancellation) }
-    }
+    /// Default FALSE (opt-in): the voice-processing chain audibly pops on
+    /// some Macs when the device flips into voice-chat mode at recording
+    /// start. Worth it when dictating over speaker audio; not as a default.
+    @Stored("echoCancellation", default: false) var echoCancellation: Bool
 
     /// Core Audio UID of the microphone Slive listens on ("" = follow the
     /// system default input, the pre-picker behavior). Resolved to a live
     /// device at every recording start; an unplugged pick falls back to the
     /// default. Applies to one-shot AND continuous dictation.
-    @Published var inputDeviceUID: String {
-        didSet { UserDefaults.standard.set(inputDeviceUID, forKey: Keys.inputDeviceUID) }
-    }
+    @Stored("inputDeviceUID", default: "") var inputDeviceUID: String
     /// Display name captured at pick time, so an unplugged mic is still
     /// named in the menu instead of showing a bare UID.
-    @Published var inputDeviceName: String {
-        didSet { UserDefaults.standard.set(inputDeviceName, forKey: Keys.inputDeviceName) }
-    }
+    @Stored("inputDeviceName", default: "") var inputDeviceName: String
 
     /// Which provider the Training section's ground-truth transcription uses.
     /// Only audio-capable providers are offered (Anthropic takes no audio).
     /// API keys come from the same Keychain slots the assistant uses.
-    @Published var groundTruthProvider: AssistantProvider {
-        didSet { UserDefaults.standard.set(groundTruthProvider.rawValue, forKey: Keys.groundTruthProvider) }
-    }
+    /// New installs default to OpenAI: the 3-way check (the default
+    /// recipe) runs on an OpenAI key, so one key covers both recipes.
+    @Stored("groundTruthProvider", default: .openai) var groundTruthProvider: AssistantProvider
     /// Model for ground-truth transcription (must accept audio input).
-    @Published var groundTruthModel: String {
-        didSet { UserDefaults.standard.set(groundTruthModel, forKey: Keys.groundTruthModel) }
-    }
+    /// Migrates the retired OpenAI audio id we once defaulted to — accounts
+    /// without the legacy preview 404 on it; gpt-audio is the GA successor.
+    @Stored(Setting(key: "groundTruthModel", defaultValue: "gpt-audio",
+                    normalize: { $0 == "gpt-4o-audio-preview" ? "gpt-audio" : $0 }))
+    var groundTruthModel: String
     /// Base URL when the ground-truth provider is OpenAI-compatible.
-    @Published var groundTruthBaseURL: String {
-        didSet { UserDefaults.standard.set(groundTruthBaseURL, forKey: Keys.groundTruthBaseURL) }
-    }
+    @Stored("groundTruthBaseURL", default: "") var groundTruthBaseURL: String
 
     /// The user's edited base instruction for ground-truth transcription.
     /// Empty = follow the server's shipped default. The vocabulary tail is
     /// ALWAYS appended live server-side, whatever the base says.
     /// The consensus speaker line; empty = the default (label_consensus.py).
-    @Published var consensusPrompt: String {
-        didSet { UserDefaults.standard.set(consensusPrompt, forKey: Keys.consensusPrompt) }
-    }
-    @Published var groundTruthPrompt: String {
-        didSet { UserDefaults.standard.set(groundTruthPrompt, forKey: Keys.groundTruthPrompt) }
-    }
+    @Stored("consensusPrompt", default: "") var consensusPrompt: String
+    @Stored("groundTruthPrompt", default: "") var groundTruthPrompt: String
 
     /// How Should-be labels are made: the 3-way consensus (default — the
     /// measured best) or a single provider/model from the picker.
-    @Published var groundTruthRecipe: GroundTruthRecipe {
-        didSet { UserDefaults.standard.set(groundTruthRecipe.rawValue, forKey: Keys.groundTruthRecipe) }
-    }
+    @Stored("groundTruthRecipe", default: .consensus) var groundTruthRecipe: GroundTruthRecipe
 
     /// Local provider: load models int8-quantized (≈ half the RAM of bf16,
     /// near-identical output). Default on; applies from the next local ask
     /// (flipping it reloads the model).
-    @Published var localQuantized: Bool {
-        didSet { UserDefaults.standard.set(localQuantized, forKey: Keys.localQuantized) }
-    }
+    @Stored(Settings.localQuantizedSetting) var localQuantized: Bool
     /// Local provider: ceiling on a running model's memory, in GB. Models that
     /// can't plausibly fit are refused with a clear error before loading.
-    @Published var localMemLimitGB: Double {
-        didSet { UserDefaults.standard.set(localMemLimitGB, forKey: Keys.localMemLimitGB) }
-    }
+    @Stored(Settings.localMemLimitSetting) var localMemLimitGB: Double
 
     /// The latency ⇄ resources tier (SpeedTier raw value; 0 = Instant).
     /// Picked on the General page's tradeoff graph — each tier is a real set
     /// of residency/clock/warmup knobs, applied by TranscriptionModel and
     /// AppDelegate.
-    @Published var speedTier: Int {
-        didSet { UserDefaults.standard.set(speedTier, forKey: Keys.speedTier) }
-    }
+    @Stored("speedTier", default: SpeedTier.relaxed.rawValue) var speedTier: Int
 
     /// The typed tier, clamped safe against any stored value — an unknown one
     /// falls back to the fresh-install default, not the hungriest tier.
     var resolvedSpeedTier: SpeedTier { SpeedTier(rawValue: speedTier) ?? .relaxed }
 
+    // MARK: Local inference (also read off the main actor)
+
+    static let localQuantizedSetting = Setting(key: "localQuantized", defaultValue: true)
+    static let localMemLimitSetting = Setting(
+        key: "localMemLimitGB",
+        defaultValue: localMemDefaultGB(ramGB: MachineProfile.ramGB),
+        normalize: { min($0, localMemMaxGB(ramGB: MachineProfile.ramGB)) })
+
     /// Snapshot of the local-inference knobs, safe to read off the main actor —
     /// the HTTP clients build request bodies on background executors.
     nonisolated static func localInferenceOptions() -> (quantized: Bool, memGB: Double) {
         let d = UserDefaults.standard
-        let quantized = d.object(forKey: Keys.localQuantized) == nil
-            ? true : d.bool(forKey: Keys.localQuantized)
-        let ram = MachineProfile.ramGB
-        let mem = d.object(forKey: Keys.localMemLimitGB) == nil
-            ? localMemDefaultGB(ramGB: ram)
-            : min(d.double(forKey: Keys.localMemLimitGB), localMemMaxGB(ramGB: ram))
-        return (quantized, mem)
+        return (localQuantizedSetting.read(from: d), localMemLimitSetting.read(from: d))
     }
 
     /// Memory-limit default: 9 GB, but never past ~60% of this Mac's RAM — 9
@@ -366,132 +309,47 @@ final class Settings: ObservableObject {
 
     /// Ground truth: true once the event tap has actually delivered a keystroke.
     /// Proof that Input Monitoring is genuinely working, regardless of the
-    /// cache-prone IOHIDCheckAccess API.
-    @Published var hotkeyActive = false
+    /// cache-prone IOHIDCheckAccess API. Not persisted.
+    var hotkeyActive = false {
+        willSet { objectWillChange.send() }
+    }
 
     // MARK: Defaults for a fresh install — Soumil's own setup (Nov 2026).
 
     /// A hotkey from its stored JSON, the same form Settings persists.
-    private static func hotkey(_ json: String) -> Hotkey? {
+    private static func decodeHotkey(_ json: String) -> Hotkey? {
         try? JSONDecoder().decode(Hotkey.self, from: Data(json.utf8))
     }
-    static let defaultDictateToggle = hotkey(#"{"modifiers":262144,"taps":2,"label":"⌃ ×2"}"#)
-    static let defaultAssistantHotkey = hotkey(#"{"modifiers":8650752,"label":"⌃fn"}"#)
+    static let defaultDictateToggle = decodeHotkey(#"{"modifiers":262144,"taps":2,"label":"⌃ ×2"}"#)
+    static let defaultAssistantHotkey = decodeHotkey(#"{"modifiers":8650752,"label":"⌃fn"}"#)
     /// Live typing stays off until asked for; the General page suggests these.
-    static let suggestedStreamHotkey = hotkey(#"{"taps":1,"keyCode":44,"modifiers":524288,"label":"⌥ /"}"#)
-    static let suggestedStreamToggleHotkey = hotkey(#"{"taps":1,"keyCode":47,"modifiers":524288,"label":"⌥ ."}"#)
+    static let suggestedStreamHotkey = decodeHotkey(#"{"taps":1,"keyCode":44,"modifiers":524288,"label":"⌥ /"}"#)
+    static let suggestedStreamToggleHotkey = decodeHotkey(#"{"taps":1,"keyCode":47,"modifiers":524288,"label":"⌥ ."}"#)
 
-    /// Never set → `fallback`; set → the stored shortcut; cleared (empty) → nil.
-    private static func storedHotkey(_ key: String, default fallback: Hotkey?) -> Hotkey? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return fallback }
-        return try? JSONDecoder().decode(Hotkey.self, from: data)
+    /// Every `@Stored` declaration, for loading and for the self-tests.
+    var storedSettings: [AnyStoredSetting] {
+        Mirror(reflecting: self).children.compactMap { $0.value as? AnyStoredSetting }
     }
 
-    private init() {
-        if let data = UserDefaults.standard.data(forKey: Keys.hotkey),
-           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
-            hotkey = decoded
-        } else {
-            hotkey = .fnDefault
-        }
-        assistantHotkey = Self.storedHotkey(Keys.assistantHotkey, default: Self.defaultAssistantHotkey)
-        if let data = UserDefaults.standard.data(forKey: Keys.streamHotkey),
-           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
-            streamHotkey = decoded
-        } else {
-            streamHotkey = nil
-        }
-        dictateToggleHotkey = Self.storedHotkey(Keys.dictateToggleHotkey, default: Self.defaultDictateToggle)
-        if let data = UserDefaults.standard.data(forKey: Keys.streamToggleHotkey),
-           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
-            streamToggleHotkey = decoded
-        } else {
-            streamToggleHotkey = nil
-        }
-        // All four switches default ON — a config only acts when its bind is
-        // also set, so fresh installs behave exactly as before.
-        func boolDefault(_ key: String, _ fallback: Bool) -> Bool {
-            UserDefaults.standard.object(forKey: key) == nil
-                ? fallback : UserDefaults.standard.bool(forKey: key)
-        }
-        dictateHoldOn = boolDefault(Keys.dictateHoldOn, true)
-        dictateToggleOn = boolDefault(Keys.dictateToggleOn, true)
-        streamHoldOn = boolDefault(Keys.streamHoldOn, true)
-        streamToggleOn = boolDefault(Keys.streamToggleOn, true)
-        if let data = UserDefaults.standard.data(forKey: Keys.assistantConfig),
-           let decoded = try? JSONDecoder().decode(AssistantConfig.self, from: data) {
-            assistantConfig = decoded
-        } else {
-            assistantConfig = .default
-        }
+    init(store: KeyValueStore = UserDefaults.standard) {
+        self.store = store
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
-        // Default TRUE: absent key means the user hasn't opted out yet.
-        if UserDefaults.standard.object(forKey: Keys.autoInsert) == nil {
-            autoInsert = true
-        } else {
-            autoInsert = UserDefaults.standard.bool(forKey: Keys.autoInsert)
+        for slot in ActionSpec.all.flatMap(\.slots) {
+            guard let spec = slot.spec else { continue }
+            shortcuts[slot] = .some(spec.readShortcut(from: store))
+            // All switches default ON — a config only acts when its bind is
+            // also set, so fresh installs behave exactly as before.
+            if let key = spec.switchKey { switches[slot] = Bool.read(from: store, key: key) ?? true }
         }
-        hotwords = UserDefaults.standard.string(forKey: Keys.hotwords) ?? ""
-        contextPrompt = UserDefaults.standard.string(forKey: Keys.contextPrompt) ?? ""
-        if UserDefaults.standard.object(forKey: Keys.holdActivationDelay) == nil {
-            holdActivationDelay = 0
-        } else {
-            holdActivationDelay = UserDefaults.standard.double(forKey: Keys.holdActivationDelay)
-        }
-        if UserDefaults.standard.object(forKey: Keys.overlayOpacity) == nil {
-            overlayOpacity = 0.4
-        } else {
-            overlayOpacity = UserDefaults.standard.double(forKey: Keys.overlayOpacity)
-        }
-        // Default to the bundled tiny model so the first launch works instantly
-        // and fully offline — the user can switch to a bigger one in Settings.
-        whisperModel = UserDefaults.standard.string(forKey: Keys.whisperModel) ?? "tiny.en"
-        // Continuous dictation defaults to the same bundled tiny model (so both
-        // sections share one instance until the user changes either one).
-        continuousModel = UserDefaults.standard.string(forKey: Keys.continuousModel) ?? "parakeet-ultra"
-        pillOnRight = UserDefaults.standard.bool(forKey: Keys.pillOnRight)
-        if UserDefaults.standard.object(forKey: Keys.continuousTypeCPS) == nil {
-            continuousTypeCPS = 80
-        } else {
-            continuousTypeCPS = UserDefaults.standard.double(forKey: Keys.continuousTypeCPS)
-        }
-        verboseLogging = UserDefaults.standard.bool(forKey: Keys.verboseLogging)
-        reportProblems = UserDefaults.standard.object(forKey: Keys.reportProblems) as? Bool ?? true
-        captureEdits = UserDefaults.standard.object(forKey: Keys.captureEdits) == nil
-            ? true : UserDefaults.standard.bool(forKey: Keys.captureEdits)
-        if UserDefaults.standard.object(forKey: Keys.captureMaxGB) == nil {
-            captureMaxGB = 2.0
-        } else {
-            captureMaxGB = UserDefaults.standard.double(forKey: Keys.captureMaxGB)
-        }
-        // Default FALSE (opt-in): the voice-processing chain audibly pops on
-        // some Macs when the device flips into voice-chat mode at recording
-        // start. Worth it when dictating over speaker audio; not as a default.
-        echoCancellation = UserDefaults.standard.bool(forKey: Keys.echoCancellation)
-        inputDeviceUID = UserDefaults.standard.string(forKey: Keys.inputDeviceUID) ?? ""
-        inputDeviceName = UserDefaults.standard.string(forKey: Keys.inputDeviceName) ?? ""
-        // New installs default to OpenAI: the 3-way check (the default
-        // recipe) runs on an OpenAI key, so one key covers both recipes.
-        groundTruthProvider = UserDefaults.standard.string(forKey: Keys.groundTruthProvider)
-            .flatMap(AssistantProvider.init(rawValue:)) ?? .openai
-        var gtModel = UserDefaults.standard.string(forKey: Keys.groundTruthModel) ?? "gpt-audio"
-        // Migrate the retired OpenAI audio id we once defaulted to — accounts
-        // without the legacy preview 404 on it; gpt-audio is the GA successor.
-        if gtModel == "gpt-4o-audio-preview" { gtModel = "gpt-audio" }
-        groundTruthModel = gtModel
-        groundTruthBaseURL = UserDefaults.standard.string(forKey: Keys.groundTruthBaseURL) ?? ""
-        groundTruthPrompt = UserDefaults.standard.string(forKey: Keys.groundTruthPrompt) ?? ""
-        consensusPrompt = UserDefaults.standard.string(forKey: Keys.consensusPrompt) ?? ""
-        groundTruthRecipe = UserDefaults.standard.string(forKey: Keys.groundTruthRecipe)
-            .flatMap(GroundTruthRecipe.init(rawValue:)) ?? .consensus
-        let localOpts = Self.localInferenceOptions()
-        localQuantized = localOpts.quantized
-        localMemLimitGB = localOpts.memGB
-        speedTier = UserDefaults.standard.object(forKey: Keys.speedTier) == nil
-            ? SpeedTier.relaxed.rawValue
-            : UserDefaults.standard.integer(forKey: Keys.speedTier)
-        // Apply the gate immediately (didSet doesn't fire from init). Env var can
-        // force it on regardless of the stored/UI setting.
+        // Load every @Stored value now, once, before anything can read them
+        // from another thread.
+        for setting in storedSettings { setting.load(from: store) }
+        // Apply the gate immediately (didSet doesn't fire from init).
+        applyLogGate()
+    }
+
+    /// The env var can force verbose logs on regardless of the stored/UI setting.
+    private func applyLogGate() {
         Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"
     }
 
@@ -502,25 +360,25 @@ final class Settings: ObservableObject {
     /// trimmed) can still carry a trailing newline, which would otherwise reach
     /// the HTTP layer as an illegal `Authorization` header value.
     func apiKey(for provider: AssistantProvider) -> String {
-        (KeychainStore.get(provider.keychainAccount) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        CredentialStore.shared.apiKey(for: provider)   // the Keychain's single owner
     }
 
     /// Store (or clear, when empty) a provider's API key. Trimmed so a stray
     /// newline/space (common when pasting) can't produce an illegal HTTP header.
     /// Also nudges observers so the settings UI reflects the change.
     func setAPIKey(_ key: String, for provider: AssistantProvider) {
-        let clean = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        KeychainStore.set(clean, for: provider.keychainAccount)
+        CredentialStore.shared.setAPIKey(key, for: provider)
         objectWillChange.send()
     }
 
+    private static let didFirstRunKey = "didFirstRun"
+
     var isFirstRun: Bool {
-        !UserDefaults.standard.bool(forKey: Keys.didFirstRun)
+        !store.bool(forKey: Self.didFirstRunKey)
     }
 
     func markFirstRunComplete() {
-        UserDefaults.standard.set(true, forKey: Keys.didFirstRun)
+        store.set(true, forKey: Self.didFirstRunKey)
     }
 
     private func applyLaunchAtLogin(_ enabled: Bool) {
@@ -543,6 +401,10 @@ final class Settings: ObservableObject {
         }
     }
 }
+
+extension AssistantConfig: JSONSetting {}
+extension AssistantProvider: StorableSetting {}
+extension GroundTruthRecipe: StorableSetting {}
 
 extension Bundle {
     /// "v0.2.4" — the bundle's real version (build.sh stamps it from VERSION),

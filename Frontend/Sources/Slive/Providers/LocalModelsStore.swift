@@ -58,8 +58,8 @@ final class LocalModelsStore: ObservableObject {
                 do {
                     job = try await client.downloadStatus(jobID: jobID)
                     misses = 0
-                } catch let error as LocalModelsClient.ServerError {
-                    throw error
+                } catch let error as SliveError where error.status != nil {
+                    throw error   // the server answered (a vanished job, a refusal)
                 } catch {
                     misses += 1
                     if misses >= 5 { throw error }

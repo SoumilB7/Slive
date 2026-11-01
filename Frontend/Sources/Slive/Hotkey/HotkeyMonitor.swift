@@ -2,15 +2,8 @@ import AppKit
 import CoreGraphics
 import IOKit.hid
 
-/// Which behaviour a held shortcut triggers.
-enum HotkeyAction {
-    case dictate   // transcribe speech and type/insert it
-    case assist    // transcribe speech, send to an LLM, show the answer
-    case stream    // live-transcribe speech and type it into the field as you talk
-}
-
-/// Global hold-to-talk monitor for up to two user-recorded shortcuts: the
-/// primary dictation `hotkey` and an optional `assistantHotkey`.
+/// Global hold-to-talk / tap-to-toggle monitor for the user-recorded
+/// shortcuts (`bindings`, one per action × style).
 ///
 /// - A **modifier-only** shortcut is matched on exact modifier flags.
 /// - A **chord with a key** swallows the key while held (so it doesn't type).
@@ -26,33 +19,12 @@ final class HotkeyMonitor {
     /// the session state machine lives with the receiver, not here).
     var onToggle: ((HotkeyAction) -> Void)?
 
-    /// Primary dictation shortcut. Change live; the tap re-arms if needed.
-    var hotkey: Hotkey = Settings.shared.hotkey {
-        didSet { hotkeysChanged() }
-    }
-
-    /// Hold-to-dictate can now be switched off (the toggle bind may be the
-    /// only way the user wants to dictate).
-    var dictateHoldEnabled: Bool = true {
-        didSet { hotkeysChanged() }
-    }
-
-    /// Optional assistant shortcut (nil = assistant mode off).
-    var assistantHotkey: Hotkey? = Settings.shared.assistantHotkey {
-        didSet { hotkeysChanged() }
-    }
-
-    /// Optional live-streaming dictation shortcut (nil = streaming mode off).
-    var streamHotkey: Hotkey? = Settings.shared.streamHotkey {
-        didSet { hotkeysChanged() }
-    }
-
-    /// Tap-to-toggle binds (nil = off). The receiver passes EFFECTIVE values —
-    /// a bind whose switch is off arrives here as nil.
-    var dictateToggleHotkey: Hotkey? = nil {
-        didSet { hotkeysChanged() }
-    }
-    var streamToggleHotkey: Hotkey? = nil {
+    /// Every shortcut to match, as built from Settings
+    /// (`HotkeyBinding.effective`). A binding that's switched off or unset
+    /// matches nothing — hold-to-dictate can be switched off too (the toggle
+    /// bind may be the only way the user wants to dictate). Change live; the
+    /// tap re-arms if needed.
+    var bindings: [HotkeyBinding] = [] {
         didSet { hotkeysChanged() }
     }
 
@@ -83,34 +55,37 @@ final class HotkeyMonitor {
 
     // MARK: - Targets
 
-    private struct Target { let hotkey: Hotkey; let action: HotkeyAction }
+    struct Target: Equatable { let hotkey: Hotkey; let action: HotkeyAction }
 
     /// Match targets, CACHED — `handle()` runs for every keyDown/keyUp/
     /// flagsChanged the user makes anywhere in the OS, and in chord mode the
     /// tap is synchronous in front of their keystrokes. Recomputing these as
     /// computed properties allocated 1–2 arrays per event; now they're rebuilt
     /// only when a shortcut actually changes (`rebuildTargets`).
-    private var targets: [Target] = []
+    /// Hold targets, in action priority order (dictate → assist → stream).
+    private(set) var targets: [Target] = []
     /// The modifier-only subset `handle()` matches against (priority order).
     private var modifierOnlyTargets: [Target] = []
     /// Tap-to-toggle targets (chords fire on keyDown; modifier-only fire on
     /// the exact-match down edge of flagsChanged).
-    private var toggleTargets: [Target] = []
+    private(set) var toggleTargets: [Target] = []
     private var modifierOnlyToggles: [Target] = []
     /// True when any shortcut is a chord (has a key), so the tap must consume.
-    private var needsConsume = false
+    private(set) var needsConsume = false
 
-    /// Rebuild the cached match tables from the shortcut properties.
+    /// Rebuild the cached match tables from the bindings.
     private func rebuildTargets() {
         var t: [Target] = []
-        if dictateHoldEnabled { t.append(Target(hotkey: hotkey, action: .dictate)) }
-        if let a = assistantHotkey { t.append(Target(hotkey: a, action: .assist)) }
-        if let s = streamHotkey { t.append(Target(hotkey: s, action: .stream)) }
+        var toggles: [Target] = []
+        for b in bindings.sorted(by: { $0.action.priority < $1.action.priority }) where b.enabled {
+            guard let hk = b.hotkey else { continue }
+            switch b.style {
+            case .hold:   t.append(Target(hotkey: hk, action: b.action))
+            case .toggle: toggles.append(Target(hotkey: hk, action: b.action))
+            }
+        }
         targets = t
         modifierOnlyTargets = t.filter { $0.hotkey.isModifierOnly && $0.hotkey.modifiers != 0 }
-        var toggles: [Target] = []
-        if let d = dictateToggleHotkey { toggles.append(Target(hotkey: d, action: .dictate)) }
-        if let s = streamToggleHotkey { toggles.append(Target(hotkey: s, action: .stream)) }
         toggleTargets = toggles
         modifierOnlyToggles = toggles.filter { $0.hotkey.isModifierOnly && $0.hotkey.modifiers != 0 }
         needsConsume = (t + toggles).contains { !$0.hotkey.isModifierOnly }
@@ -515,6 +490,41 @@ final class HotkeyMonitor {
     static func ensureAccessibility(prompt: Bool) -> Bool {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         return AXIsProcessTrustedWithOptions([key: prompt] as CFDictionary)
+    }
+}
+
+// MARK: - Per-slot access
+
+extension HotkeyMonitor {
+    /// One slot's shortcut, read or replaced in place (a slot not yet in the
+    /// list is appended, switched on). The app hands over whole lists; this
+    /// is for tests and one-off tweaks.
+    subscript(slot: BindingSlot) -> Hotkey? {
+        get { bindings.first { $0.slot == slot }?.hotkey }
+        set {
+            if let i = bindings.firstIndex(where: { $0.slot == slot }) {
+                bindings[i].hotkey = newValue
+            } else {
+                bindings.append(HotkeyBinding(action: slot.action, style: slot.style,
+                                              hotkey: newValue, enabled: true))
+            }
+        }
+    }
+
+    var hotkey: Hotkey? {
+        get { self[.dictation] } set { self[.dictation] = newValue }
+    }
+    var assistantHotkey: Hotkey? {
+        get { self[.assistant] } set { self[.assistant] = newValue }
+    }
+    var streamHotkey: Hotkey? {
+        get { self[.stream] } set { self[.stream] = newValue }
+    }
+    var dictateToggleHotkey: Hotkey? {
+        get { self[.dictationToggle] } set { self[.dictationToggle] = newValue }
+    }
+    var streamToggleHotkey: Hotkey? {
+        get { self[.streamToggle] } set { self[.streamToggle] = newValue }
     }
 }
 

@@ -14,6 +14,8 @@ enum AllSuites {
         VocabularyCorrectorTests.suite,
         DictationQueueTests.suite,
         DefaultShortcutTests.suite,
+        SettingsStoreTests.suite,
+        HotkeyActionTests.suite,
         SilenceTrimTests.suite,
         TextHygieneTests.suite,
         SpeechPipelineTests.suite,

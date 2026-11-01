@@ -7,11 +7,9 @@ import CoreGraphics
 /// NSEvent monitor (the Settings window is focused during recording), so it
 /// needs no special permission and never leaks the keys into the app.
 struct HotkeyRecorderView: View {
-    /// Which shortcut this recorder edits.
-    enum Target { case dictation, assistant, stream, dictationToggle, streamToggle }
-
     @ObservedObject private var settings = Settings.shared
-    var target: Target = .dictation
+    /// Which shortcut this recorder edits.
+    var target: BindingSlot = .dictation
     var title: String = "Shortcut"
     /// Optional idle line under the title; the recording prompt replaces it.
     var subtitle: String = ""
@@ -25,23 +23,14 @@ struct HotkeyRecorderView: View {
     @State private var commitWork: DispatchWorkItem?
 
     /// Toggle binds may be a double-tap; hold binds are always a single hold.
-    private var supportsDoubleTap: Bool {
-        target == .dictationToggle || target == .streamToggle
-    }
+    private var supportsDoubleTap: Bool { target.style == .toggle }
 
     /// Current shortcut for this target (assistant may be unset).
-    private var current: Hotkey? {
-        switch target {
-        case .dictation: return settings.hotkey
-        case .assistant: return settings.assistantHotkey
-        case .stream:    return settings.streamHotkey
-        case .dictationToggle: return settings.dictateToggleHotkey
-        case .streamToggle:    return settings.streamToggleHotkey
-        }
-    }
+    private var current: Hotkey? { settings.shortcut(for: target) }
 
-    /// Optional shortcuts (assistant, stream) can be cleared back to disabled.
-    private var isClearable: Bool { target != .dictation }
+    /// Optional shortcuts (assistant, stream) can be cleared back to
+    /// disabled; the primary key can't be unset.
+    private var isClearable: Bool { !(target.spec?.required ?? true) }
 
     private var buttonLabel: String {
         if recording { return "Recording…" }
@@ -115,24 +104,13 @@ struct HotkeyRecorderView: View {
     }
 
     private func commit(_ hotkey: Hotkey) {
-        switch target {
-        case .dictation: settings.hotkey = hotkey
-        case .assistant: settings.assistantHotkey = hotkey
-        case .stream:    settings.streamHotkey = hotkey
-        case .dictationToggle: settings.dictateToggleHotkey = hotkey
-        case .streamToggle:    settings.streamToggleHotkey = hotkey
-        }
+        settings.setShortcut(hotkey, for: target)
         cancel()
     }
 
     private func clearShortcut() {
-        switch target {
-        case .dictation: break                     // the primary key can't be unset
-        case .assistant: settings.assistantHotkey = nil
-        case .stream:    settings.streamHotkey = nil
-        case .dictationToggle: settings.dictateToggleHotkey = nil
-        case .streamToggle:    settings.streamToggleHotkey = nil
-        }
+        guard isClearable else { return }
+        settings.setShortcut(nil, for: target)
     }
 
     private func handle(_ event: NSEvent) {

@@ -18,7 +18,7 @@ import Foundation
     /// joins only behind a loading model or dictations still in line;
     /// otherwise a newer hold (or ✕) may still supersede it.
     static func queues(_ action: HotkeyAction, modelReady: Bool, queueEmpty: Bool) -> Bool {
-        action != .assist || !modelReady || !queueEmpty
+        action.spec.alwaysQueues || !modelReady || !queueEmpty
     }
 
     /// Join the back of the queue.

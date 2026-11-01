@@ -17,16 +17,14 @@ assemble_bundle() {
     # Bake absolute paths into Info.plist: the Backend/ dir whose .venv runs the
     # transcription server (auto-launched by the app), and the prompts folder.
     # They point into this checkout's Backend/ and prompts.
-    local VERSION BUILD_SHA BUILD_DATE EDITION BUNDLED BACKEND_DIR PROMPTS_DIR
+    local VERSION BUILD_SHA BUILD_DATE EDITION BACKEND_DIR PROMPTS_DIR
     VERSION="$(<"$REPO_DIR/VERSION")"
     # The commit, "-dirty" when tracked files differ from it (so a local hack never
     # passes for that commit in a bug report), and the commit's date.
     BUILD_SHA="$(git -C "$REPO_DIR" rev-parse --short HEAD)"
     git -C "$REPO_DIR" diff --quiet HEAD -- || BUILD_SHA="$BUILD_SHA-dirty"
     BUILD_DATE="$(git -C "$REPO_DIR" log -1 --format=%cI)"
-    # SLIVE_EDITION=lite: no Python features. SliveBundledBackend stays "0":
-    # the app never carries its own Python any more.
-    EDITION="${SLIVE_EDITION:-full}"; BUNDLED="0"
+    EDITION="${SLIVE_EDITION:-full}"   # SLIVE_EDITION=lite: no Python features
     BACKEND_DIR="$REPO_DIR/Backend"
     PROMPTS_DIR="$REPO_DIR/Backend/prompts"
     mkdir -p "$PROMPTS_DIR"
@@ -34,7 +32,6 @@ assemble_bundle() {
         -e "s|__PROMPTS_DIR__|$(plist_value "$PROMPTS_DIR")|g" \
         -e "s|__VERSION__|$(plist_value "$VERSION")|g" \
         -e "s|__EDITION__|$(plist_value "$EDITION")|g" \
-        -e "s|__BUNDLED__|$(plist_value "$BUNDLED")|g" \
         -e "s|__BUILD_DATE__|$(plist_value "$BUILD_DATE")|g" \
         -e "s|__BUILD__|$(plist_value "$BUILD_SHA")|g" \
         Resources/Info.plist.template > "$CONTENTS/Info.plist"
