@@ -2,6 +2,16 @@
 
 Notable changes to Slive, newest first. Versions follow [semver](https://semver.org).
 
+## [0.2.3] - 2026-11-01
+
+### Added
+- The pill can sit upright on the right side of the screen. Pick the spot in Settings → General → Overlay, on a small picture of your screen; text still shows at the bottom.
+- Live typing is suggested once on the General page, with Turn on and Not now.
+
+### Changed
+- New installs start set up the way Slive's author uses it: recordings saved for training (2 GB cap), double-tap ⌃ to toggle dictation, ⌃fn to ask (OpenAI, the rewrite prompt, screenshot attached), no hold delay, a 40% overlay and the Relaxed speed tier. Your own settings are untouched.
+- A shortcut you remove stays removed.
+
 ## [0.2.2] - 2026-11-01
 
 ### Added
@@ -55,6 +65,7 @@ First release, in two downloads: **Slive** (on-device speech only) and **Slive F
 - Fine-tune Whisper on your own voice, on this Mac.
 - The bundled server starts only when needed, stops after 10 idle minutes, and only answers Slive.
 
+[0.2.3]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.3
 [0.2.2]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.2
 [0.2.1]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.1
 [0.2.0]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.0
