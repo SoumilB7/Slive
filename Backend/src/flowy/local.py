@@ -83,6 +83,12 @@ _jobs: dict[str, _Job] = {}
 _lock = threading.Lock()
 
 
+def busy() -> bool:
+    """A download is still running (the app must not idle-stop the server)."""
+    with _lock:
+        return any(job.state == "running" for job in _jobs.values())
+
+
 def start_download(repo_id: str, token: str | None) -> str:
     """Kick off a background ``snapshot_download`` into the standard cache and
     return a job id to poll. A gated (private) repo without a valid token

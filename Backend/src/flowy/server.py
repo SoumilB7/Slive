@@ -92,8 +92,13 @@ app.add_middleware(_LocalOnlyMiddleware)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, object]:
+    # `busy`: a download or training job is running — the app's idle shutdown
+    # waits for it instead of killing it.
+    from flowy import local
+    from flowy.training import jobs
+
+    return {"status": "ok", "busy": local.busy() or jobs.busy()}
 
 
 def _decode_header(value: str | None) -> str | None:

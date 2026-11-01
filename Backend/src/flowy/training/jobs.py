@@ -272,6 +272,12 @@ def _set_aside_failed_run(run_dir: Path, models_root: Path, model_name: str) -> 
     shutil.rmtree(models_root / f".{model_name}.staging", ignore_errors=True)
 
 
+def busy() -> bool:
+    """A training job is queued or running (the app must not idle-stop the server)."""
+    with _lock:
+        return any(job.state in {"queued", "running"} for job in _jobs.values())
+
+
 def get_job(job_id: str) -> TrainingJob | None:
     with _lock:
         return _jobs.get(job_id)

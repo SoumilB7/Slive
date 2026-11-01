@@ -25,6 +25,13 @@ final class BackendManager: ObservableObject {
     /// and the UI can say what to fix instead of "still starting".
     @Published private(set) var lastSpawnError: String?
 
+    /// Last time anything asked for the server. Idle this long with no
+    /// download or training job running, it's stopped — it used to stay up
+    /// until quit once anything (even opening Settings) had started it.
+    private var lastUsed = Date()
+    nonisolated static let idleShutdownSeconds: TimeInterval = 600
+    private var idleTimer: Timer?
+
     /// `pgrep`/`pkill -f` regex for our server's argv (`… -m flowy.server`).
     /// Escaped and anchored: a bare `flowy.server` (dot = any char) also
     /// matched editors, `tail`s and dev servers that merely mention it.
@@ -107,6 +114,7 @@ final class BackendManager: ObservableObject {
     /// does (up to `timeout`). Returns whether it came up. Async sleeps between
     /// probes, so the main thread stays responsive (the overlay keeps its dots).
     func ensureHealthy(timeout: TimeInterval = 25) async -> Bool {
+        lastUsed = Date()
         if await probeHealth() { status = .running; return true }
         status = .starting
         spawnIfNeeded()
@@ -191,6 +199,8 @@ final class BackendManager: ObservableObject {
             process = p
             status = .starting
             lastSpawnError = nil
+            lastUsed = Date()
+            armIdleShutdown()
             NSLog("Slive: backend starting (pid \(p.processIdentifier)) as \(launch.exe.lastPathComponent).")
         } catch {
             NSLog("Slive: failed to start backend — \(error)")
@@ -244,6 +254,45 @@ final class BackendManager: ObservableObject {
               let ia = a[.systemFileNumber] as? Int, let ib = b[.systemFileNumber] as? Int,
               ia == ib else { return }
         try? fm.removeItem(at: legacy)
+    }
+
+    // MARK: - Idle shutdown
+
+    private func armIdleShutdown() {
+        idleTimer?.invalidate()
+        let timer = Timer(timeInterval: 60, repeats: true) { _ in
+            Task { @MainActor in await BackendManager.shared.stopIfIdle() }
+        }
+        timer.tolerance = 15
+        RunLoop.main.add(timer, forMode: .common)
+        idleTimer = timer
+    }
+
+    private func stopIfIdle() async {
+        guard let p = process, p.isRunning else {
+            idleTimer?.invalidate(); idleTimer = nil
+            return
+        }
+        guard Date().timeIntervalSince(lastUsed) > Self.idleShutdownSeconds else { return }
+        // A download or training job keeps it alive (an unreachable server
+        // isn't idle-stopped either — the next ensureHealthy deals with it).
+        guard let busy = await probeBusy(), !busy else { lastUsed = Date(); return }
+        guard process === p, Date().timeIntervalSince(lastUsed) > Self.idleShutdownSeconds else { return }
+        Log.event("backend idle 10 min — stopping it")
+        idleTimer?.invalidate(); idleTimer = nil
+        Self.signal(p.processIdentifier, SIGTERM)   // terminationHandler clears state
+    }
+
+    /// The server's `busy` flag, or nil if it didn't answer.
+    private func probeBusy() async -> Bool? {
+        var request = URLRequest(url: healthURL)
+        request.timeoutInterval = 1.5
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj["busy"] as? Bool ?? false
     }
 
     // MARK: - Health

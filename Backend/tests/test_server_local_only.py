@@ -16,7 +16,7 @@ def client() -> TestClient:
 def test_loopback_hosts_are_served(client: TestClient, host: str) -> None:
     resp = client.get("/health", headers={"Host": host})
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json()["status"] == "ok"
 
 
 def test_app_style_request_passes(client: TestClient) -> None:
@@ -41,3 +41,15 @@ def test_any_origin_is_rejected(client: TestClient, origin: str) -> None:
 def test_default_testserver_host_is_rejected() -> None:
     resp = TestClient(server.app).get("/health")
     assert resp.status_code == 403
+
+
+def test_health_reports_busy_while_a_download_runs(monkeypatch):
+    from flowy import local
+    from flowy.training import jobs
+
+    client = TestClient(server.app, base_url="http://127.0.0.1:50711")
+    monkeypatch.setattr(local, "busy", lambda: False)
+    monkeypatch.setattr(jobs, "busy", lambda: False)
+    assert client.get("/health").json() == {"status": "ok", "busy": False}
+    monkeypatch.setattr(local, "busy", lambda: True)
+    assert client.get("/health").json()["busy"] is True

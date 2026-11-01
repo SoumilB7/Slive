@@ -67,20 +67,12 @@ final class ProviderStore: ObservableObject {
 
     private let localClient = LocalModelsClient()
 
-    /// Re-read the HF cache (starts the lazy backend first).
+    /// Re-read the HF cache — from disk, without starting the backend.
     func refreshLocalCache() async {
         localLoading = true
         localError = nil
         defer { localLoading = false }
-        guard await BackendManager.shared.ensureHealthy() else {
-            localError = "Local server didn't start."
-            return
-        }
-        do {
-            localModels = try await localClient.cachedModels()
-        } catch {
-            localError = error.localizedDescription
-        }
+        localModels = await Task.detached(priority: .utility) { LocalCachedModel.scanCache() }.value
     }
 
     /// Download `repoID` into the standard HF cache via the backend, polling the

@@ -18,6 +18,41 @@ struct LocalCachedModel: Identifiable, Decodable, Equatable {
     }
 }
 
+extension LocalCachedModel {
+    /// The model repos in the Hugging Face cache, largest first — read straight
+    /// from disk, so the Models page never starts the Python server just to
+    /// list what's downloaded (it used to, and the server then stayed up).
+    /// Same inventory as the backend's `scan_cache_dir`: size = the repo's blobs.
+    nonisolated static func scanCache() -> [LocalCachedModel] {
+        let env = ProcessInfo.processInfo.environment
+        let root: URL
+        if let hub = env["HF_HUB_CACHE"], !hub.isEmpty {
+            root = URL(fileURLWithPath: hub)
+        } else if let home = env["HF_HOME"], !home.isEmpty {
+            root = URL(fileURLWithPath: home).appendingPathComponent("hub")
+        } else {
+            root = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cache/huggingface/hub")
+        }
+        let fm = FileManager.default
+        guard let repos = try? fm.contentsOfDirectory(atPath: root.path) else { return [] }
+        var models: [LocalCachedModel] = []
+        for dir in repos where dir.hasPrefix("models--") {
+            let repoID = dir.dropFirst("models--".count).replacingOccurrences(of: "--", with: "/")
+            let blobs = root.appendingPathComponent(dir).appendingPathComponent("blobs")
+            var size: Int64 = 0
+            var files = 0
+            for name in (try? fm.contentsOfDirectory(atPath: blobs.path)) ?? [] {
+                let attrs = try? fm.attributesOfItem(atPath: blobs.appendingPathComponent(name).path)
+                size += (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                files += 1
+            }
+            models.append(LocalCachedModel(repo_id: repoID, size_bytes: size, nb_files: files))
+        }
+        return models.sorted { $0.size_bytes > $1.size_bytes }
+    }
+}
+
 /// State of a background download job on the backend.
 struct LocalDownloadJob: Decodable {
     let id: String
