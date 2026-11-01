@@ -241,7 +241,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             default: whisper.select(Settings.shared.continuousModel)
             }
         }
+        if continuousOn { downloadContinuousModelIfNeeded() }
         whisper.applySpeedTier()   // arm (or disarm) the Feather-tier idle unload
+    }
+
+    /// Continuous mode is on (a shortcut is set) but its model was never
+    /// downloaded — fetch it. Turning continuous on IS asking for it.
+    private func downloadContinuousModelIfNeeded() {
+        let model = Settings.shared.continuousModel
+        guard !whisper.isDownloaded(model) else { return }
+        if case .downloading = whisper.status(for: model) { return }
+        Log.event("continuous model \(model) not downloaded — downloading it")
+        Task { await whisper.download(model) }
     }
 
     /// A downloaded Parakeet model to dictate on while a Whisper pick compiles
@@ -696,12 +707,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseWorkItem?.cancel(); collapseWorkItem = nil
 
         // Streaming can't wait on a first-time model load — it needs one in
-        // memory now. If none is ready, tell the user and kick off a load.
-        let streamModel = whisper.servingModel(wanted: Settings.shared.continuousModel,
-                                               fallback: servingContinuousModel)
+        // memory now. A fresh install's continuous model (Parakeet) isn't even
+        // downloaded, and nothing downloaded it: every press said "Loading
+        // model" forever. So fetch it, and stream meanwhile on whatever IS
+        // loaded — the previous continuous model, else the dictation model.
+        let wanted = Settings.shared.continuousModel
+        downloadContinuousModelIfNeeded()
+        let fallback = [servingContinuousModel, servingDictationModel]
+            .compactMap { $0 }.first { whisper.isReady($0) }
+        let streamModel = whisper.servingModel(wanted: wanted, fallback: fallback)
         guard whisper.isReady(streamModel) else {
-            whisper.select(Settings.shared.continuousModel)
-            let msg = "Loading model. Try again shortly."
+            whisper.select(wanted)
+            let msg: String
+            if case .downloading(let p) = whisper.status(for: wanted) {
+                msg = "Downloading model · \(Int(p * 100))%. Try again shortly."
+            } else {
+                msg = "Loading model. Try again shortly."
+            }
             model.showResult(msg)
             overlay.show()
             overlay.resize(to: OverlayMetrics.panelSize(for: msg))
