@@ -58,7 +58,8 @@ enum CustomWhisperModelRegistry {
     }
 
     /// The installed model in `folder` (its manifest.json), or nil when the
-    /// manifest is unreadable or a model file is missing.
+    /// manifest is unreadable, a model file is missing or there's no local
+    /// tokenizer.
     static func model(in folder: URL) -> CustomWhisperModel? {
         let manifest = folder.appendingPathComponent("manifest.json")
         guard let data = try? Data(contentsOf: manifest) else { return nil }
@@ -70,8 +71,22 @@ enum CustomWhisperModelRegistry {
               ["AudioEncoder", "TextDecoder", "MelSpectrogram"].allSatisfy({
                   FileManager.default.fileExists(
                     atPath: model.modelFolder.appendingPathComponent("\($0).mlmodelc").path)
-              })
+              }),
+              hasLocalTokenizer(model.tokenizerFolder)
         else { return nil }
         return model
+    }
+
+    /// WhisperKit resolves a local tokenizer only at
+    /// `<tokenizerFolder>/models/<org>/<repo>/tokenizer.json`; anything else
+    /// becomes a Hugging Face download on every load (and fails offline).
+    static func hasLocalTokenizer(_ tokenizerFolder: URL) -> Bool {
+        let fm = FileManager.default
+        let models = tokenizerFolder.appendingPathComponent("models", isDirectory: true)
+        let orgs = (try? fm.contentsOfDirectory(at: models, includingPropertiesForKeys: nil)) ?? []
+        return orgs.contains { org in
+            let repos = (try? fm.contentsOfDirectory(at: org, includingPropertiesForKeys: nil)) ?? []
+            return repos.contains { fm.fileExists(atPath: $0.appendingPathComponent("tokenizer.json").path) }
+        }
     }
 }

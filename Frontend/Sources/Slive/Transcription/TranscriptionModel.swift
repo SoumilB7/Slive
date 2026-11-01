@@ -3,7 +3,18 @@ import CoreML
 import Foundation
 import WhisperKit
 
-private struct TimeoutError: Error {}
+struct TimeoutError: Error {}
+/// A download that made no progress for the watchdog's window.
+private struct StallError: Error {}
+
+/// Stamped by a download's progress callback (any thread); read by its
+/// stall watchdog.
+private final class ProgressClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date()
+    func tick() { lock.lock(); last = Date(); lock.unlock() }
+    var idleSeconds: TimeInterval { lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(last) }
+}
 
 /// Set when a model load finishes (MainActor-only).
 @MainActor private final class LoadFlag { var done = false }
@@ -38,20 +49,45 @@ private final class TimeoutRace<T>: @unchecked Sendable {
 /// failure, a retry may be under way, and Re-download may have deleted the
 /// files it loaded. The retry is cheap by then — the compile it finished is
 /// cached by the OS.
-private func withTimeout<T>(seconds: UInt64,
-                            _ operation: @escaping () async throws -> T) async throws -> T {
+///
+/// Decodes and warm-ups use it too: a Core ML predict that never returns
+/// held `beginDecode` (and every dictation queued behind it) forever.
+func withTimeout<T>(seconds: UInt64, what: String = "model load",
+                    _ operation: @escaping () async throws -> T) async throws -> T {
+    try await race(what: what, operation) { race in
+        try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+        if !Task.isCancelled { _ = race.finish(.failure(TimeoutError())) }
+    }
+}
+
+/// Run a download, failing with `StallError` once `clock` hasn't ticked for
+/// `seconds`. Neither HubApi nor FluidAudio can be cancelled mid-file and a
+/// dead connection doesn't always error — Settings sat on "Downloading 37%"
+/// forever. Same abandon-don't-stop race as `withTimeout`; a late finisher's
+/// files are kept (the next download resumes from them).
+private func withStallWatchdog<T>(seconds: TimeInterval, clock: ProgressClock,
+                                  _ operation: @escaping () async throws -> T) async throws -> T {
+    try await race(what: "download", operation) { race in
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if !Task.isCancelled, clock.idleSeconds > seconds { _ = race.finish(.failure(StallError())); return }
+        }
+    }
+}
+
+/// `operation` against `watchdog` (which fails the race when it fires); the
+/// watchdog is cancelled once the operation finishes.
+private func race<T>(what: String, _ operation: @escaping () async throws -> T,
+                     watchdog: @escaping (TimeoutRace<T>) async -> Void) async throws -> T {
     try await withCheckedThrowingContinuation { continuation in
         let race = TimeoutRace(continuation)
-        let timer = Task {
-            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            if !Task.isCancelled { _ = race.finish(.failure(TimeoutError())) }
-        }
+        let timer = Task { await watchdog(race) }
         Task {
             do {
                 let value = try await operation()
                 timer.cancel()
                 if !race.finish(.success(value)) {
-                    Log.event("model load finished after its timeout — result discarded")
+                    Log.event("\(what) finished after its timeout — result discarded")
                 }
             } catch {
                 timer.cancel()
@@ -199,17 +235,90 @@ final class TranscriptionModel: ObservableObject {
 
     /// Available without a download — bundled OR on disk.
     func isDownloaded(_ model: String) -> Bool {
+        // A download that hasn't finished (still running, stalled, or the app
+        // quit mid-way) leaves its marker: its folder may already hold an
+        // AudioEncoder, which once made a partial download look complete.
+        if FileManager.default.fileExists(atPath: pendingMarker(model).path) { return false }
         if case .parakeet(let p) = SpeechEngine.of(model) {
             return ParakeetEngine.isDownloaded(p, basket: basket)
         }
         refreshCustomModels()
         if customModel(model) != nil { return true }
         if bundledModelFolder(model) != nil { return true }
-        guard let subs = try? FileManager.default.contentsOfDirectory(
-            at: modelsRoot, includingPropertiesForKeys: nil) else { return false }
-        return subs.contains { f in
-            f.lastPathComponent.hasSuffix(model)
-                && FileManager.default.fileExists(atPath: f.appendingPathComponent("AudioEncoder.mlmodelc").path)
+        guard let folder = downloadedFolder(model) else { return false }
+        // Downloads made before the completion marker existed count when
+        // every model file and the tokenizer are on disk.
+        return FileManager.default.fileExists(atPath: folder.appendingPathComponent(Self.completeMarker).path)
+            || isStructurallyComplete(folder)
+    }
+
+    /// Written into a model's folder once its download (+ tokenizer) finished.
+    private static let completeMarker = ".slive-complete"
+
+    /// Exists while `model`'s download is unfinished.
+    private func pendingMarker(_ model: String) -> URL {
+        basket.appendingPathComponent(".downloading-\(model)")
+    }
+
+    /// `model`'s folder in the basket, matched by exact name.
+    private func downloadedFolder(_ model: String) -> URL? {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: modelsRoot.path)) ?? []
+        return Self.folderName(for: model, among: names).map { modelsRoot.appendingPathComponent($0) }
+    }
+
+    /// WhisperKit names a variant's folder `openai_whisper-<variant>` (or
+    /// `<org>_<variant>` for others). A suffix match once tied "large-v3" to
+    /// distil-large-v3's folder too — so a partial one could pass for the
+    /// other, and Re-download deleted both.
+    nonisolated static func folderName(for model: String, among names: [String]) -> String? {
+        if names.contains("openai_whisper-\(model)") { return "openai_whisper-\(model)" }
+        if names.contains(model) { return model }
+        let others = names.filter { $0.hasSuffix("_\(model)") }
+        return others.count == 1 ? others[0] : nil
+    }
+
+    /// The three Core ML models WhisperKit can't load without.
+    private static let requiredModels = ["AudioEncoder", "TextDecoder", "MelSpectrogram"]
+
+    /// Every model file, config.json (in Hugging Face's path order it comes
+    /// after the .mlmodelc folders, so it's among the last files fetched) and
+    /// the tokenizer it names, which the load resolves locally.
+    private func isStructurallyComplete(_ folder: URL) -> Bool {
+        let fm = FileManager.default
+        guard Self.requiredModels.allSatisfy({
+            fm.fileExists(atPath: folder.appendingPathComponent("\($0).mlmodelc/coremldata.bin").path)
+        }), let variant = Self.whisperVariant(configAt: folder) else { return false }
+        return fm.fileExists(atPath: tokenizerFile(variant).path)
+    }
+
+    /// Where WhisperKit looks for `variant`'s tokenizer under the basket.
+    private func tokenizerFile(_ variant: ModelVariant) -> URL {
+        basket.appendingPathComponent("models/openai/whisper-\(variant.description)/tokenizer.json")
+    }
+
+    /// The variant (→ tokenizer) WhisperKit will detect for the model in
+    /// `folder`, read from its config.json — nil when there is none.
+    private nonisolated static func whisperVariant(configAt folder: URL) -> ModelVariant? {
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent("config.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let vocab = json["vocab_size"] as? Int, let width = json["d_model"] as? Int else { return nil }
+        return whisperVariant(vocabSize: vocab, dModel: width)
+    }
+
+    /// WhisperKit's own detection (logits size × encoder width), mirrored so
+    /// the download can fetch the tokenizer the load will ask for.
+    nonisolated static func whisperVariant(vocabSize: Int, dModel: Int) -> ModelVariant {
+        switch (vocabSize, dModel) {
+        case (51866, _): return .largev3
+        case (51865, 384): return .tiny
+        case (51865, 768): return .small
+        case (51865, 1024): return .medium
+        case (51865, 1280): return .largev2
+        case (51864, 384): return .tinyEn
+        case (51864, 768): return .smallEn
+        case (51864, 1024): return .mediumEn
+        case (51864, _): return .baseEn
+        default: return .base
         }
     }
 
@@ -217,10 +326,8 @@ final class TranscriptionModel: ObservableObject {
         if case .parakeet(let p) = SpeechEngine.of(model) {
             ParakeetEngine.remove(p, basket: basket); return
         }
-        guard customModel(model) == nil else { return }
-        guard let subs = try? FileManager.default.contentsOfDirectory(
-            at: modelsRoot, includingPropertiesForKeys: nil) else { return }
-        for f in subs where f.lastPathComponent.hasSuffix(model) { try? FileManager.default.removeItem(at: f) }
+        guard customModel(model) == nil, let folder = downloadedFolder(model) else { return }
+        try? FileManager.default.removeItem(at: folder)
     }
 
     // MARK: - Memory management
@@ -481,13 +588,16 @@ final class TranscriptionModel: ObservableObject {
     /// the streaming loop never processed (it only runs on >1s of new buffer).
     /// `model` is explicit so this still works after `stopLiveDictation()`.
     func transcribeSamples(_ samples: [Float], model: String) async -> String? {
+        let limit = Self.decodeTimeoutSeconds(audioSeconds: Double(samples.count) / 16_000)
         if let engine = parakeets[model] {
             guard samples.count > 16_000 / 3 else { return nil }
             lastDecodeAt = Date()
             await beginDecode(model)
             defer { endDecode(model) }
             let t0 = Date()
-            guard let text = try? await engine.transcribe(samples) else { return nil }
+            guard let text = try? await withTimeout(seconds: limit, what: "decode", {
+                try await engine.transcribe(samples)
+            }) else { return nil }
             Self.recordDecode(model: model, audioSeconds: Double(samples.count) / 16_000,
                               decodeSeconds: Date().timeIntervalSince(t0))
             return text
@@ -497,15 +607,23 @@ final class TranscriptionModel: ObservableObject {
         await beginDecode(model)   // t0 after: the calibration measures this decode only
         defer { endDecode(model) }
         let t0 = Date()
-        let results: [TranscriptionResult]? =
-            try? await pipe.transcribe(audioArray: samples,
-                                       decodeOptions: decodeOptions(chunking: true))
+        let options = decodeOptions(chunking: true)
+        let results: [TranscriptionResult]? = try? await withTimeout(seconds: limit, what: "decode") {
+            try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+        }
         guard let results else { return nil }
         // Pure decode on a resident pipe — the only honest calibration source.
         Self.recordDecode(model: model,
                           audioSeconds: Double(samples.count) / 16_000,
                           decodeSeconds: Date().timeIntervalSince(t0))
         return Self.cleanStreamText(results.map { $0.text }.joined())
+    }
+
+    /// A decode that hasn't returned by now never will: 60s plus twice the
+    /// audio covers a long hold on a CPU copy of large-v3. Past it the
+    /// dictation reports a failure instead of holding the queue forever.
+    nonisolated static func decodeTimeoutSeconds(audioSeconds: Double) -> UInt64 {
+        60 + UInt64(max(0, audioSeconds) * 2)
     }
 
     /// Dev benchmarks set this to control warm-up themselves (never set by the app).
@@ -537,9 +655,31 @@ final class TranscriptionModel: ObservableObject {
     }
     private var dictationsWaiting: [String: Int] = [:]
 
+    /// When each model's last load failed (cleared on success or a
+    /// Download / Re-download).
+    private var failedLoadAt: [String: Date] = [:]
+    /// After a failed load, holds don't start another for this long: each
+    /// retry was a fresh up-to-600s wait, and a timed-out load can't be
+    /// stopped — every hold stacked another one in RAM.
+    nonisolated static let failedLoadCooldownSeconds: TimeInterval = 300
+
+    nonisolated static func inCooldown(failedAt: Date?, now: Date = Date()) -> Bool {
+        failedAt.map { now.timeIntervalSince($0) < failedLoadCooldownSeconds } ?? false
+    }
+
+    /// `model` failed to load recently — don't start another load yet.
+    func isCoolingDown(_ model: String) -> Bool { Self.inCooldown(failedAt: failedLoadAt[model]) }
+
+    /// A dictation waiting on `model` will get it: it's loaded, loading, or
+    /// downloaded with no recent failure (`awaitReady` starts the load).
+    func canBecomeReady(_ model: String) -> Bool {
+        isResident(model) || loadTasks[model] != nil || (isDownloaded(model) && !isCoolingDown(model))
+    }
+
     /// Start `model`'s load, or join the one already running.
     private func loadShared(_ model: String) async {
         if let running = loadTasks[model] { await running.value; return }
+        guard !isCoolingDown(model) else { return }
         // The task clears its own entry before anyone it wakes runs, so no
         // waiter (e.g. `redownload`) can find and re-join a finished load.
         let task = Task {
@@ -716,9 +856,11 @@ final class TranscriptionModel: ObservableObject {
     private func runWarmUp(_ model: String, _ decode: @escaping () async -> Void) {
         warmUps[model] = Task {
             let t0 = Date()
-            await decode()
+            // Bounded: a real decode waits on this (`beginDecode`).
+            let done = (try? await withTimeout(seconds: 60, what: "warm-up", decode)) != nil
             warmUps[model] = nil
-            Log.stt(String(format: "warmed %@ in %.2fs", model, Date().timeIntervalSince(t0)))
+            Log.stt(String(format: "warm-up of %@ %@ after %.2fs", model,
+                           done ? "done" : "TIMED OUT", Date().timeIntervalSince(t0)))
         }
     }
 
@@ -818,6 +960,13 @@ final class TranscriptionModel: ObservableObject {
         refreshCustomModels()
         if isResident(model) { statuses[model] = .ready; return }
         if loadingModels.contains(model) { return }        // already preparing
+        // A running download owns the status, and a failure stays on screen
+        // (with its Re-download) until the user acts or the cooldown ends.
+        switch status(for: model) {
+        case .downloading: return
+        case .failed where isCoolingDown(model) || !isDownloaded(model): return
+        default: break
+        }
         if isDownloaded(model) {
             // Mark it preparing NOW, not when the Task gets to run: callers
             // (AppDelegate's dictation-first ordering) read the status right
@@ -829,38 +978,102 @@ final class TranscriptionModel: ObservableObject {
         }
     }
 
+    /// A picker's status for `model` without loading it (a section that's
+    /// switched off). Downloaded reads Ready, as for a Feather-released model
+    /// — one hold away.
+    func refreshStatus(_ model: String) {
+        refreshCustomModels()
+        if isResident(model) { statuses[model] = .ready; return }
+        switch status(for: model) {
+        case .downloading, .preparing, .failed: return
+        default: statuses[model] = isDownloaded(model) ? .ready : .notDownloaded
+        }
+    }
+
+    /// The one in-flight download per model: Turn on, Download and the
+    /// continuous auto-fetch all join it instead of racing a second copy.
+    private var downloadTasks: [String: Task<Bool, Never>] = [:]
+    /// No progress for this long fails the download.
+    nonisolated static let downloadStallSeconds: TimeInterval = 60
+
     /// Download (if needed) then load `model`, reporting progress.
     func download(_ model: String) async {
+        failedLoadAt[model] = nil   // asking again is an explicit retry
         refreshCustomModels()
         if customModel(model) != nil { await loadShared(model); return }
         if isResident(model) { statuses[model] = .ready; return }
-        if case .parakeet(let p) = SpeechEngine.of(model), !isDownloaded(model) {
-            statuses[model] = .downloading(0)
-            do {
-                try await ParakeetEngine.download(p, basket: basket) { [weak self] fraction in
-                    Task { @MainActor in self?.statuses[model] = .downloading(fraction) }
-                }
-            } catch {
-                statuses[model] = .failed("Download failed: \(error.localizedDescription)")
-                return
-            }
-        } else if !isDownloaded(model) {
-            statuses[model] = .downloading(0)
-            do {
-                _ = try await WhisperKit.download(variant: model, downloadBase: basket) { [weak self] p in
-                    Task { @MainActor in self?.statuses[model] = .downloading(p.fractionCompleted) }
-                }
-            } catch {
-                statuses[model] = .failed("Download failed: \(error.localizedDescription)")
-                return
+        guard await fetch(model) else { return }
+        if !isResident(model) { statuses[model] = .preparing("Loading") }
+        await loadShared(model)
+    }
+
+    /// Download `model` if it isn't on disk (no load). True when it is.
+    func fetch(_ model: String) async -> Bool {
+        if let running = downloadTasks[model] { return await running.value }
+        if isDownloaded(model) { return true }
+        statuses[model] = .downloading(0)
+        let task = Task { () -> Bool in
+            let ok = await self.performDownload(model)
+            self.downloadTasks[model] = nil
+            return ok
+        }
+        downloadTasks[model] = task
+        return await task.value
+    }
+
+    private func performDownload(_ model: String) async -> Bool {
+        let pending = pendingMarker(model)
+        FileManager.default.createFile(atPath: pending.path, contents: nil)
+        let clock = ProgressClock()
+        // A late progress tick must not drag a failed or loading model back
+        // to "Downloading".
+        let report: @Sendable (Double) -> Void = { [weak self] fraction in
+            clock.tick()
+            Task { @MainActor in
+                guard let self, case .downloading = self.statuses[model] else { return }
+                self.statuses[model] = .downloading(fraction)
             }
         }
-        await loadShared(model)
+        do {
+            if case .parakeet(let p) = SpeechEngine.of(model) {
+                try await withStallWatchdog(seconds: Self.downloadStallSeconds, clock: clock) { [basket] in
+                    try await ParakeetEngine.download(p, basket: basket, progress: report)
+                }
+            } else {
+                let basket = self.basket
+                let folder = try await withStallWatchdog(seconds: Self.downloadStallSeconds, clock: clock) {
+                    let folder = try await WhisperKit.download(variant: model, downloadBase: basket) {
+                        report($0.fractionCompleted)
+                    }
+                    // The tokenizer too: the load resolves it locally, so a
+                    // downloaded model then loads with no network at all.
+                    clock.tick()
+                    if let variant = Self.whisperVariant(configAt: folder) {
+                        _ = try await loadTokenizer(for: variant, tokenizerFolder: basket)
+                    }
+                    return folder
+                }
+                FileManager.default.createFile(
+                    atPath: folder.appendingPathComponent(Self.completeMarker).path, contents: nil)
+            }
+            try? FileManager.default.removeItem(at: pending)
+            statuses[model] = .ready   // on disk, one select away (see `refreshStatus`)
+            return true
+        } catch is StallError {
+            Log.event("download of \(model) stalled — no progress for \(Int(Self.downloadStallSeconds))s")
+            statuses[model] = .failed("Download stalled. Check your connection.")
+        } catch {
+            statuses[model] = .failed("Download failed: \(error.localizedDescription)")
+        }
+        return false
     }
 
     /// Delete the on-disk copy and fetch fresh (recovers a stale/partial download).
     func redownload(_ model: String) async {
+        failedLoadAt[model] = nil
         if customModel(model) != nil { await loadShared(model); return }
+        // Never delete files under a download that's still running.
+        if downloadTasks[model] != nil { await download(model); return }
         // Let an in-flight load of this model finish first: deleting its
         // files under it and then JOINING it (download → loadShared) left
         // the stale load's outcome standing in for the fresh one. Bounded by
@@ -888,6 +1101,15 @@ final class TranscriptionModel: ObservableObject {
         let bundled = bundledModelFolder(model)
         let custom = customModel(model)
         let tokenizerRoot = custom?.tokenizerFolder ?? (bundled != nil ? bundledTokenizerRoot : basket)
+        // A downloaded model loads from its folder with downloads off. With
+        // download: true WhisperKit asked Hugging Face for the file list on
+        // EVERY load — offline, a downloaded model failed to load at all.
+        let downloaded = custom == nil && bundled == nil ? downloadedFolder(model) : nil
+        if custom == nil, bundled == nil, downloaded == nil {
+            loadingModels.remove(model)
+            statuses[model] = .notDownloaded
+            return
+        }
         // Encoder + decoder on the Neural Engine (fastest — `--bench-compute`:
         // GPU/CPU are ~3× slower per token). The mel spectrogram on the CPU:
         // WhisperKit's default puts it on the GPU, whose compiled MPSGraph
@@ -906,9 +1128,9 @@ final class TranscriptionModel: ObservableObject {
                                           tokenizerFolder: tokenizerRoot, computeOptions: compute,
                                           prewarm: false, load: false, download: false)
             } else {
-                return WhisperKitConfig(model: model, downloadBase: basket,
+                return WhisperKitConfig(model: model, modelFolder: downloaded?.path,
                                           tokenizerFolder: tokenizerRoot, computeOptions: compute,
-                                          prewarm: false, load: false, download: true)
+                                          prewarm: false, load: false, download: false)
             }
         }
         let config = makeConfig(ModelComputeOptions(melCompute: .cpuOnly))
@@ -917,8 +1139,10 @@ final class TranscriptionModel: ObservableObject {
         // Nov 5: a fresh install sat on "Loading…" ~20 min) shouldn't block
         // dictation: after a grace period, load a CPU copy (no compile, ready
         // in seconds) and serve from it; the Neural Engine copy replaces it.
+        let cpuCopyAfter = Self.cpuCopyDelay(model: custom?.baseModel ?? model,
+                                             physicalMemory: ProcessInfo.processInfo.physicalMemory)
         let cpuCopy = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.cpuCopyAfterSeconds * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(cpuCopyAfter * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             await self.loadCPUCopy(model, config: makeConfig(ModelComputeOptions(
                 melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly,
@@ -951,6 +1175,7 @@ final class TranscriptionModel: ObservableObject {
             let replacedCPUCopy = pipes[model] != nil
             pipes[model] = p
             loadingModels.remove(model)
+            failedLoadAt[model] = nil
             if replacedCPUCopy { Log.event("\(model): Neural Engine copy ready — replaced the CPU copy") }
             lastDecodeAt = Date()   // a fresh load is use — Feather keeps it its full window
             noteLoaded(model, seconds: Date().timeIntervalSince(t0))
@@ -972,6 +1197,7 @@ final class TranscriptionModel: ObservableObject {
                 return
             }
             Log.event("model load TIMED OUT: \(model)")
+            failedLoadAt[model] = Date()
             statuses[model] = .failed("Timed out. Re-download or pick smaller.")
             Log.stt("TIMEOUT loading \(model)")
         } catch {
@@ -981,6 +1207,7 @@ final class TranscriptionModel: ObservableObject {
                 statuses[model] = .ready
                 return
             }
+            failedLoadAt[model] = Date()
             statuses[model] = .failed(error.localizedDescription)
             Log.stt("FAILED loading \(model) — \(error)")
             NSLog("Slive: WhisperKit load failed — \(error)")
@@ -992,6 +1219,15 @@ final class TranscriptionModel: ObservableObject {
     /// healthy cold large-v3 turbo compile (~80s) gets the CPU copy too.
     nonisolated static var cpuCopyAfterSeconds: Double {
         ProcessInfo.processInfo.environment["SLIVE_CPU_COPY_AFTER"].flatMap(Double.init) ?? 20
+    }
+
+    /// A CPU copy sits in RAM beside the Neural Engine one while it compiles.
+    /// For a large model on an 8 GB Mac that's ~1.5 GB more on top — swap,
+    /// and both loads slow down — so there it waits longer for the Neural
+    /// Engine (a normal cold compile is ~2 min). Never skipped: a compile
+    /// that hangs must still end in a working model, not a 10-minute failure.
+    nonisolated static func cpuCopyDelay(model: String, physicalMemory: UInt64) -> Double {
+        model.contains("large") && physicalMemory <= 8 << 30 ? max(cpuCopyAfterSeconds, 150) : cpuCopyAfterSeconds
     }
 
     /// Load `model` CPU-only and serve from it while its Neural Engine load is
@@ -1020,6 +1256,7 @@ final class TranscriptionModel: ObservableObject {
             }
             parakeets[model] = engine
             loadingModels.remove(model)
+            failedLoadAt[model] = nil
             lastDecodeAt = Date()
             noteLoaded(model, seconds: Date().timeIntervalSince(t0))
             statuses[model] = .ready
@@ -1029,9 +1266,11 @@ final class TranscriptionModel: ObservableObject {
                dictationsWaiting[model, default: 0] == 0 { warmUp(model) }
         } catch is TimeoutError {
             loadingModels.remove(model)
+            failedLoadAt[model] = Date()
             statuses[model] = .failed("Timed out. Re-download.")
         } catch {
             loadingModels.remove(model)
+            failedLoadAt[model] = Date()
             statuses[model] = .failed(error.localizedDescription)
             NSLog("Slive: Parakeet load failed — \(error)")
         }
@@ -1059,11 +1298,15 @@ final class TranscriptionModel: ObservableObject {
         lastDecodeAt = Date()
         await beginDecode(model)
         defer { endDecode(model) }
+        let seconds = (try? AVAudioFile(forReading: url)).map {
+            Double($0.length) / max(1, $0.processingFormat.sampleRate)
+        } ?? 300
+        let options = decodeOptions(chunking: true)
         do {
-            let results = try await pipe.transcribe(
-                audioPath: url.path,
-                decodeOptions: decodeOptions(chunking: true)
-            )
+            let results = try await withTimeout(
+                seconds: Self.decodeTimeoutSeconds(audioSeconds: seconds), what: "decode") {
+                try await pipe.transcribe(audioPath: url.path, decodeOptions: options)
+            }
             return results
                 .map { $0.text }
                 .joined(separator: " ")

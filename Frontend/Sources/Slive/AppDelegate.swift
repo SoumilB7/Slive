@@ -251,13 +251,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Continuous mode is on (a shortcut is set) but its model was never
-    /// downloaded — fetch it. Turning continuous on IS asking for it.
-    private func downloadContinuousModelIfNeeded() {
+    /// downloaded — fetch it. Turning continuous on IS asking for it. A
+    /// failed download is retried only on `retryFailed` (a live-typing
+    /// press): settings refreshes would restart it nonstop and hide the
+    /// failure. True when a download is running or was just started.
+    @discardableResult
+    private func downloadContinuousModelIfNeeded(retryFailed: Bool = false) -> Bool {
         let model = Settings.shared.continuousModel
-        guard !whisper.isDownloaded(model) else { return }
-        if case .downloading = whisper.status(for: model) { return }
+        guard !whisper.isDownloaded(model) else { return false }
+        switch whisper.status(for: model) {
+        case .downloading: return true
+        case .failed where !retryFailed: return false
+        default: break
+        }
         Log.event("continuous model \(model) not downloaded — downloading it")
         Task { await whisper.download(model) }
+        return true
     }
 
     /// A downloaded Parakeet model to dictate on while a Whisper pick compiles
@@ -555,8 +564,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Released while the model is still being prepared (first launch, or
         // macOS purged its compiled-model cache — a minute or two): say so
         // instead of silent "processing" dots. The dictation is kept and
-        // types the moment the model is ready, replacing this box.
-        if !modelReady {
+        // types the moment the model is ready, replacing this box. Only
+        // promised when a load is running or will start: a model that isn't
+        // downloaded or just failed gets its reason from handleNoTranscript.
+        if !modelReady, whisper.canBecomeReady(whisperModel) {
             let msg = "Loading model. Text will follow."
             model.showResult(msg)
             overlay.resize(to: OverlayMetrics.panelSize(for: msg))
@@ -732,16 +743,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // model" forever. So fetch it, and stream meanwhile on whatever IS
         // loaded — the previous continuous model, else the dictation model.
         let wanted = Settings.shared.continuousModel
-        downloadContinuousModelIfNeeded()
+        let fetching = downloadContinuousModelIfNeeded(retryFailed: true)
         let fallback = [servingContinuousModel, servingDictationModel]
             .compactMap { $0 }.first { whisper.isReady($0) }
         let streamModel = whisper.servingModel(wanted: wanted, fallback: fallback)
         guard whisper.isReady(streamModel) else {
             whisper.select(wanted)
+            // The real state: a failed model said "Loading" forever.
             let msg: String
-            if case .downloading(let p) = whisper.status(for: wanted) {
+            switch whisper.status(for: wanted) {
+            case .downloading(let p):
                 msg = "Downloading model · \(Int(p * 100))%. Try again shortly."
-            } else {
+            case _ where fetching:
+                msg = "Downloading model. Try again shortly."
+            case .failed(let e):
+                msg = "Model failed: \(e)"
+            default:
                 msg = "Loading model. Try again shortly."
             }
             model.showResult(msg)
@@ -912,9 +929,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func handleNoTranscript(afterWaiting: Bool = false) {
         endDictationActivityIfIdle()
         Log.event("no transcript\(afterWaiting ? " after waiting for the model" : "")")
-        if afterWaiting {
+        let serving = whisper.servingModel(wanted: Settings.shared.whisperModel,
+                                           fallback: servingDictationModel)
+        if afterWaiting, whisper.isReady(serving) || whisper.status(for: serving) == .ready {
             // Never drop a real dictation silently: it had speech, it waited
-            // for the model, and still came back empty.
+            // for the model, and still came back empty. (A model that never
+            // became ready says why below instead.)
             let msg = "Missed that. Please repeat."
             model.showResult(msg)
             overlay.resize(to: OverlayMetrics.panelSize(for: msg))
@@ -923,8 +943,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let message: String?
-        switch whisper.status(for: whisper.servingModel(wanted: Settings.shared.whisperModel,
-                                                        fallback: servingDictationModel)) {
+        switch whisper.status(for: serving) {
         case .notDownloaded:
             message = "Model not downloaded. Open Settings."
         case .downloading(let p):

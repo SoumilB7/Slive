@@ -453,34 +453,65 @@ struct ModelPickerCard: View {
 
 /// A fresh install dictates on the bundled tiny.en, which is far less
 /// accurate. Point straight at large-v3 turbo ("Balanced") — not the
-/// in-between sizes. Tapping Download selects it; tiny keeps serving until
-/// it's ready.
+/// in-between sizes. The pick switches only once the download finished — a
+/// failed or partial one never leaves dictation pointed at a model that
+/// can't load; tiny keeps serving until turbo is ready.
 struct BalancedSuggestion: View {
     @ObservedObject private var transcription = TranscriptionModel.shared
     @Binding var model: String
+    @AppStorage("balancedSuggestionDismissed") private var dismissed = false
     static let balanced = "large-v3-v20240930_626MB"
 
     var body: some View {
-        if ["tiny.en", "base.en"].contains(model), !transcription.isDownloaded(Self.balanced) {
+        if ["tiny.en", "base.en"].contains(model), !dismissed, !transcription.isDownloaded(Self.balanced) {
             HStack(spacing: 10) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(SliveTheme.accent)
-                Text("Whisper – large-v3 turbo is far more accurate · 600 MB")
-                    .font(SliveTheme.captionFont)
-                    .foregroundStyle(SliveTheme.textSecondary)
-                Spacer(minLength: 0)
-                Button("Download") {
-                    model = Self.balanced
-                    Task { await transcription.download(Self.balanced) }
+                switch transcription.status(for: Self.balanced) {
+                case .downloading(let p):
+                    Text("Downloading large-v3 turbo")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textSecondary)
+                    ProgressView(value: p).frame(maxWidth: .infinity)
+                    Text("\(Int(p * 100))%")
+                        .font(SliveTheme.mono(12))
+                        .foregroundStyle(SliveTheme.accent)
+                        .fixedSize()
+                case .failed(let e):
+                    Text(e)
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(.orange.opacity(0.9))
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    downloadButton("Retry")
+                default:
+                    Text("Whisper – large-v3 turbo is far more accurate · 600 MB")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textSecondary)
+                    Spacer(minLength: 0)
+                    downloadButton("Download")
+                    Button("Not now") { dismissed = true }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .fixedSize()
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(SliveTheme.accent)
-                .fixedSize()
             }
             .padding(10)
             .innerWell()
         }
+    }
+
+    private func downloadButton(_ title: String) -> some View {
+        Button(title) {
+            let binding = $model
+            Task {
+                if await transcription.fetch(Self.balanced) { binding.wrappedValue = Self.balanced }
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(SliveTheme.accent)
+        .fixedSize()
     }
 }
 

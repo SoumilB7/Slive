@@ -19,8 +19,17 @@ struct ContinuousSettingsView: View {
             )
             typingSpeedCard
         }
-        .onAppear { transcription.select(settings.continuousModel) }
-        .onChange(of: settings.continuousModel) { _, m in transcription.select(m) }
+        .onAppear { showStatus(settings.continuousModel) }
+        .onChange(of: settings.continuousModel) { _, m in showStatus(m) }
+    }
+
+    /// Load the model only while live typing is on (AppDelegate keeps it
+    /// resident then); otherwise just show its status — opening this page
+    /// used to load a second model into RAM for a feature that's off.
+    private func showStatus(_ model: String) {
+        let on = (settings.streamHoldOn && settings.streamHotkey != nil)
+            || (settings.streamToggleOn && settings.streamToggleHotkey != nil)
+        if on { transcription.select(model) } else { transcription.refreshStatus(model) }
     }
 
     // MARK: - Shortcut
