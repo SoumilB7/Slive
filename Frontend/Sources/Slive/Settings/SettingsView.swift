@@ -188,8 +188,7 @@ struct SettingsView: View {
             let size = ByteCountFormatter.string(fromByteCount: trainingStore.totalBytes, countStyle: .file)
             return ("\(trainingStore.count) sample\(trainingStore.count == 1 ? "" : "s") · \(size)", SliveTheme.textSecondary)
         case .models:
-            let n = [AssistantProvider.anthropic, .openai, .gemini, .openaiCompatible]
-                .filter { providers.hasKey($0) }.count
+            let n = ProviderCatalog.keyed.filter { providers.hasKey($0) }.count
             return (n > 0 ? "\(n) connected" : "None connected", n > 0 ? SliveTheme.textSecondary : SliveTheme.warn)
         default: return (nil, SliveTheme.textSecondary)
         }

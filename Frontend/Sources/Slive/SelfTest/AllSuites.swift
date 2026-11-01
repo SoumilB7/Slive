@@ -6,6 +6,7 @@ enum AllSuites {
         HotkeyModelTests.suite,
         HotkeyMatchingTests.suite,
         ProviderTests.suite,
+        CatalogAndStorageTests.suite,
         SpeedTierTests.suite,
         VocabHintTests.suite,
         BackendErrorTests.suite,

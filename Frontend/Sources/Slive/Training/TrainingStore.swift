@@ -69,13 +69,14 @@ final class TrainingStore: ObservableObject {
     private let root: URL
     private let audioDir: URL
     private let indexFile: URL
+    /// The append-only sample index (`samples.jsonl`).
+    private let index: JSONLFileStore<EditSample>
 
     private init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        root = base.appendingPathComponent("Slive/training", isDirectory: true)
+        root = AppSupport.trainingDirectory
         audioDir = root.appendingPathComponent("audio", isDirectory: true)
         indexFile = root.appendingPathComponent("samples.jsonl", isDirectory: false)
+        index = JSONLFileStore(url: indexFile, label: "training index")
         try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
         // totalBytes stays EAGER: the capture write path checks isOverLimit
         // before the Training UI ever opens, and a lazily-zero totalBytes would
@@ -90,7 +91,8 @@ final class TrainingStore: ObservableObject {
     func loadSamplesIfNeeded() {
         guard !samplesLoaded else { return }
         samplesLoaded = true
-        samples = loadSamples()
+        // Unreadable lines are copied aside once before any rewrite drops them.
+        samples = index.load()
         if latest == nil { latest = samples.last }
     }
     private var samplesLoaded = false
@@ -211,13 +213,7 @@ final class TrainingStore: ObservableObject {
     /// index copies set aside as unreadable (they hold transcripts too).
     func clearAll() {
         indexWrites.cancel()   // nothing left to flush
-        try? FileManager.default.removeItem(at: indexFile)
-        let backupPrefix = "\(indexFile.lastPathComponent).corrupt-"
-        if let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
-            for f in files where f.lastPathComponent.hasPrefix(backupPrefix) {
-                try? FileManager.default.removeItem(at: f)
-            }
-        }
+        index.removeAll()      // the index and every set-aside copy of it
         if let files = try? FileManager.default.contentsOfDirectory(at: audioDir, includingPropertiesForKeys: nil) {
             for f in files { try? FileManager.default.removeItem(at: f) }
         }
@@ -305,16 +301,9 @@ final class TrainingStore: ObservableObject {
     /// Also satisfies any pending coalesced write — it carries every change.
     private func rewriteIndex() {
         indexWrites.cancel()
-        var blob = Data()
-        for sample in samples {
-            guard let line = try? JSONEncoder.iso.encode(sample) else { continue }
-            blob.append(line)
-            blob.append(0x0A)
-        }
         let oldSize = fileSize(indexFile)
         do {
-            try blob.write(to: indexFile, options: .atomic)
-            totalBytes += Int64(blob.count) - oldSize
+            totalBytes += try index.rewrite(samples) - oldSize
         } catch {
             Log.training("index rewrite failed: \(error)")
         }
@@ -325,10 +314,8 @@ final class TrainingStore: ObservableObject {
     /// shows a sample the next launch won't find.
     func add(_ sample: EditSample) {
         do {
-            let data = try JSONEncoder.iso.encode(sample)
-            var line = data
-            line.append(0x0A)   // newline-delimited JSON
-            totalBytes += try appendToIndex(line)
+            // Append-only, with the torn-line guard (see JSONLFileStore).
+            totalBytes += try index.append(sample)
             samples.append(sample)
             latest = sample
             Log.training("stored sample #\(samples.count) (\(sample.confidence), edited=\(sample.edited))")
@@ -342,83 +329,25 @@ final class TrainingStore: ObservableObject {
 
     // MARK: - Internals
 
-    /// Append one JSONL line, returning the bytes written. A torn last line
-    /// (crash mid-append) gets a newline first, so only it stays broken —
-    /// gluing onto it would make the new sample undecodable too.
-    private func appendToIndex(_ line: Data) throws -> Int64 {
-        guard FileManager.default.fileExists(atPath: indexFile.path) else {
-            // Never overwrite here: a file that exists but failed to open
-            // must not be replaced by this one line.
-            try line.write(to: indexFile, options: .withoutOverwriting)
-            return Int64(line.count)
-        }
-        let handle = try FileHandle(forUpdating: indexFile)
-        defer { try? handle.close() }
-        let end = try handle.seekToEnd()
-        var out = line
-        if end > 0 {
-            try handle.seek(toOffset: end - 1)
-            if !Self.endsLine(try handle.read(upToCount: 1)) { out.insert(0x0A, at: 0) }
-            try handle.seekToEnd()
-        }
-        try handle.write(contentsOf: out)
-        return Int64(out.count)
-    }
+    // The index format itself — append with the torn-line guard, byte-wise
+    // parse, copy-aside-once — lives in `JSONLFileStore`; these stay as the
+    // names the self-test pins.
 
     /// True when the index's last byte closes a line (or there is none).
     nonisolated static func endsLine(_ lastByte: Data?) -> Bool {
-        guard let byte = lastByte?.first else { return true }
-        return byte == 0x0A
-    }
-
-    private func loadSamples() -> [EditSample] {
-        guard let data = try? Data(contentsOf: indexFile) else { return [] }
-        let parsed = Self.parseIndex(data)
-        if parsed.undecodable > 0 {
-            // The next rewrite writes `samples` only — keep the bytes we
-            // couldn't read before it drops them for good.
-            let aside = Self.corruptBackupURL(for: indexFile, at: Date())
-            // Already set aside, byte for byte (no rewrite since the last
-            // launch): one copy is enough — don't add one per launch.
-            let size = (try? indexFile.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-            let prefix = "\(indexFile.lastPathComponent).corrupt-"
-            let copies = (try? FileManager.default.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-            if copies.contains(where: { $0.lastPathComponent.hasPrefix(prefix)
-                && (try? $0.resourceValues(forKeys: [.fileSizeKey]))?.fileSize == size }) {
-                return parsed.samples
-            }
-            do {
-                try FileManager.default.copyItem(at: indexFile, to: aside)
-                NSLog("Slive: \(parsed.undecodable) unreadable training index line(s) — copied to \(aside.lastPathComponent)")
-            } catch {
-                NSLog("Slive: training index has unreadable lines and could not be copied aside: \(error)")
-            }
-        }
-        return parsed.samples
+        JSONLFileStore<EditSample>.endsLine(lastByte)
     }
 
     /// Decode a JSONL index byte-wise (a bad byte costs one line, not the
     /// whole file), counting the non-blank lines that didn't decode.
     nonisolated static func parseIndex(_ data: Data) -> (samples: [EditSample], undecodable: Int) {
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        var samples: [EditSample] = []
-        var bad = 0
-        for line in data.split(separator: 0x0A) {
-            if line.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0D }) { continue }
-            if let sample = try? decoder.decode(EditSample.self, from: Data(line)) {
-                samples.append(sample)
-            } else {
-                bad += 1
-            }
-        }
-        return (samples, bad)
+        let parsed = JSONLFileStore<EditSample>.parse(data)
+        return (parsed.elements, parsed.undecodable)
     }
 
     /// Where an index with unreadable lines is copied before any rewrite.
     nonisolated static func corruptBackupURL(for url: URL, at date: Date) -> URL {
-        url.deletingLastPathComponent().appendingPathComponent(
-            "\(url.lastPathComponent).corrupt-\(Int(date.timeIntervalSince1970))")
+        CorruptBackup.url(for: url, at: date)
     }
 
     /// Total size of the index + all audio on disk.
@@ -481,12 +410,4 @@ final class IndexWriteCoalescer {
         isPending = false
         generation += 1
     }
-}
-
-private extension JSONEncoder {
-    static let iso: JSONEncoder = {
-        let e = JSONEncoder()
-        e.dateEncodingStrategy = .iso8601
-        return e
-    }()
 }

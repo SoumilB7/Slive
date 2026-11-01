@@ -1,88 +1,7 @@
 import Foundation
 
-/// An LLM provider Slive's assistant mode can talk to. The `wire` value must
-/// match the `provider` strings the Python `/assistant` endpoint understands.
-enum AssistantProvider: String, Codable, CaseIterable, Identifiable {
-    case anthropic
-    case openai
-    case gemini
-    case openaiCompatible
-    case local
-    /// On-device WhisperKit transcription — a ground-truth-only "provider"
-    /// (it can't chat, so it never appears in the Assistant picker and is
-    /// never sent to the backend).
-    case whisper
-
-    var id: String { rawValue }
-
-    /// String sent to the backend.
-    var wire: String {
-        switch self {
-        case .anthropic: return "anthropic"
-        case .openai: return "openai"
-        case .gemini: return "gemini"
-        case .openaiCompatible: return "openai_compatible"
-        case .local: return "local"
-        case .whisper: return "whisper"   // never sent — handled fully in-app
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .anthropic: return "Anthropic (Claude)"
-        case .openai: return "OpenAI"
-        case .gemini: return "Google Gemini"
-        case .openaiCompatible: return "OpenAI-compatible"
-        case .local: return "Local (on-device)"
-        case .whisper: return "Whisper (on-device)"
-        }
-    }
-
-    var defaultModel: String {
-        switch self {
-        case .anthropic: return "claude-sonnet-5"
-        case .openai: return "gpt-4o"
-        case .gemini: return "gemini-2.5-flash"
-        case .openaiCompatible: return ""
-        case .local: return ""
-        case .whisper: return "large-v3"   // the accuracy judge
-        }
-    }
-
-    /// Only the OpenAI-compatible provider needs a custom base URL.
-    var needsBaseURL: Bool { self == .openaiCompatible }
-
-    /// Local runs a downloaded model on-device — it takes no API key (the model
-    /// is loaded straight from the HF cache; the token is only for downloading).
-    var needsAPIKey: Bool { self != .local && self != .whisper }
-
-    /// True when the model is a downloaded local one, chosen from the cache
-    /// rather than typed/fetched from a provider's list.
-    var isLocal: Bool { self == .local }
-
-    /// Where to find the API key hint / signup.
-    var keyHint: String {
-        switch self {
-        case .anthropic: return "sk-ant-…"
-        case .openai: return "sk-…"
-        case .gemini: return "AIza…"
-        case .openaiCompatible: return "API key"
-        case .local, .whisper: return ""
-        }
-    }
-
-    /// Providers the Assistant hotkey can talk to — Whisper only transcribes,
-    /// so it exists solely for the ground-truth picker.
-    static var assistantChoices: [AssistantProvider] {
-        allCases.filter { $0 != .whisper }
-    }
-
-    /// Keychain account name for this provider's API key.
-    var keychainAccount: String { "provider.\(rawValue)" }
-}
-
 /// Non-secret assistant settings, persisted as JSON in UserDefaults. API keys
-/// live in the Keychain (see `KeychainStore`), never here.
+/// live in the Keychain (see `CredentialStore`), never here.
 struct AssistantConfig: Codable, Equatable {
     /// The provider used when you trigger the assistant hotkey.
     var provider: AssistantProvider
@@ -124,6 +43,12 @@ struct AssistantConfig: Codable, Equatable {
 
     mutating func setModel(_ value: String, for p: AssistantProvider) {
         models[p.rawValue] = value
+    }
+
+    /// The one base URL a provider needs (OpenAI-compatible only). Ground truth
+    /// and assistant share it — it's provider config, not per-feature config.
+    func baseURL(for p: AssistantProvider) -> String {
+        p.needsBaseURL ? baseURL : ""
     }
 }
 

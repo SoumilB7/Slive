@@ -143,17 +143,8 @@ struct DataSettingsView: View {
 
     // MARK: - Ground truth
 
-    /// Default audio-capable model per provider. (OpenAI's `gpt-4o-audio-preview`
-    /// was superseded — `gpt-audio` is the GA audio chat model; accounts without
-    /// the legacy preview 404 on it. Whisper defaults to the Accurate judge.)
-    private func defaultAudioModel(_ p: AssistantProvider) -> String {
-        switch p {
-        case .gemini: return "gemini-2.5-flash"
-        case .openai: return "gpt-audio"
-        case .whisper: return "large-v3"
-        default: return ""
-        }
-    }
+    /// The consensus recipe's key (OpenAI) — a catalog constant, not a literal.
+    private let consensusKey = ProviderCatalog.consensusKeyProvider
 
     /// The 3-way consensus recipe is selected (the default).
     private var isConsensus: Bool { settings.groundTruthRecipe == .consensus }
@@ -210,8 +201,8 @@ struct DataSettingsView: View {
             // downloaded models) in Models.
             Button(action: openModels) {
                 if isConsensus {
-                    KeyStatusPill(hasKey: providers.hasKey(.openai))
-                } else if settings.groundTruthProvider.isLocal || settings.groundTruthProvider == .whisper {
+                    KeyStatusPill(hasKey: providers.hasKey(consensusKey))
+                } else if settings.groundTruthProvider.runsOnDevice {
                     OnDevicePill()
                 } else {
                     KeyStatusPill(hasKey: providers.hasKey(settings.groundTruthProvider))
@@ -245,7 +236,7 @@ struct DataSettingsView: View {
                 .fixedSize()
                 .disabled(run.isRunning)
                 .onChange(of: settings.groundTruthProvider) { _, p in
-                    settings.groundTruthModel = defaultAudioModel(p)
+                    settings.groundTruthModel = p.groundTruthDefaultModel
                     // Picking Local is explicit intent — list what's
                     // downloaded right away.
                     if p.isLocal && providers.models(for: p).isEmpty {
@@ -407,7 +398,7 @@ struct DataSettingsView: View {
 
     @ViewBuilder private var consensusControls: some View {
         let scope = run.scope
-        let hasKey = providers.hasKey(.openai)
+        let hasKey = providers.hasKey(consensusKey)
         if !hasKey {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("Add an OpenAI key to try the 3-way check.")

@@ -36,8 +36,9 @@ enum GroundTruthSource: Hashable, Identifiable {
 
     /// Providers whose models accept audio input (Anthropic's API doesn't).
     /// Local qualifies via audio-capable downloads (e.g. Gemma 3n); Whisper
-    /// is the fully on-device judge.
-    static let singleProviders: [AssistantProvider] = [.gemini, .openai, .openaiCompatible, .local, .whisper]
+    /// is the fully on-device judge. Declared per provider in the catalog
+    /// (`.audioTranscribe`).
+    static var singleProviders: [AssistantProvider] { ProviderCatalog.groundTruthChoices }
 }
 
 /// Which samples a consensus run touches, and which labels deserve a listen.
@@ -245,7 +246,7 @@ final class LabelRun: ObservableObject {
 
     private func runConsensus(ids: [String], estimate: Double) {
         guard !isRunning, !ids.isEmpty else { return }
-        let key = providers.apiKey(for: .openai)
+        let key = providers.apiKey(for: ProviderCatalog.consensusKeyProvider)
         guard !key.isEmpty else {
             message = GroundTruthClient.missingOpenAIKeyMessage
             needsKeyFix = true
@@ -449,7 +450,7 @@ final class LabelRun: ObservableObject {
         let hotwords = settings.hotwords
         let context = settings.contextPrompt
         let base = settings.consensusPrompt
-        let key = providers.apiKey(for: .openai)
+        let key = providers.apiKey(for: ProviderCatalog.consensusKeyProvider)
         Task { [weak self] in
             guard let self else { return }
             defer { self.inFlight.remove(sample.id) }

@@ -18,10 +18,11 @@ struct HistoryEntry: Codable, Identifiable {
 /// burst of long dictations within the window stays under ~400 KB on disk.
 ///
 /// Persisted as atomic JSON at
-/// `~/Library/Application Support/Slive/history.json`. A missing file is an
-/// empty catalogue; an unreadable one is moved aside (never overwritten) and
-/// the catalogue starts fresh rather than crashing. The set-aside copy expires
-/// 24 h later and goes with Clear, like the entries it holds.
+/// `~/Library/Application Support/Slive/history.json` (a `JSONFileStore`). A
+/// missing file is an empty catalogue; an unreadable one is moved aside
+/// (never overwritten) and the catalogue starts fresh rather than crashing.
+/// The set-aside copy expires 24 h later and goes with Clear, like the
+/// entries it holds.
 final class HistoryStore: ObservableObject {
     static let shared = HistoryStore()
 
@@ -52,20 +53,17 @@ final class HistoryStore: ObservableObject {
     private let queue = DispatchQueue(label: "com.slive.history")
     private var pruneTimer: DispatchSourceTimer?
 
-    /// nil = in-memory only (the self-test): nothing touches disk.
-    private let fileURL: URL?
+    /// nil = in-memory only (the self-test): nothing touches disk. Used only
+    /// on `queue` (and once in init, before the queue has any work).
+    private let file: JSONFileStore<[HistoryEntry]>?
 
     private convenience init() {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let dir = base.appendingPathComponent("Slive", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.init(fileURL: dir.appendingPathComponent("history.json"))
+        try? FileManager.default.createDirectory(at: AppSupport.root, withIntermediateDirectories: true)
+        self.init(fileURL: AppSupport.historyFile)
     }
 
     init(fileURL: URL?) {
-        self.fileURL = fileURL
+        self.file = fileURL.map { JSONFileStore(url: $0, label: "history") }
         load()
         startPruneTimer()
     }
@@ -152,17 +150,13 @@ final class HistoryStore: ObservableObject {
 
     /// Where an unreadable history file is moved before starting fresh.
     static func corruptBackupURL(for url: URL, at date: Date) -> URL {
-        url.deletingLastPathComponent().appendingPathComponent(
-            "\(url.lastPathComponent).corrupt-\(Int(date.timeIntervalSince1970))")
+        CorruptBackup.url(for: url, at: date)
     }
 
     /// The date a corrupt backup was set aside, read from its name; nil when
     /// `name` isn't a backup of `url`.
     static func corruptBackupDate(name: String, for url: URL) -> Date? {
-        let prefix = "\(url.lastPathComponent).corrupt-"
-        guard name.hasPrefix(prefix),
-              let seconds = Int(name.dropFirst(prefix.count)) else { return nil }
-        return Date(timeIntervalSince1970: TimeInterval(seconds))
+        CorruptBackup.date(name: name, for: url)
     }
 
     /// Delete backups set aside before `cutoff`. A backup holds the same
@@ -170,33 +164,17 @@ final class HistoryStore: ObservableObject {
     /// TTL (counted from when it was set aside) and goes with Clear.
     /// Runs on `queue`.
     private func removeCorruptBackups(olderThan cutoff: Date) {
-        guard let fileURL else { return }
-        let dir = fileURL.deletingLastPathComponent()
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
-        for name in names {
-            guard let date = Self.corruptBackupDate(name: name, for: fileURL), date < cutoff else { continue }
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
-        }
+        guard let file else { return }
+        CorruptBackup.remove(of: file.url, olderThan: cutoff)
     }
 
     private func load() {
         // Sweep backups that outlived the TTL while the app wasn't running.
         queue.async { self.removeCorruptBackups(olderThan: Date().addingTimeInterval(-Self.ttl)) }
-        guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard var decoded = try? decoder.decode([HistoryEntry].self, from: data) else {
-            // Start clean, never crash — but keep the bytes: the next add()
-            // would otherwise overwrite the only copy of the user's history.
-            let aside = Self.corruptBackupURL(for: fileURL, at: Date())
-            do {
-                try FileManager.default.moveItem(at: fileURL, to: aside)
-                NSLog("Slive: history unreadable — moved aside to \(aside.lastPathComponent)")
-            } catch {
-                NSLog("Slive: history unreadable and could not be moved aside: \(error)")
-            }
-            return
-        }
+        // Start clean, never crash — an unreadable file is moved aside by the
+        // store first: the next add() would otherwise overwrite the only copy
+        // of the user's history.
+        guard let file, case .ok(var decoded) = file.load() else { return }
         decoded.sort { $0.createdAt > $1.createdAt }   // newest first
         let rawCount = decoded.count
         Self.applyBounds(&decoded)
@@ -212,12 +190,9 @@ final class HistoryStore: ObservableObject {
     /// Atomic write. Never throws out to callers — persistence failures are
     /// logged, not fatal.
     private func persist(_ list: [HistoryEntry]) {
-        guard let fileURL else { return }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        guard let file else { return }
         do {
-            let data = try encoder.encode(list)
-            try data.write(to: fileURL, options: .atomic)
+            try file.save(list)
         } catch {
             NSLog("Slive: history persist failed: \(error)")
         }

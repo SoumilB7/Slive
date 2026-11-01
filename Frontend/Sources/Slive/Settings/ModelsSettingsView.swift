@@ -17,7 +17,7 @@ struct ModelsSettingsView: View {
     @State private var expanded: Set<String> = []
     @State private var seeded = false
 
-    private let cloud: [AssistantProvider] = [.anthropic, .openai, .gemini, .openaiCompatible]
+    private let cloud = ProviderCatalog.keyed
 
     private var connectedCount: Int { cloud.filter { providers.hasKey($0) }.count }
 
@@ -139,7 +139,7 @@ private struct ProviderRow: View {
             .fill(connected ? SliveTheme.accentConnected : SliveTheme.cardFill)
             .frame(width: 30, height: 30)
             .overlay(
-                Image(systemName: Self.glyph[provider] ?? "cloud.fill")
+                Image(systemName: provider.spec.icon)
                     .font(SliveTheme.iconFont)
                     .foregroundStyle(connected ? SliveTheme.accent : SliveTheme.textSecondary)
             )
@@ -172,7 +172,7 @@ private struct ProviderRow: View {
                     }
             }
 
-            if !connected, let url = Self.signup[provider] {
+            if !connected, let url = provider.spec.keyURL {
                 Link(destination: url) {
                     HStack(spacing: 4) {
                         Text("Get a key")
@@ -256,20 +256,6 @@ private struct ProviderRow: View {
             }
         }
     }
-
-    // MARK: Per-provider metadata (brand-free glyphs + where to get a key)
-
-    private static let glyph: [AssistantProvider: String] = [
-        .anthropic: "a.circle.fill",
-        .openai: "o.circle.fill",
-        .gemini: "g.circle.fill",
-        .openaiCompatible: "chevron.left.forwardslash.chevron.right",
-    ]
-    private static let signup: [AssistantProvider: URL] = [
-        .anthropic: URL(string: "https://console.anthropic.com/settings/keys")!,
-        .openai: URL(string: "https://platform.openai.com/api-keys")!,
-        .gemini: URL(string: "https://aistudio.google.com/apikey")!,
-    ]
 }
 
 // MARK: - Local (Hugging Face) — download into the standard cache + browse it

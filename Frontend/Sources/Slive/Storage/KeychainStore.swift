@@ -5,7 +5,8 @@ import Security
 ///
 /// Keys never touch UserDefaults (a plain plist that any process reading the
 /// app's container could see); they live in the login keychain as generic
-/// passwords scoped to this app's service name.
+/// passwords scoped to this app's service name. Read and written through
+/// `CredentialStore`, which owns the account names.
 enum KeychainStore {
     private static let service = "com.slive.app.apikeys"
 
