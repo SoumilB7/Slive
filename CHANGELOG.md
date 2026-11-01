@@ -2,6 +2,20 @@
 
 Notable changes to Slive, newest first. Versions follow [semver](https://semver.org).
 
+## [0.2.1] - 2026-11-01
+
+### Changed
+- Settings redesigned. The sidebar is grouped into Modes, Library, App and Lab, and three pages are renamed: Continuous is now Live typing, Assistant is Ask, Models is Providers.
+- Every page opens with its name and one status line ("Parakeet – Ultra · Ready", "2 of 3 granted"), orange when something needs attention. Permissions shows an orange dot in the sidebar while one is missing.
+- Shorter text everywhere: explanations moved into tooltips, and the overlay, Data and Training pages are trimmed.
+- On narrow windows, one page picker replaces the two rows of tabs.
+- Clearing history and deleting a downloaded model ask first.
+
+### Fixed
+- Key errors open the right settings page.
+- The microphone prompt reads "Slive listens only while you dictate."
+- Trained models are named balanced-ft-… (was misspelled), and the models list sorts by date.
+
 ## [0.2.0] - 2026-11-01
 
 First release, in two downloads: **Slive** (on-device speech only) and **Slive Full** (with the Python server).
@@ -27,4 +41,5 @@ First release, in two downloads: **Slive** (on-device speech only) and **Slive F
 - Fine-tune Whisper on your own voice, on this Mac.
 - The bundled server starts only when needed, stops after 10 idle minutes, and only answers Slive.
 
+[0.2.1]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.1
 [0.2.0]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.0
