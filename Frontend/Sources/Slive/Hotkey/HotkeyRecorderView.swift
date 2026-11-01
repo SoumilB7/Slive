@@ -91,6 +91,9 @@ struct HotkeyRecorderView: View {
             .buttonStyle(.borderedProminent)
             .tint(recording ? .orange : SliveTheme.accent)
         }
+        // Switching pages (or closing Settings) mid-recording must not leave
+        // the monitor behind — it swallows every key the app sees.
+        .onDisappear { if recording { cancel() } }
     }
 
     // MARK: - Recording

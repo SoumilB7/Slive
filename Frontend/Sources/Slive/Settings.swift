@@ -323,8 +323,9 @@ final class Settings: ObservableObject {
         didSet { UserDefaults.standard.set(speedTier, forKey: Keys.speedTier) }
     }
 
-    /// The typed tier, clamped safe against any stored value.
-    var resolvedSpeedTier: SpeedTier { SpeedTier(rawValue: speedTier) ?? .instant }
+    /// The typed tier, clamped safe against any stored value — an unknown one
+    /// falls back to the fresh-install default, not the hungriest tier.
+    var resolvedSpeedTier: SpeedTier { SpeedTier(rawValue: speedTier) ?? .relaxed }
 
     /// Snapshot of the local-inference knobs, safe to read off the main actor —
     /// the HTTP clients build request bodies on background executors.
@@ -332,9 +333,24 @@ final class Settings: ObservableObject {
         let d = UserDefaults.standard
         let quantized = d.object(forKey: Keys.localQuantized) == nil
             ? true : d.bool(forKey: Keys.localQuantized)
+        let ram = MachineProfile.ramGB
         let mem = d.object(forKey: Keys.localMemLimitGB) == nil
-            ? 9.0 : d.double(forKey: Keys.localMemLimitGB)
+            ? localMemDefaultGB(ramGB: ram)
+            : min(d.double(forKey: Keys.localMemLimitGB), localMemMaxGB(ramGB: ram))
         return (quantized, mem)
+    }
+
+    /// Memory-limit default: 9 GB, but never past ~60% of this Mac's RAM — 9
+    /// on an 8 GB Mac let a model load that swaps the machine to a crawl.
+    nonisolated static func localMemDefaultGB(ramGB: Int) -> Double {
+        guard ramGB > 0 else { return 9 }   // unreadable RAM: the old default
+        return min(9, max(2, (Double(ramGB) * 0.6).rounded(.down)))
+    }
+
+    /// Memory-limit slider ceiling: 12 GB, leaving at least 2 GB for macOS.
+    nonisolated static func localMemMaxGB(ramGB: Int) -> Double {
+        guard ramGB > 0 else { return 12 }
+        return min(12, max(3, Double(ramGB - 2)))
     }
 
     /// Ground truth: true once the event tap has actually delivered a keystroke.
@@ -513,5 +529,13 @@ final class Settings: ObservableObject {
             launchAtLogin = (SMAppService.mainApp.status == .enabled)
             syncingLaunchAtLogin = false
         }
+    }
+}
+
+extension Bundle {
+    /// "v0.2.4" — the bundle's real version (build.sh stamps it from VERSION),
+    /// for the Settings footer. A bare `swift build` binary has no Info.plist.
+    var versionLabel: String {
+        (infoDictionary?["CFBundleShortVersionString"] as? String).map { "v\($0)" } ?? "dev"
     }
 }

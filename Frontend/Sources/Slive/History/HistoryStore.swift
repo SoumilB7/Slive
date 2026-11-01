@@ -20,7 +20,8 @@ struct HistoryEntry: Codable, Identifiable {
 /// Persisted as atomic JSON at
 /// `~/Library/Application Support/Slive/history.json`. A missing file is an
 /// empty catalogue; an unreadable one is moved aside (never overwritten) and
-/// the catalogue starts fresh rather than crashing.
+/// the catalogue starts fresh rather than crashing. The set-aside copy expires
+/// 24 h later and goes with Clear, like the entries it holds.
 final class HistoryStore: ObservableObject {
     static let shared = HistoryStore()
 
@@ -91,9 +92,11 @@ final class HistoryStore: ObservableObject {
         mutate { list in list.removeAll { $0.id == id } }
     }
 
-    /// Drop everything.
+    /// Drop everything — including any unreadable file set aside at load,
+    /// which holds the same plaintext transcripts.
     func clearAll() {
         mutate { list in list.removeAll() }
+        queue.async { self.removeCorruptBackups(olderThan: .distantFuture) }
     }
 
     /// The catalogue after every mutation queued so far has applied — unlike
@@ -132,6 +135,7 @@ final class HistoryStore: ObservableObject {
                        leeway: .seconds(30))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
+            self.removeCorruptBackups(olderThan: Date().addingTimeInterval(-Self.ttl))
             var next = self.store
             let before = next.count
             Self.applyBounds(&next)
@@ -152,7 +156,32 @@ final class HistoryStore: ObservableObject {
             "\(url.lastPathComponent).corrupt-\(Int(date.timeIntervalSince1970))")
     }
 
+    /// The date a corrupt backup was set aside, read from its name; nil when
+    /// `name` isn't a backup of `url`.
+    static func corruptBackupDate(name: String, for url: URL) -> Date? {
+        let prefix = "\(url.lastPathComponent).corrupt-"
+        guard name.hasPrefix(prefix),
+              let seconds = Int(name.dropFirst(prefix.count)) else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(seconds))
+    }
+
+    /// Delete backups set aside before `cutoff`. A backup holds the same
+    /// plaintext transcripts as the live file, so it lives by the same 24 h
+    /// TTL (counted from when it was set aside) and goes with Clear.
+    /// Runs on `queue`.
+    private func removeCorruptBackups(olderThan cutoff: Date) {
+        guard let fileURL else { return }
+        let dir = fileURL.deletingLastPathComponent()
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names {
+            guard let date = Self.corruptBackupDate(name: name, for: fileURL), date < cutoff else { continue }
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        }
+    }
+
     private func load() {
+        // Sweep backups that outlived the TTL while the app wasn't running.
+        queue.async { self.removeCorruptBackups(olderThan: Date().addingTimeInterval(-Self.ttl)) }
         guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

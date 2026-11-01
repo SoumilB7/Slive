@@ -45,7 +45,9 @@ final class TrainingStore: ObservableObject {
     static let shared = TrainingStore()
 
     /// All captured samples, oldest → newest (the UI shows them reversed).
-    @Published private(set) var samples: [EditSample] = []
+    @Published private(set) var samples: [EditSample] = [] {
+        didSet { revision += 1 }
+    }
     /// The most recent sample, so the UI can show the latest comparison.
     @Published private(set) var latest: EditSample?
     /// Total bytes used on disk (audio + index).
@@ -100,6 +102,95 @@ final class TrainingStore: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    // MARK: - Render-time views (memoized)
+
+    /// Bumped on every change to `samples` (and on an audio re-check) — the
+    /// key the memos below are valid for.
+    private var revision = 0
+    /// Whether each sample's audio is on disk, by id. The Data page asks for
+    /// every sample on every render (counts, row buttons) and re-renders at
+    /// 10 Hz during playback; a stat per sample per redraw adds up on main.
+    private var audioPresence: [String: Bool] = [:]
+    private var summaryMemo: (revision: Int, value: DataSummary)?
+
+    /// `audioURL`'s presence answer, from the memo. Rendering only — label
+    /// runs keep the live check right before they read the file.
+    func hasAudio(_ sample: EditSample) -> Bool {
+        if let known = audioPresence[sample.id] { return known }
+        let present = audioURL(sample) != nil
+        audioPresence[sample.id] = present
+        return present
+    }
+
+    /// The memoized URL for a row's play button (nil when there's no audio).
+    func cachedAudioURL(_ sample: EditSample) -> URL? {
+        guard hasAudio(sample), let rel = sample.audioFile else { return nil }
+        return root.appendingPathComponent(rel)
+    }
+
+    /// Forget what's known about audio on disk — the Data page calls this on
+    /// appear, so a clip deleted in Finder doesn't linger as playable.
+    func recheckAudio() {
+        guard !audioPresence.isEmpty else { return }   // nothing known yet
+        objectWillChange.send()
+        audioPresence.removeAll()
+        revision += 1
+    }
+
+    /// The Data page's counts and jump lists, computed once per change to
+    /// `samples` instead of once per render.
+    var summary: DataSummary {
+        if let memo = summaryMemo, memo.revision == revision { return memo.value }
+        let value = Self.summarize(samples, hasAudio: hasAudio, isWayOff: Self.isWayOff)
+        summaryMemo = (revision, value)
+        return value
+    }
+
+    struct DataSummary: Equatable {
+        /// Samples with audio on disk.
+        var audioCount = 0
+        /// Samples with audio but no model label yet.
+        var missingCount = 0
+        /// Way-off rows, newest first (table order).
+        var wayOffIDs: [String] = []
+        /// Consensus labels worth a listen, newest first.
+        var lookIDs: [String] = []
+        /// Look rows, then way-off rows not already among them — the "to check" jump.
+        var checkIDs: [String] = []
+    }
+
+    /// Pure, so the self-test drives it with stand-in predicates.
+    static func summarize(_ samples: [EditSample], hasAudio: (EditSample) -> Bool,
+                          isWayOff: (EditSample) -> Bool) -> DataSummary {
+        var s = DataSummary()
+        for sample in samples.reversed() {
+            if hasAudio(sample) {
+                s.audioCount += 1
+                if sample.llmTranscript == nil { s.missingCount += 1 }
+            }
+            if isWayOff(sample) { s.wayOffIDs.append(sample.id) }
+            if LabelScope.needsALook(sample) { s.lookIDs.append(sample.id) }
+        }
+        let looks = Set(s.lookIDs)
+        s.checkIDs = s.lookIDs + s.wayOffIDs.filter { !looks.contains($0) }
+        return s
+    }
+
+    /// The label that counts: a human edit wins over the model's.
+    static func effectiveTruth(_ sample: EditSample) -> String? {
+        if !sample.finalText.isEmpty { return sample.finalText }
+        return sample.llmTranscript
+    }
+
+    /// Whether this sample's ground truth disagrees with the output by more
+    /// than half — usually not a correction but a model gone wrong (answered
+    /// the audio, never received it, wrong row). Worth a human look.
+    static func isWayOff(_ sample: EditSample) -> Bool {
+        guard let truth = effectiveTruth(sample) else { return false }
+        return TranscriptDiffCache.divergence(
+            id: sample.id, output: sample.transcript, truth: truth) > 0.5
+    }
+
     /// Delete a single sample — its audio file and index entry — and reclaim
     /// the bytes. No-op if it's already gone.
     func remove(id: String) {
@@ -109,19 +200,28 @@ final class TrainingStore: ObservableObject {
             totalBytes -= fileSize(url)
             try? FileManager.default.removeItem(at: url)
         }
+        audioPresence.removeValue(forKey: id)
         samples.remove(at: idx)
         if latest?.id == id { latest = samples.last }
         rewriteIndex()   // adjusts totalBytes by the index-size delta
         Log.training("removed sample \(id)")
     }
 
-    /// Delete every captured sample + audio and reset usage.
+    /// Delete every captured sample + audio and reset usage — including any
+    /// index copies set aside as unreadable (they hold transcripts too).
     func clearAll() {
         indexWrites.cancel()   // nothing left to flush
         try? FileManager.default.removeItem(at: indexFile)
+        let backupPrefix = "\(indexFile.lastPathComponent).corrupt-"
+        if let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+            for f in files where f.lastPathComponent.hasPrefix(backupPrefix) {
+                try? FileManager.default.removeItem(at: f)
+            }
+        }
         if let files = try? FileManager.default.contentsOfDirectory(at: audioDir, includingPropertiesForKeys: nil) {
             for f in files { try? FileManager.default.removeItem(at: f) }
         }
+        audioPresence.removeAll()
         samples = []
         latest = nil
         totalBytes = 0
@@ -220,14 +320,15 @@ final class TrainingStore: ObservableObject {
         }
     }
 
-    /// Append a finished sample to the index.
+    /// Append a finished sample to the index. Memory and usage follow the
+    /// file: a failed append leaves both untouched, so the browser never
+    /// shows a sample the next launch won't find.
     func add(_ sample: EditSample) {
         do {
             let data = try JSONEncoder.iso.encode(sample)
             var line = data
             line.append(0x0A)   // newline-delimited JSON
-            appendToIndex(line)
-            totalBytes += Int64(line.count)
+            totalBytes += try appendToIndex(line)
             samples.append(sample)
             latest = sample
             Log.training("stored sample #\(samples.count) (\(sample.confidence), edited=\(sample.edited))")
@@ -241,23 +342,73 @@ final class TrainingStore: ObservableObject {
 
     // MARK: - Internals
 
-    private func appendToIndex(_ line: Data) {
-        if let handle = try? FileHandle(forWritingTo: indexFile) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: line)
-        } else {
-            try? line.write(to: indexFile)   // file didn't exist yet
+    /// Append one JSONL line, returning the bytes written. A torn last line
+    /// (crash mid-append) gets a newline first, so only it stays broken —
+    /// gluing onto it would make the new sample undecodable too.
+    private func appendToIndex(_ line: Data) throws -> Int64 {
+        guard FileManager.default.fileExists(atPath: indexFile.path) else {
+            // Never overwrite here: a file that exists but failed to open
+            // must not be replaced by this one line.
+            try line.write(to: indexFile, options: .withoutOverwriting)
+            return Int64(line.count)
         }
+        let handle = try FileHandle(forUpdating: indexFile)
+        defer { try? handle.close() }
+        let end = try handle.seekToEnd()
+        var out = line
+        if end > 0 {
+            try handle.seek(toOffset: end - 1)
+            if !Self.endsLine(try handle.read(upToCount: 1)) { out.insert(0x0A, at: 0) }
+            try handle.seekToEnd()
+        }
+        try handle.write(contentsOf: out)
+        return Int64(out.count)
+    }
+
+    /// True when the index's last byte closes a line (or there is none).
+    nonisolated static func endsLine(_ lastByte: Data?) -> Bool {
+        guard let byte = lastByte?.first else { return true }
+        return byte == 0x0A
     }
 
     private func loadSamples() -> [EditSample] {
-        guard let text = try? String(contentsOf: indexFile, encoding: .utf8) else { return [] }
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        return text.split(separator: "\n").compactMap { line in
-            guard let data = line.data(using: .utf8) else { return nil }
-            return try? decoder.decode(EditSample.self, from: data)
+        guard let data = try? Data(contentsOf: indexFile) else { return [] }
+        let parsed = Self.parseIndex(data)
+        if parsed.undecodable > 0 {
+            // The next rewrite writes `samples` only — keep the bytes we
+            // couldn't read before it drops them for good.
+            let aside = Self.corruptBackupURL(for: indexFile, at: Date())
+            do {
+                try FileManager.default.copyItem(at: indexFile, to: aside)
+                NSLog("Slive: \(parsed.undecodable) unreadable training index line(s) — copied to \(aside.lastPathComponent)")
+            } catch {
+                NSLog("Slive: training index has unreadable lines and could not be copied aside: \(error)")
+            }
         }
+        return parsed.samples
+    }
+
+    /// Decode a JSONL index byte-wise (a bad byte costs one line, not the
+    /// whole file), counting the non-blank lines that didn't decode.
+    nonisolated static func parseIndex(_ data: Data) -> (samples: [EditSample], undecodable: Int) {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var samples: [EditSample] = []
+        var bad = 0
+        for line in data.split(separator: 0x0A) {
+            if line.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0D }) { continue }
+            if let sample = try? decoder.decode(EditSample.self, from: Data(line)) {
+                samples.append(sample)
+            } else {
+                bad += 1
+            }
+        }
+        return (samples, bad)
+    }
+
+    /// Where an index with unreadable lines is copied before any rewrite.
+    nonisolated static func corruptBackupURL(for url: URL, at date: Date) -> URL {
+        url.deletingLastPathComponent().appendingPathComponent(
+            "\(url.lastPathComponent).corrupt-\(Int(date.timeIntervalSince1970))")
     }
 
     /// Total size of the index + all audio on disk.

@@ -110,7 +110,7 @@ struct SettingsSidebar: View {
             }
 
             Spacer(minLength: 12)
-            Text("v0.1")
+            Text(Bundle.main.versionLabel)
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(SliveTheme.textTertiary)
                 .frame(maxWidth: .infinity)

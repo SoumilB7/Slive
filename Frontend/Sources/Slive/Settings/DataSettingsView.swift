@@ -81,7 +81,8 @@ struct DataSettingsView: View {
         }
         .onAppear {
             store.loadSamplesIfNeeded()   // lazy index parse
-            run.refreshScope()            // price the one-click run right away
+            store.recheckAudio()          // clips deleted in Finder since last visit
+            run.refreshScope()           // price the one-click run right away
         }
         .onChange(of: store.count) { _, _ in
             samplePage = min(samplePage, pageCount - 1)
@@ -185,43 +186,23 @@ struct DataSettingsView: View {
         providers.models(for: settings.groundTruthProvider)
     }
 
-    private var missingCount: Int {
-        store.samples.filter { $0.llmTranscript == nil && store.audioURL($0) != nil }.count
-    }
+    // Counts and jump lists come from the store's per-change memo — this
+    // page re-renders at 10 Hz during playback, and recounting meant a stat
+    // per sample per redraw.
+    private var missingCount: Int { store.summary.missingCount }
 
-    private var hasAudioSamples: Bool {
-        store.samples.contains { store.audioURL($0) != nil }
-    }
+    private var hasAudioSamples: Bool { store.summary.audioCount > 0 }
 
-    private var audioSampleCount: Int {
-        store.samples.filter { store.audioURL($0) != nil }.count
-    }
+    private var audioSampleCount: Int { store.summary.audioCount }
 
-    /// Whether this sample's ground truth disagrees with the output by more
-    /// than half — usually not a correction but a model gone wrong (answered
-    /// the audio, never received it, wrong row). Worth a human look.
-    private func isWayOff(_ sample: EditSample) -> Bool {
-        guard let truth = effectiveTruth(sample) else { return false }
-        return TranscriptDiffCache.divergence(
-            id: sample.id, output: sample.transcript, truth: truth) > 0.5
-    }
+    private func isWayOff(_ sample: EditSample) -> Bool { TrainingStore.isWayOff(sample) }
 
     private func effectiveTruth(_ sample: EditSample) -> String? {
-        if !sample.finalText.isEmpty { return sample.finalText }
-        return sample.llmTranscript
+        TrainingStore.effectiveTruth(sample)
     }
 
-    /// Way-off rows in table (newest-first) order — the triangle jumps to the
-    /// first of these.
-    private var wayOffIDs: [String] {
-        store.samples.reversed().filter(isWayOff).map(\.id)
-    }
-
-    /// Consensus labels the transcribers disagreed on (agreement < 0.8), in
-    /// table order — the ear button jumps to the first.
-    private var lookIDs: [String] {
-        store.samples.reversed().filter(LabelScope.needsALook).map(\.id)
-    }
+    /// A destructive edit mid-run would pull clips out from under it.
+    private let busyHelp = "Stop labeling first"
 
     private var groundTruthCard: some View {
         SettingsCard("GROUND TRUTH", trailing: {
@@ -483,7 +464,7 @@ struct DataSettingsView: View {
 
     /// Rows worth a human ear (consensus disagreement, way off), as one jump.
     @ViewBuilder private var followUpJumps: some View {
-        let ids = lookIDs + wayOffIDs.filter { !lookIDs.contains($0) }
+        let ids = store.summary.checkIDs
         if let first = ids.first {
             Button {
                 jumpToWayOff(first)
@@ -790,7 +771,9 @@ struct DataSettingsView: View {
                     Button("Clear all") { confirmClear = true }
                         .buttonStyle(.plain)
                         .font(SliveTheme.font(11, .semibold))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(.white.opacity(run.isRunning ? 0.2 : 0.45))
+                        .disabled(run.isRunning)
+                        .help(run.isRunning ? busyHelp : "")
                 }
             }
         }) {
@@ -820,6 +803,7 @@ struct DataSettingsView: View {
         .confirmationDialog("Delete \(store.count) sample\(store.count == 1 ? "" : "s")?",
                             isPresented: $confirmClear) {
             Button("Delete All", role: .destructive) {
+                guard !run.isRunning else { return }
                 store.clearAll()
                 TranscriptDiffCache.clear()
                 samplePage = 0
@@ -829,7 +813,7 @@ struct DataSettingsView: View {
         .confirmationDialog("Delete this sample?", isPresented: Binding(
             get: { pendingDeleteID != nil }, set: { if !$0 { pendingDeleteID = nil } })) {
             Button("Delete", role: .destructive) {
-                if let id = pendingDeleteID {
+                if let id = pendingDeleteID, !run.isRunning, !run.inFlight.contains(id) {
                     if player.currentID == id { player.stop() }
                     if editingSampleID == id { editingSampleID = nil }
                     TranscriptDiffCache.remove(id: id)
@@ -896,7 +880,7 @@ struct DataSettingsView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 12) {
                 // Audio column: play/pause toggles the shared player onto this row.
-                DataAudioButton(sampleID: sample.id, url: store.audioURL(sample))
+                DataAudioButton(sampleID: sample.id, url: store.cachedAudioURL(sample))
                 .frame(width: 40, alignment: .leading)
 
                 // What Slive output.
@@ -916,15 +900,17 @@ struct DataSettingsView: View {
                 Spacer(minLength: 8)
 
                 // Drop this one sample (audio + row).
+                let busy = run.isRunning || run.inFlight.contains(sample.id)
                 Button {
                     pendingDeleteID = sample.id
                 } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.35))
+                        .foregroundStyle(.white.opacity(busy ? 0.15 : 0.35))
                 }
                 .buttonStyle(.plain)
-                .help("Delete")
+                .disabled(busy)
+                .help(busy ? busyHelp : "Delete")
             }
 
             DataPlaybackScrubber(sampleID: sample.id)
@@ -983,7 +969,7 @@ struct DataSettingsView: View {
                 .buttonStyle(.plain)
                 .help("Edit")
             }
-        } else if store.audioURL(sample) != nil {
+        } else if store.hasAudio(sample) {
             HStack(spacing: 8) {
                 Button { run.labelOne(sample) } label: {
                     Label("Label", systemImage: "wand.and.stars")

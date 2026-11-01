@@ -129,18 +129,19 @@ struct AssistantConfig: Codable, Equatable {
 
 extension AssistantConfig {
     /// Tolerant decoding: any missing field (e.g. one added in a later version)
-    /// falls back to its default instead of failing the whole decode and wiping
-    /// the user's saved settings. Defined in an extension so the memberwise
-    /// initializer is preserved.
+    /// falls back to `.default`'s value instead of failing the whole decode and
+    /// wiping the user's saved settings — one source of defaults, so a missing
+    /// field and a fresh install agree. Defined in an extension so the
+    /// memberwise initializer is preserved.
     init(from decoder: Decoder) throws {
+        let d = Self.default
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        provider = try c.decodeIfPresent(AssistantProvider.self, forKey: .provider) ?? .anthropic
-        models = try c.decodeIfPresent([String: String].self, forKey: .models) ?? [:]
-        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
-        promptName = try c.decodeIfPresent(String.self, forKey: .promptName) ?? "assistant"
-        systemPrompt = try c.decodeIfPresent(String.self, forKey: .systemPrompt)
-            ?? Self.defaultSystemPrompt
-        attachScreenshot = try c.decodeIfPresent(Bool.self, forKey: .attachScreenshot) ?? false
-        fetchedModels = try c.decodeIfPresent([String: [String]].self, forKey: .fetchedModels) ?? [:]
+        provider = try c.decodeIfPresent(AssistantProvider.self, forKey: .provider) ?? d.provider
+        models = try c.decodeIfPresent([String: String].self, forKey: .models) ?? d.models
+        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? d.baseURL
+        promptName = try c.decodeIfPresent(String.self, forKey: .promptName) ?? d.promptName
+        systemPrompt = try c.decodeIfPresent(String.self, forKey: .systemPrompt) ?? d.systemPrompt
+        attachScreenshot = try c.decodeIfPresent(Bool.self, forKey: .attachScreenshot) ?? d.attachScreenshot
+        fetchedModels = try c.decodeIfPresent([String: [String]].self, forKey: .fetchedModels) ?? d.fetchedModels
     }
 }

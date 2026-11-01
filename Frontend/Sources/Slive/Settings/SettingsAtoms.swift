@@ -303,7 +303,7 @@ struct LocalInferenceControls: View {
             SliderRow(
                 title: "Memory limit",
                 value: $settings.localMemLimitGB,
-                range: 2...12,
+                range: 2...Settings.localMemMaxGB(ramGB: MachineProfile.ramGB),
                 step: 1,
                 valueText: "\(Int(settings.localMemLimitGB)) GB",
                 caption: "Too big to fit under the limit? Slive turns it away with an error instead of freezing your Mac."

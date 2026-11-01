@@ -99,7 +99,7 @@ struct SettingsView: View {
 
             scrollContainer
 
-            Text("v0.1")
+            Text(Bundle.main.versionLabel)
                 .font(SliveTheme.captionFont)
                 .foregroundStyle(SliveTheme.textTertiary)
                 .padding(.top, 2)

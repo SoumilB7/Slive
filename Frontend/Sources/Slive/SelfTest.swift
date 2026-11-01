@@ -964,6 +964,48 @@ enum SelfTest {
         } else {
             check(false, "consensus agreement round-trips", "encode/decode threw")
         }
+
+        // Index parse: a torn/garbled line is counted (so the file gets
+        // copied aside before a rewrite drops it), blank lines are not, and
+        // an invalid byte costs only its own line.
+        if let good = try? encoder.encode(sample) {
+            var index = good + Data([0x0A])
+            index += Data("{\"id\":\"torn\",\"createdAt\":".utf8) + Data([0x0A])
+            index += Data([0xFF, 0xFE, 0x0A, 0x20, 0x0A])
+            index += good + Data([0x0A])
+            let parsed = TrainingStore.parseIndex(index)
+            check(parsed.samples.count == 2 && parsed.undecodable == 2,
+                  "index parse keeps good lines, counts bad ones",
+                  "\(parsed.samples.count) good, \(parsed.undecodable) bad")
+            equal(TrainingStore.parseIndex(Data()).undecodable, 0, "empty index has nothing to back up")
+        }
+        check(TrainingStore.endsLine(Data([0x0A])) && TrainingStore.endsLine(nil)
+                && !TrainingStore.endsLine(Data([0x7D])),
+              "append starts a fresh line only after a torn one")
+        equal(TrainingStore.corruptBackupURL(
+                for: URL(fileURLWithPath: "/t/samples.jsonl"),
+                at: Date(timeIntervalSince1970: 1_700_000_000)).path,
+              "/t/samples.jsonl.corrupt-1700000000", "index backup name")
+
+        // Data page summary: one pass, table (newest-first) order, look rows
+        // ahead of way-off rows without duplicates.
+        func row(_ id: String, label: String?, look: Bool = false) -> EditSample {
+            var s = EditSample(id: id, createdAt: Date(), app: nil, transcript: "t",
+                               finalText: "", edited: false, confidence: "audio",
+                               audioFile: "audio/\(id).wav")
+            s.llmTranscript = label
+            s.llmModel = look ? "consensus · whisper-1" : nil
+            s.llmAgreement = look ? 0.5 : nil
+            return s
+        }
+        let rows = [row("a", label: nil), row("b", label: "x", look: true),
+                    row("c", label: "x"), row("d", label: nil)]
+        let summary = TrainingStore.summarize(
+            rows, hasAudio: { $0.id != "d" }, isWayOff: { $0.id == "b" || $0.id == "c" })
+        check(summary.audioCount == 3 && summary.missingCount == 1,
+              "summary counts audio and unlabeled clips")
+        equal(summary.wayOffIDs, ["c", "b"], "way-off ids newest first")
+        equal(summary.checkIDs, ["b", "c"], "check jump: looks first, way-off deduped")
     }
 
     // MARK: - Consensus labeling (scope, estimates, write coalescing)
@@ -1304,5 +1346,26 @@ enum SelfTest {
         let url = URL(fileURLWithPath: "/Slive/history.json")
         equal(HistoryStore.corruptBackupURL(for: url, at: Date(timeIntervalSince1970: 1_700_000_000)).path,
               "/Slive/history.json.corrupt-1700000000", "corrupt file backup name")
+        // The sweep reads the set-aside time back from that name, and only
+        // ever matches this file's backups.
+        equal(HistoryStore.corruptBackupDate(name: "history.json.corrupt-1700000000", for: url),
+              Date(timeIntervalSince1970: 1_700_000_000), "backup date parses from its name")
+        check(HistoryStore.corruptBackupDate(name: "history.json", for: url) == nil
+                && HistoryStore.corruptBackupDate(name: "other.json.corrupt-1700000000", for: url) == nil
+                && HistoryStore.corruptBackupDate(name: "history.json.corrupt-x", for: url) == nil,
+              "sweep ignores everything but this file's backups")
+
+        // Settings fallbacks match fresh-install defaults.
+        if let empty = try? JSONDecoder().decode(AssistantConfig.self, from: Data("{}".utf8)) {
+            equal(empty, AssistantConfig.default, "assistant config: missing fields fall back to .default")
+        } else {
+            check(false, "assistant config: missing fields fall back to .default", "decode threw")
+        }
+        equal(Settings.localMemDefaultGB(ramGB: 8), 4, "8 GB Mac: memory limit default fits")
+        equal(Settings.localMemDefaultGB(ramGB: 32), 9, "big Mac: memory limit default stays 9 GB")
+        equal(Settings.localMemMaxGB(ramGB: 8), 6, "8 GB Mac: slider leaves 2 GB for macOS")
+        equal(Settings.localMemMaxGB(ramGB: 64), 12, "big Mac: slider caps at 12 GB")
+        check(Settings.localMemDefaultGB(ramGB: 8) <= Settings.localMemMaxGB(ramGB: 8),
+              "default sits inside the slider")
     }
 }
