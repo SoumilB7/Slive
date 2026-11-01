@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Publishes a DMG from scripts/make-dmg.sh as a GitHub release, with that
-# version's CHANGELOG.md section as its notes. Tags HEAD.
+# version's CHANGELOG.md section as its notes. Tags HEAD, then deletes the
+# local DMG and built app (build/ only) once the release is up.
 #
 #   scripts/release.sh lite   →  v<version>       "Slive <version>"
 #   scripts/release.sh full   →  v<version>-full  "Slive <version> Full"
@@ -48,3 +49,8 @@ git -c credential.helper= -c credential.helper='!gh auth git-credential' push or
 latest=$([[ $EDITION == lite ]] && echo true || echo false)
 gh release create "$TAG" "$DMG" "$DMG.sha256" --verify-tag --title "$TITLE" \
   --notes "$notes" --latest="$latest" ${2:+"$2"}
+
+# Published: the DMG lives on GitHub now, so free the disk (~0.1–1.8 GB per
+# edition). Only build/ output — the installed /Applications/Slive.app is untouched.
+rm -rf "$DMG" "$DMG.sha256" "$APP"
+echo "removed $DMG and $APP (the release has them)"
