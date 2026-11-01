@@ -29,7 +29,7 @@ enum GroundTruthSource: Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case .consensus: return "Slive Custom — 3-way check"
+        case .consensus: return "Slive Custom : 3 way check"
         case .provider(let p): return p.displayName
         }
     }
