@@ -51,7 +51,7 @@ All source is under `Sources/Slive/`.
 | **Overlay** | `Overlay/OverlayController.swift`, `OverlayView.swift`, `AudioModel.swift`, `WaveformView.swift`, `BlackHoleOrbitView.swift` | The floating pill/box: dictation waveform, the assistant "black hole" listener, the streaming answer box + chat transcript, copy/dismiss/Continue. |
 | **Assistant** | `Assistant/AssistantClient.swift`, `AssistantConfig.swift`, `KeychainStore.swift`, `PromptLibrary.swift`, `ScreenCapture.swift` | Talks to the backend's `/assistant`, `/assistant/stream`, `/models`. Provider/model/prompt config; **API keys live in the macOS Keychain**; optional full-screen screenshot; prompts read from `../Backend/prompts`. |
 | **Typing** | `Paste/PasteEngine.swift` | Inserts text via synthetic keystrokes (works in native apps, browsers, Electron, terminals; never types into password fields). |
-| **Transcription** | `Transcription/TranscriptionClient.swift` | POSTs the recorded audio to the backend, gets text back. |
+| **Transcription** | `Transcription/SpeechEngine.swift` | On-device speech-to-text. |
 | **Backend lifecycle** | `Backend/BackendManager.swift` | Spawns the Python server, health-watchdogs it, and kills it on ⌘Q — every launch runs fresh code. |
 | **Feedback** | `Feedback/FeedbackPlayer.swift` | The subtle activation sounds (a tick for dictate, a "tung" for the assistant). |
 | **Settings & state** | `Settings.swift`, `Overlay/SettingsView.swift`, `AssistantSettingsView.swift`, `PermissionsModel.swift` | Persisted prefs; the tabbed Settings window (Dictation section + Assistant section). |

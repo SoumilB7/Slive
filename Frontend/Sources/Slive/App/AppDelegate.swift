@@ -168,24 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the ~20ms synthesis + engine graph setup on the hot path.
         Task.detached(priority: .utility) { _ = FeedbackPlayer.shared }
 
-        // Test hooks for the problem reporter (like SLIVE_TEST_ANE_HANG):
-        // freeze the main thread N seconds, crash, or report a fake failure,
-        // 6 s after launch.
-        let env = ProcessInfo.processInfo.environment
-        if let freeze = env["SLIVE_TEST_FREEZE"].flatMap(Double.init) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { Thread.sleep(forTimeInterval: freeze) }
-        }
-        if env["SLIVE_TEST_CRASH"] == "1" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { fatalError("SLIVE_TEST_CRASH") }
-        }
-        if env["SLIVE_TEST_FAILURE"] == "1" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
-                FailureReporter.shared.report("speech model", "The speech model failed to load.",
-                                              error: NSError(domain: NSCocoaErrorDomain, code: 260, userInfo: [
-                                                  NSLocalizedDescriptionKey: "The file at \(NSHomeDirectory())/Library/x.mlmodelc couldn’t be opened."]),
-                                              detail: "model test")
-            }
-        }
+        DebugHooks.install()
 
         // First launch, or a missing permission → show the home window so the
         // user sees what Slive does and can grant permissions in place.

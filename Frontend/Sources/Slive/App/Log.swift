@@ -16,14 +16,20 @@ enum Log {
     /// the toggle changes. Reading a Bool from any thread is fine for a log gate.
     nonisolated(unsafe) static var enabled = false
 
-    static func live(_ message: @autoclosure () -> String)    { emit("live", message) }
-    static func stt(_ message: @autoclosure () -> String)     { emit("stt", message) }
-    static func hotkey(_ message: @autoclosure () -> String)  { emit("hotkey", message) }
-    static func overlay(_ message: @autoclosure () -> String) { emit("overlay", message) }
-    static func backend(_ message: @autoclosure () -> String) { emit("backend", message) }
-    static func app(_ message: @autoclosure () -> String)     { emit("app", message) }
-    static func training(_ message: @autoclosure () -> String) { emit("training", message) }
-    static func paste(_ message: @autoclosure () -> String)   { emit("paste", message) }
+    /// The `Slive.<category>:` prefix. Adding one = a case here + a one-line
+    /// convenience below.
+    enum Category: String, CaseIterable {
+        case live, stt, hotkey, overlay, backend, app, training, paste
+    }
+
+    static func live(_ message: @autoclosure () -> String)    { emit(.live, message) }
+    static func stt(_ message: @autoclosure () -> String)     { emit(.stt, message) }
+    static func hotkey(_ message: @autoclosure () -> String)  { emit(.hotkey, message) }
+    static func overlay(_ message: @autoclosure () -> String) { emit(.overlay, message) }
+    static func backend(_ message: @autoclosure () -> String) { emit(.backend, message) }
+    static func app(_ message: @autoclosure () -> String)     { emit(.app, message) }
+    static func training(_ message: @autoclosure () -> String) { emit(.training, message) }
+    static func paste(_ message: @autoclosure () -> String)   { emit(.paste, message) }
 
     /// Always-on dictation event line (captured / waiting / decoded / typed /
     /// dropped), PUBLIC in the unified log — NSLog'd strings show up as
@@ -36,8 +42,8 @@ enum Log {
     }
     private static let eventLogger = Logger(subsystem: "com.slive.app", category: "events")
 
-    private static func emit(_ category: String, _ message: () -> String) {
+    private static func emit(_ category: Category, _ message: () -> String) {
         guard enabled else { return }
-        NSLog("Slive.%@: %@", category, message())
+        NSLog("Slive.%@: %@", category.rawValue, message())
     }
 }

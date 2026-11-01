@@ -217,7 +217,7 @@ final class AudioRecorder {
 
         // The WAV opens BEFORE audio flows so the first buffers land in it.
         let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flowy-\(UUID().uuidString).wav")
+            .appendingPathComponent("slive-\(UUID().uuidString).wav")
         do {
             file = try AVAudioFile(forWriting: tmp, settings: fileFormat.settings)
             tempURL = tmp
@@ -231,7 +231,7 @@ final class AudioRecorder {
         guard started else {
             // Nobody will ever stop() this hold, so nobody would ever clean up
             // its (empty) WAV — close it and delete it here, or every failed
-            // hold leaks a flowy-*.wav into the temp directory.
+            // hold leaks a slive-*.wav into the temp directory.
             file = nil
             tempURL = nil
             try? FileManager.default.removeItem(at: tmp)
