@@ -1,4 +1,5 @@
 import Foundation
+import SliveTestKit
 
 /// Assistant chat turns: continue only after "Continue", fresh otherwise.
 @MainActor

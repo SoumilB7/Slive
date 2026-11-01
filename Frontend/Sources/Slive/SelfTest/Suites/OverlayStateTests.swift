@@ -1,4 +1,5 @@
 import AppKit
+import SliveTestKit
 
 /// Overlay state: derived panel size / clickability, the model's
 /// transitions, the presenter's timers, the meter's easing.

@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import SliveTestKit
 
 @MainActor
 enum HotkeyActionTests {

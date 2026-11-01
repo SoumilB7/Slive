@@ -34,6 +34,37 @@ let package = Package(
             path: "Sources/SliveReport",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // Pure logic (Foundation + CoreGraphics value types; no AppKit,
+        // SwiftUI, models or app singletons): the hotkey model, speed tiers,
+        // the dictation pipeline and queue, SliveError, the transcript diff.
+        // Tested without building the app (SliveSelfTest).
+        .target(
+            name: "SliveCore",
+            path: "Sources/SliveCore",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // The self-test machinery: Checks, TestSuite, the `--only` runner.
+        .target(
+            name: "SliveTestKit",
+            path: "Sources/SliveTestKit",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Suites over SliveCore + SliveReport only. Linked into the app too,
+        // so `Slive --self-test` still runs every check.
+        .target(
+            name: "SliveCoreSuites",
+            dependencies: ["SliveCore", "SliveReport", "SliveTestKit"],
+            path: "Sources/SliveCoreSuites",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // `SliveSelfTest`: runs the core suites without the app or WhisperKit.
+        // A dev tool — never copied into the app bundle.
+        .executableTarget(
+            name: "SliveSelfTest",
+            dependencies: ["SliveCoreSuites", "SliveTestKit"],
+            path: "Sources/SliveSelfTest",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         // The reporter: a separate process (Contents/Helpers/SliveReporter.app)
         // so a frozen or crashed Slive can still be reported.
         .executableTarget(
@@ -48,6 +79,9 @@ let package = Package(
             dependencies: [
                 "SliveObjC",
                 "SliveReport",
+                "SliveCore",
+                "SliveTestKit",
+                "SliveCoreSuites",
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "FluidAudio", package: "FluidAudio")
             ],

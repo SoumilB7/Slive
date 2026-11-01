@@ -1,4 +1,5 @@
 import Foundation
+import SliveTestKit
 
 /// Hotkey gesture rules (hold arm, release tail, toggle, false start), on a
 /// manual clock with a fake flow behind them.

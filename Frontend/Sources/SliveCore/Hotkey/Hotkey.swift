@@ -1,5 +1,5 @@
-import AppKit
 import CoreGraphics
+import Foundation
 
 /// A recorded push-to-talk shortcut. You hold the whole thing — all the
 /// modifiers, plus the key if there is one — to talk.
@@ -13,25 +13,25 @@ import CoreGraphics
 ///
 /// NSEvent's modifier flags and CGEventFlags share the same bit values, so the
 /// recorder (NSEvent) and the monitor (CGEvent) speak the same numbers.
-struct Hotkey: Codable, Equatable {
+public struct Hotkey: Codable, Equatable, Sendable {
     /// Modifier bits that must be held, masked to the standard set below.
-    var modifiers: UInt64
+    public var modifiers: UInt64
     /// The main non-modifier key's virtual keycode, or nil for modifier-only.
-    var keyCode: UInt16?
+    public var keyCode: UInt16?
     /// Readable label built when recorded, e.g. "⌥ /" or "fn ×2".
-    var label: String
+    public var label: String
     /// How many quick taps trigger this bind (toggle binds only): 1 = a
     /// single press, 2 = double-tap within `Hotkey.doubleTapInterval`. Lets
     /// one physical key carry two meanings (fn hold ≠ fn-fn) — the cure for
     /// running out of rememberable combos.
-    var taps: Int = 1
+    public var taps: Int = 1
 
     /// Two down-edges of the same gesture within this window = a double-tap.
-    static let doubleTapInterval: TimeInterval = 0.45
+    public static let doubleTapInterval: TimeInterval = 0.45
 
     private enum CodingKeys: String, CodingKey { case modifiers, keyCode, label, taps }
 
-    init(modifiers: UInt64, keyCode: UInt16?, label: String, taps: Int = 1) {
+    public init(modifiers: UInt64, keyCode: UInt16?, label: String, taps: Int = 1) {
         self.modifiers = modifiers
         self.keyCode = keyCode
         self.label = label
@@ -39,7 +39,7 @@ struct Hotkey: Codable, Equatable {
     }
 
     /// Tolerant decode: binds saved before `taps` existed load as single-tap.
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         modifiers = try c.decode(UInt64.self, forKey: .modifiers)
         keyCode = try c.decodeIfPresent(UInt16.self, forKey: .keyCode)
@@ -47,25 +47,25 @@ struct Hotkey: Codable, Equatable {
         taps = try c.decodeIfPresent(Int.self, forKey: .taps) ?? 1
     }
 
-    static let modifierMask: UInt64 =
+    public static let modifierMask: UInt64 =
         CGEventFlags.maskCommand.rawValue
         | CGEventFlags.maskAlternate.rawValue
         | CGEventFlags.maskControl.rawValue
         | CGEventFlags.maskShift.rawValue
         | CGEventFlags.maskSecondaryFn.rawValue
 
-    var isModifierOnly: Bool { keyCode == nil }
-    var isValid: Bool { modifiers != 0 || keyCode != nil }
+    public var isModifierOnly: Bool { keyCode == nil }
+    public var isValid: Bool { modifiers != 0 || keyCode != nil }
 
     /// Default shortcut: hold fn (the Globe key).
-    static let fnDefault = Hotkey(
+    public static let fnDefault = Hotkey(
         modifiers: CGEventFlags.maskSecondaryFn.rawValue,
         keyCode: nil,
         label: "fn 🌐"
     )
 
     /// Build a readable label from a modifier set + an optional key character.
-    static func makeLabel(modifiers: UInt64, keyChar: String?) -> String {
+    public static func makeLabel(modifiers: UInt64, keyChar: String?) -> String {
         var symbols = ""
         if modifiers & CGEventFlags.maskControl.rawValue != 0 { symbols += "⌃" }
         if modifiers & CGEventFlags.maskAlternate.rawValue != 0 { symbols += "⌥" }
@@ -81,7 +81,7 @@ struct Hotkey: Codable, Equatable {
 
     /// Keys that don't type text, so they're fine to use bare (no modifier):
     /// Esc, the function row, and the arrows.
-    static func isSpecialKey(_ code: UInt16) -> Bool {
+    public static func isSpecialKey(_ code: UInt16) -> Bool {
         let special: Set<UInt16> = [
             53,                                                    // Esc
             122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, // F1–F12
@@ -92,7 +92,7 @@ struct Hotkey: Codable, Equatable {
 
     /// Human-friendly name for a virtual keycode's non-typographic keys; falls
     /// back to the given character.
-    static func keyChar(forKeyCode code: UInt16, characters: String?) -> String {
+    public static func keyChar(forKeyCode code: UInt16, characters: String?) -> String {
         switch code {
         case 49:  return "Space"
         case 36:  return "Return"

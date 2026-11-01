@@ -40,7 +40,20 @@ enum Log {
     static func event(_ message: String) {
         eventLogger.notice("\(message, privacy: .public)")
     }
-    private static let eventLogger = Logger(subsystem: "com.slive.app", category: "events")
+    /// Where `event` lines go.
+    nonisolated(unsafe) private(set) static var eventDestination = (subsystem: "com.slive.app", category: "events")
+    nonisolated(unsafe) private static var eventLogger = Logger(subsystem: "com.slive.app", category: "events")
+
+    /// `--self-test` only, before any suite runs: suites drive the real load
+    /// and decode paths with fakes ("flaky: Neural Engine load failed…"), and
+    /// those lines must not land in com.slive.app "events", which the problem
+    /// reporter and the latency analysis read as real dictations (the latter
+    /// by subsystem alone, hence a subsystem of their own). Set once,
+    /// single-threaded.
+    static func routeEventsToSelfTest() {
+        eventDestination = (subsystem: "com.slive.app.selftest", category: "selftest")
+        eventLogger = Logger(subsystem: eventDestination.subsystem, category: eventDestination.category)
+    }
 
     private static func emit(_ category: Category, _ message: () -> String) {
         guard enabled else { return }

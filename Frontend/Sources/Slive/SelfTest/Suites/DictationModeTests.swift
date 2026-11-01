@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import SliveTestKit
 
 /// The dictation modes: which ones a build registers, how gestures reach
 /// them, and each mode's flow on fakes (no mic, no model, no keystrokes).

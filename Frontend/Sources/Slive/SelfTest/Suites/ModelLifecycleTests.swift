@@ -4,6 +4,7 @@ import CoreGraphics
 import FluidAudio
 import SliveObjC
 import SliveReport
+import SliveTestKit
 
 /// Model lifecycle (folders, tokenizer, timeouts, cooldown)
 @MainActor

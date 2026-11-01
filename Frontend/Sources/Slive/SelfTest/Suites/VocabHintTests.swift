@@ -4,6 +4,7 @@ import CoreGraphics
 import FluidAudio
 import SliveObjC
 import SliveReport
+import SliveTestKit
 
 /// Ground-truth vocabulary hint
 @MainActor

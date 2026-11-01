@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import SliveTestKit
 import WhisperKit
 
 /// The parts behind `TranscriptionModel`, with fake recognizers, loaders and

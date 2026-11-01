@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import SliveTestKit
 
 /// AudioRecorder's source selection and consumer fan-out, driven by a fake
 /// source with synthetic buffers (no microphone).

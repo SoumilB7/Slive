@@ -1,9 +1,6 @@
-import AppKit
-import CoreAudio
-import CoreGraphics
-import FluidAudio
-import SliveObjC
-import SliveReport
+import Foundation
+import SliveCore
+import SliveTestKit
 
 @MainActor
 enum VocabularyCorrectorTests {

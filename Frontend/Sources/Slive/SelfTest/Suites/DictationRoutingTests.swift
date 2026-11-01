@@ -4,6 +4,7 @@ import CoreGraphics
 import FluidAudio
 import SliveObjC
 import SliveReport
+import SliveTestKit
 
 /// Dictation routing (who queues, early hand-off)
 @MainActor

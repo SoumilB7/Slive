@@ -4,6 +4,7 @@ import CoreGraphics
 import FluidAudio
 import SliveObjC
 import SliveReport
+import SliveTestKit
 
 /// WPM math
 @MainActor

@@ -1,11 +1,9 @@
-import AppKit
-import CoreAudio
-import CoreGraphics
-import FluidAudio
-import SliveObjC
-import SliveReport
+import Foundation
+import SliveCore
+import SliveTestKit
 
-/// Transcript word-diff (Training table highlighting)
+/// Transcript word-diff (Training table highlighting). The SwiftUI rendering
+/// is checked app-side (TranscriptDiffStylingTests).
 @MainActor
 enum TranscriptDiffTests {
     static let suite = TestSuite(name: "TranscriptDiff — word-level LCS") { t in
@@ -33,24 +31,6 @@ enum TranscriptDiffTests {
             output: ["the", "the", "cat"], truth: ["the", "cat"])
         t.check(deletion.mask == [true, true], "deletion case matches every truth word")
         t.check(!deletion.deletionSites.isEmpty, "deletion case reports its site")
-        let deletionStyled = TranscriptDiff.attributed(
-            output: "the the cat", truth: "the cat", base: .white, changed: .orange)
-        t.check(deletionStyled != nil, "deletion-only correction renders a real diff")
-        if let deletionStyled {
-            t.check(String(deletionStyled.characters) == "the cat",
-                  "deletion rendering keeps the truth text verbatim")
-            t.check(deletionStyled.runs.contains { $0.underlineStyle != nil },
-                  "deletion site is underlined")
-        }
-        // The screenshot case: "explain to me" → "explain me" must underline
-        // one word, not orange the sentence.
-        let dropTo = TranscriptDiff.attributed(
-            output: "can you explain to me the flow",
-            truth: "can you explain me the flow", base: .white, changed: .orange)
-        t.check(dropTo != nil
-                && dropTo.map { String($0.characters) } == "can you explain me the flow"
-                && dropTo!.runs.contains { $0.underlineStyle != nil },
-              "a single dropped word underlines its neighbor only")
         let screenshotOutput = TranscriptDiff.words(
             "How is the legacy roles creeping in? Can you explain to me the flow? "
             + "Why are even the legacy roles making this issue? And also, where in code "
@@ -69,21 +49,6 @@ enum TranscriptDiffTests {
 
         let emptyOut = TranscriptDiff.matchMask(output: [], truth: ["a", "b"])
         t.check(emptyOut == [false, false], "empty output marks all truth words changed")
-
-        let short = TranscriptDiff.attributed(
-            output: "hello there world", truth: "hello brave world",
-            base: .white, changed: .orange)
-        t.check(short != nil, "short strings produce an attributed diff")
-        if let short {
-            t.check(String(short.characters) == "hello brave world",
-                  "attributed diff preserves the truth text verbatim")
-        }
-
-        let longWords = Array(repeating: "w", count: TranscriptDiff.maxWords + 1)
-            .joined(separator: " ")
-        let over = TranscriptDiff.attributed(
-            output: "short", truth: longWords, base: .white, changed: .orange)
-        t.check(over == nil, "over-length input falls back to whole-string styling (nil)")
 
         // Divergence — the "way off" flag's measure (flag fires above 0.5).
         // (Plain `check` here: a local mask named `equal` shadows the helper.)

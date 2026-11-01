@@ -1,4 +1,5 @@
 import Foundation
+import SliveTestKit
 
 /// The settings window's seams: the page registry, the General card list,
 /// permission counts, the window-width parse, and the two view models

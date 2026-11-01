@@ -1,9 +1,6 @@
-import AppKit
-import CoreAudio
-import CoreGraphics
-import FluidAudio
-import SliveObjC
+import Foundation
 import SliveReport
+import SliveTestKit
 
 /// Problem reports (privacy first)
 @MainActor

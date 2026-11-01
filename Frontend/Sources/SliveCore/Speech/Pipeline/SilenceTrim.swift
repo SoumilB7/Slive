@@ -12,22 +12,24 @@
 ///   still several times the room noise, but under the old fixed 0.01
 ///   cut, so the last words were deleted before Whisper saw them (Sep
 ///   2026 audit: ~85 of 1485 captured clips, confirmed by re-decoding).
-struct SilenceTrim: AudioStage {
+public struct SilenceTrim: AudioStage {
+    public init() {}
+
     /// A hold counts as speech only if some 10ms frame is louder than this —
     /// below it the whole clip is treated as silence and the decode skipped.
-    static let speechGate: Float = 0.01
+    public static let speechGate: Float = 0.01
     /// Bounds for the per-clip edge threshold (see `trim`).
-    static let edgeFloor: Float = 0.003
+    public static let edgeFloor: Float = 0.003
     /// Edge threshold = this × the clip's own noise floor, clamped to
     /// [`edgeFloor`, `speechGate`].
-    static let noiseMultiple: Float = 4
+    public static let noiseMultiple: Float = 4
     /// Kept before the first voiced frame (150ms) and after the last (300ms).
-    static let leadPad = 2_400
-    static let tailPad = 4_800
+    public static let leadPad = 2_400
+    public static let tailPad = 4_800
 
-    func apply(_ samples: [Float]) -> ArraySlice<Float> { Self.trim(samples) }
+    public func apply(_ samples: [Float]) -> ArraySlice<Float> { Self.trim(samples) }
 
-    static func trim(_ samples: [Float]) -> ArraySlice<Float> {
+    public static func trim(_ samples: [Float]) -> ArraySlice<Float> {
         let frame = 160   // 10ms at 16k
         let frames = samples.count / frame
         guard frames > 0 else { return samples[0..<0] }
@@ -61,13 +63,13 @@ struct SilenceTrim: AudioStage {
     /// frame RMS (the room's noise floor), clamped to
     /// [`edgeFloor`, `speechGate`]. A clip that is mostly speech
     /// reads a high floor and clamps to the old 0.01 — never stricter.
-    static func edgeThreshold(frameRMS: [Float]) -> Float {
+    public static func edgeThreshold(frameRMS: [Float]) -> Float {
         guard !frameRMS.isEmpty else { return speechGate }
         return min(speechGate, max(edgeFloor, noiseMultiple * noiseFloor(frameRMS: frameRMS)))
     }
 
     /// The room's noise floor: the clip's 10th-percentile 10ms frame RMS.
-    static func noiseFloor(frameRMS: [Float]) -> Float {
+    public static func noiseFloor(frameRMS: [Float]) -> Float {
         guard !frameRMS.isEmpty else { return 0 }
         let sorted = frameRMS.sorted()
         return sorted[min(sorted.count - 1, sorted.count / 10)]

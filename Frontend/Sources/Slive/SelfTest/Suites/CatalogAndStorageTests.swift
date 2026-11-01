@@ -1,4 +1,5 @@
 import Foundation
+import SliveTestKit
 
 /// Provider catalog invariants, credential account naming (in-memory, no
 /// keychain), and the JSON / JSONL file stores against a temp directory.

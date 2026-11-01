@@ -8,15 +8,15 @@ import Foundation
 /// VAD-parallel chunking) are always on for every tier and never traded away.
 ///
 /// Ordered fastest-first: raw value is the persisted setting.
-enum SpeedTier: Int, CaseIterable, Identifiable {
+public enum SpeedTier: Int, CaseIterable, Identifiable, Sendable {
     case instant = 0    // everything hot, machine held at speed
     case snappy = 1     // hot models + clocks, no per-hold priming
     case relaxed = 2    // hot models, default clocks
     case feather = 3    // models released after idle
 
-    var id: Int { rawValue }
+    public var id: Int { rawValue }
 
-    var label: String {
+    public var label: String {
         switch self {
         case .instant: return "Instant"
         case .snappy: return "Snappy"
@@ -28,25 +28,25 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
     // MARK: - The actual knobs (read by AppDelegate / ResidencyPolicy)
 
     /// Model pipes stay resident in RAM/ANE forever (vs idle release).
-    var pinsModels: Bool { self != .feather }
+    public var pinsModels: Bool { self != .feather }
     /// Release idle models when macOS reports memory pressure (Feather). Was a
     /// fixed 10-minute idle timer — on a nearly full disk macOS also discards
     /// the compiled model, so every reload after a break was a 80–95s
     /// recompile (Oct 29: 3.5s at launch, 83s half an hour later).
-    var releasesUnderPressure: Bool { self == .feather }
+    public var releasesUnderPressure: Bool { self == .feather }
     /// Cold-prime the ANE graph at hold-start when minutes have passed.
-    var primesOnHold: Bool { self == .instant }
+    public var primesOnHold: Bool { self == .instant }
     /// Hold a `.latencyCritical` activity for hold→type (P-cores clocked).
-    var holdsLatencyAssertion: Bool { self == .instant || self == .snappy }
+    public var holdsLatencyAssertion: Bool { self == .instant || self == .snappy }
     /// Run a tiny warmup decode right after a model loads.
-    var warmsAfterLoad: Bool { self != .feather }
+    public var warmsAfterLoad: Bool { self != .feather }
 
     // MARK: - Honest cost estimates (surface for the graph)
 
     /// Typical release→typed seconds for a short dictation on Apple silicon,
     /// given the decode-speed factor of the selected model. Estimates, and
     /// labeled as such in the UI — the NSLog timing lines are ground truth.
-    func estimatedLatency(modelFactor: Double) -> Double {
+    public func estimatedLatency(modelFactor: Double) -> Double {
         let base = 0.09 + modelFactor + 0.02   // tail + decode + dispatch
         switch self {
         case .instant: return base
@@ -58,13 +58,13 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
 
     /// Resident RAM attributable to dictation models (GB), given the loaded
     /// footprint of the selected model. Feather idles at ~0.
-    func estimatedRamGB(modelResidentGB: Double) -> Double {
+    public func estimatedRamGB(modelResidentGB: Double) -> Double {
         pinsModels ? modelResidentGB : 0.05
     }
 
     /// Relative energy index 0…1 for the chart (per-dictation effort:
     /// assertion clocks + per-hold priming are the real spenders).
-    var energyIndex: Double {
+    public var energyIndex: Double {
         switch self {
         case .instant: return 1.0
         case .snappy: return 0.7
@@ -79,7 +79,7 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
     /// assertion ≈2 J for the boosted half-second, cold-prime ≈1.5 J).
     /// Engineering estimates with stated assumptions, not marketing: the
     /// receipt converts them to % of THIS Mac's measured battery per hour.
-    var batteryModel: (idleMW: Double, perDictationJ: Double) {
+    public var batteryModel: (idleMW: Double, perDictationJ: Double) {
         switch self {
         case .instant: return (80, 3.5)
         case .snappy: return (30, 2.0)
@@ -89,30 +89,30 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
     }
 
     /// The dictations-per-hour all battery quotes assume (stated in the UI).
-    static let assumedDictationsPerHour = 30.0
+    public static let assumedDictationsPerHour = 30.0
 
     /// Milliwatt-hours this tier drains per hour of use at the assumed pace.
-    var drainMWhPerHour: Double {
+    public var drainMWhPerHour: Double {
         let m = batteryModel
         return m.idleMW + m.perDictationJ * Self.assumedDictationsPerHour / 3.6
     }
 
     /// Percent of a `batteryWh` battery this tier costs per hour at the
     /// assumed pace (nil when there is no battery — desktops).
-    func drainPercentPerHour(batteryWh: Double?) -> Double? {
+    public func drainPercentPerHour(batteryWh: Double?) -> Double? {
         guard let wh = batteryWh, wh > 1 else { return nil }
         return drainMWhPerHour / (wh * 1000) * 100
     }
 
     /// Chart fraction 0…1, derived from the same numbers the receipt quotes.
-    var batteryIndex: Double {
+    public var batteryIndex: Double {
         let top = SpeedTier.instant.drainMWhPerHour
         return top > 0 ? drainMWhPerHour / top : 0
     }
 
     /// What this tier spends, shown under the graph — numbers first, so the
     /// click states facts you can plan around, not adjectives.
-    func costLines(modelResidentGB: Double, batteryWh: Double?) -> [(String, String)] {
+    public func costLines(modelResidentGB: Double, batteryWh: Double?) -> [(String, String)] {
         let ram = pinsModels
             ? String(format: "%.1f GB", modelResidentGB)
             : "Freed when idle"
@@ -135,7 +135,7 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
     /// static family estimate. `measured` tells the UI which one it got.
     /// The clamp is a backstop — a poisoned store can never put absurd
     /// numbers on the axis again.
-    static func effectiveFactor(measuredTypicalDecode: Double?, model: String)
+    public static func effectiveFactor(measuredTypicalDecode: Double?, model: String)
         -> (factor: Double, measured: Bool) {
         if let seconds = measuredTypicalDecode, seconds > 0.01 {
             return (min(seconds, 10), true)
@@ -145,7 +145,7 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
 
     /// Decode-speed factor: rough seconds to decode a short (~8s) dictation
     /// on the Neural Engine, by checkpoint family.
-    static func decodeFactor(for model: String) -> Double {
+    public static func decodeFactor(for model: String) -> Double {
         let m = model.lowercased()
         if m.contains("tiny") { return 0.12 }
         if m.contains("base") { return 0.18 }
@@ -155,7 +155,7 @@ enum SpeedTier: Int, CaseIterable, Identifiable {
     }
 
     /// Loaded RAM footprint (GB) by checkpoint family (weights + runtime).
-    static func residentGB(for model: String) -> Double {
+    public static func residentGB(for model: String) -> Double {
         let m = model.lowercased()
         if m.contains("tiny") { return 0.2 }
         if m.contains("base") { return 0.35 }

@@ -3,8 +3,8 @@
 # Usage: ./build.sh [build]    (build + bundle; the default)
 #        ./build.sh run        (build + bundle + launch from build/)
 #        ./build.sh install    (build + bundle + copy to /Applications, or ~/Applications for non-admins + launch)
-#        ./build.sh test       (build + run the in-binary self-test, no bundle)
-# The steps live in scripts/lib/: bundle.sh, sign.sh, install.sh, prepare.sh.
+#        ./build.sh test       (build + run SliveSelfTest and Slive --self-test, no bundle)
+# The steps live in scripts/lib/: bundle.sh, sign.sh, install.sh, prepare.sh, test.sh.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -32,7 +32,9 @@ echo "▸ Compiling (swift build -c $CONFIG)…"
 swift build -c "$CONFIG"
 
 if [[ "$MODE" == "test" ]]; then
-    exec ".build/$CONFIG/Slive" --self-test
+    source "$FRONTEND_DIR/scripts/lib/test.sh"
+    run_self_tests
+    exit
 fi
 
 APP="build/Slive.app"

@@ -1,4 +1,5 @@
 import Foundation
+import SliveTestKit
 
 /// Model catalog + dictation pipeline: catalog invariants (persisted ids and
 /// defaults resolve, engine routing), stage order, and byte-equivalence of

@@ -1,11 +1,9 @@
-import AppKit
-import CoreAudio
-import CoreGraphics
-import FluidAudio
-import SliveObjC
-import SliveReport
+import Foundation
+import SliveCore
+import SliveTestKit
 
-/// Speed tiers (the latency ⇄ resources contract)
+/// Speed tiers (the latency ⇄ resources contract). This Mac's measurements
+/// and the graph are checked app-side (SpeedTierMachineTests).
 @MainActor
 enum SpeedTierTests {
     static let suite = TestSuite(name: "Speed tiers") { t in
@@ -56,19 +54,8 @@ enum SpeedTierTests {
         t.check(SpeedTier.allCases.allSatisfy { tier in
             tier.costLines(modelResidentGB: 1.2, batteryWh: 53).contains { $0.0 == "Battery" }
         }, "every tier's receipt itemizes battery")
-        // The machine checker's battery read, when present, must be sane
-        // laptop territory (guards the mAh-vs-percent IOKit trap).
-        t.check(MachineProfile.batteryWh.map { $0 > 20 && $0 < 120 } ?? true,
-              "measured battery capacity is in sane laptop range",
-              "got \(String(describing: MachineProfile.batteryWh))")
         t.check(SpeedTier.feather.estimatedRamGB(modelResidentGB: 1.2) < 0.1,
               "Feather's idle RAM is near zero")
-
-        let xs = LatencyGraphView.xPositions(latencies: latencies, width: 400)
-        t.check(xs == xs.sorted() && xs.first! >= 0 && xs.last! <= 400,
-              "graph x-positions are ordered and inside the plot")
-        t.check(LatencyGraphView.ms(0.34) == "~340ms" && LatencyGraphView.ms(1.2) == "~1.2s",
-              "latency labels format ms under 1s, seconds above")
 
         // Calibration: measured typical-decode seconds override the guess.
         let measured = SpeedTier.effectiveFactor(measuredTypicalDecode: 0.62, model: "large-v3")
@@ -80,17 +67,5 @@ enum SpeedTierTests {
         let poisoned = SpeedTier.effectiveFactor(measuredTypicalDecode: 45, model: "large-v3")
         t.check(poisoned.factor <= 10,
               "a poisoned calibration value can never put absurd numbers on the axis")
-        t.check(TranscriptionModel.blendedRate(old: nil, new: 0.2) == 0.2
-                && abs(TranscriptionModel.blendedRate(old: 0.2, new: 0.4) - 0.26) < 0.0001,
-              "decode-rate EMA seeds on first sample, blends 70/30 after")
-        t.check(!TranscriptionModel.acceptableCalibrationClip(1.0)
-                && TranscriptionModel.acceptableCalibrationClip(8)
-                && !TranscriptionModel.acceptableCalibrationClip(45),
-              "calibration only trusts one-window, dictation-sized clips (3–30s)")
-
-        // The machine checker behind the graph caption.
-        t.check(MachineProfile.ramGB > 0, "machine checker reads physical RAM")
-        t.check(MachineProfile.summary.contains("GB") && !MachineProfile.chip.isEmpty,
-              "machine summary names the chip and RAM")
     }
 }

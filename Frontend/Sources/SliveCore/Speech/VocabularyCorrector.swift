@@ -30,33 +30,33 @@ import Foundation
 ///
 /// Pure and nonisolated: runs on whatever thread produced the text, and the
 /// self-test drives it directly.
-enum VocabularyCorrector {
+public enum VocabularyCorrector {
     /// One vocabulary entry: the user's exact spelling and its match key.
-    struct Term: Equatable {
-        let form: String
-        let key: String
+    public struct Term: Equatable, Sendable {
+        public let form: String
+        public let key: String
         /// The form dictates casing too (has capitals or is identifier-shaped).
-        let enforcesCase: Bool
+        public let enforcesCase: Bool
         /// Hyphens, dots or digits — a name ("cos-mp-agent"), not a word.
-        var isIdentifier: Bool { form.contains { $0 == "-" || $0 == "." || $0.isNumber } }
+        public var isIdentifier: Bool { form.contains { $0 == "-" || $0 == "." || $0.isNumber } }
     }
 
     /// Longest run of words a single term can be heard as.
-    nonisolated static let maxSpanWords = 4
+    public nonisolated static let maxSpanWords = 4
     /// Terms this short only match a single whole word, exactly.
-    nonisolated static let shortTermLength = 4
+    public nonisolated static let shortTermLength = 4
     /// Terms at least this long tolerate one substituted letter.
-    nonisolated static let fuzzyMinLength = 8
+    public nonisolated static let fuzzyMinLength = 8
 
     /// Correct `text` against the Custom words string as stored in Settings.
     /// Empty vocabulary → `text` unchanged.
-    nonisolated static func correct(_ text: String, hotwords: String) -> String {
+    public nonisolated static func correct(_ text: String, hotwords: String) -> String {
         correct(text, terms: terms(from: hotwords))
     }
 
     /// Parse the Custom words field: comma- and/or newline-separated, trimmed,
     /// de-duplicated by match key (first spelling wins).
-    nonisolated static func terms(from hotwords: String) -> [Term] {
+    public nonisolated static func terms(from hotwords: String) -> [Term] {
         var seen = Set<String>()
         var out: [Term] = []
         for raw in hotwords.split(whereSeparator: { $0 == "," || $0.isNewline }) {
@@ -70,7 +70,7 @@ enum VocabularyCorrector {
     }
 
     /// Lowercased letters and digits only: "Z-Docs" → "zdocs".
-    nonisolated static func matchKey<S: StringProtocol>(_ s: S) -> String {
+    public nonisolated static func matchKey<S: StringProtocol>(_ s: S) -> String {
         String(s.lowercased().filter { $0.isLetter || $0.isNumber })
     }
 
@@ -87,7 +87,7 @@ enum VocabularyCorrector {
         let trailsClean: Bool   // nothing stripped after the core
     }
 
-    nonisolated static func correct(_ text: String, terms: [Term]) -> String {
+    public nonisolated static func correct(_ text: String, terms: [Term]) -> String {
         guard !terms.isEmpty else { return text }
         let words = words(in: text)
         var out = ""

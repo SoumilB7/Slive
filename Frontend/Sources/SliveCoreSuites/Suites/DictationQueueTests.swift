@@ -1,11 +1,8 @@
-import AppKit
-import CoreAudio
-import CoreGraphics
-import FluidAudio
-import SliveObjC
-import SliveReport
+import Foundation
+import SliveCore
+import SliveTestKit
 
-/// Vocabulary corrector (post-decode spelling)
+/// Dictation queue (spoken order; finishing hands the turn on)
 @MainActor
 enum DictationQueueTests {
     static let suite = TestSuite(name: "Dictation queue") { t in

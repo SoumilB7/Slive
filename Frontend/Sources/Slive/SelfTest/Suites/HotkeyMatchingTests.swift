@@ -4,6 +4,7 @@ import CoreGraphics
 import FluidAudio
 import SliveObjC
 import SliveReport
+import SliveTestKit
 
 private let fn = Fixtures.fn
 private let ctrl = Fixtures.ctrl

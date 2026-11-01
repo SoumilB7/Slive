@@ -3,7 +3,7 @@ import Foundation
 /// The one error a call to the local Slive Server ends in. `errorDescription`
 /// is what the UI shows; `reportable` decides whether it's a fault worth a
 /// problem report or just life (a bad key, a cancel, a slow provider).
-enum SliveError: LocalizedError, Equatable, CustomStringConvertible {
+public enum SliveError: LocalizedError, Equatable, CustomStringConvertible, Sendable {
     /// The server isn't up and couldn't be started. Carries BackendManager's
     /// `lastSpawnError` when the spawn said why (no venv, port taken…).
     case serverDown(String?)
@@ -22,7 +22,7 @@ enum SliveError: LocalizedError, Equatable, CustomStringConvertible {
     /// a broken audio file, a missing setting.
     case local(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .serverDown(let reason):          return reason ?? "Local server didn't start."
         case .server(_, let message):          return message
@@ -36,14 +36,14 @@ enum SliveError: LocalizedError, Equatable, CustomStringConvertible {
 
     /// Same text as `errorDescription`, so `"\(error)"` reads the same as
     /// `localizedDescription` (the assistant overlay interpolates the error).
-    var description: String { errorDescription ?? "" }
+    public var description: String { errorDescription ?? "" }
 
     /// A real fault — offer it as a problem report. 5xx and unreadable
     /// replies are bugs; a 502 is the provider behind the server failing
     /// (outage, no network, refusal), which no Slive fix can help — the
     /// FailureReporter rule. A server that couldn't start for a reason
     /// BackendManager already names (and shows) is a setup problem.
-    var reportable: Bool {
+    public var reportable: Bool {
         switch self {
         case .server(let status, _):           return status >= 500 && status != 502
         case .decode, .local:                  return true
@@ -53,7 +53,7 @@ enum SliveError: LocalizedError, Equatable, CustomStringConvertible {
     }
 
     /// The HTTP status of a server reply, nil for everything else.
-    var status: Int? {
+    public var status: Int? {
         if case .server(let status, _) = self { return status }
         return nil
     }
@@ -62,7 +62,7 @@ enum SliveError: LocalizedError, Equatable, CustomStringConvertible {
 
     /// The error for a reply, or nil when it's a 2xx. `notFound` is what a
     /// 404 means for this route, said plainly (a vanished job).
-    static func from(status: Int, body: Data, notFound: String? = nil) -> SliveError? {
+    public static func from(status: Int, body: Data, notFound: String? = nil) -> SliveError? {
         guard !(200..<300).contains(status) else { return nil }
         if status == 404, let notFound { return .server(status: 404, message: notFound) }
         let message = serverMessage(in: body)
@@ -73,7 +73,7 @@ enum SliveError: LocalizedError, Equatable, CustomStringConvertible {
     }
 
     /// Any thrown error as a SliveError (a SliveError passes through).
-    static func from(_ error: Error) -> SliveError {
+    public static func from(_ error: Error) -> SliveError {
         if let error = error as? SliveError { return error }
         if error is CancellationError { return .cancelled }
         if let error = error as? URLError {
@@ -90,7 +90,7 @@ enum SliveError: LocalizedError, Equatable, CustomStringConvertible {
     /// The message in a backend error body, or nil: `{"error": …}` from our
     /// handlers, or FastAPI's `{"detail": …}` (a string, or a list of
     /// validation items — a 422).
-    static func serverMessage(in body: Data) -> String? {
+    public static func serverMessage(in body: Data) -> String? {
         guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
             return nil
         }

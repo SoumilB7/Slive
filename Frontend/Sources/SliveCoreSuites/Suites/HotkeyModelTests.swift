@@ -1,14 +1,12 @@
-import AppKit
-import CoreAudio
 import CoreGraphics
-import FluidAudio
-import SliveObjC
-import SliveReport
+import Foundation
+import SliveCore
+import SliveTestKit
 
-private let fn = Fixtures.fn
-private let ctrl = Fixtures.ctrl
-private let cmd = Fixtures.cmd
-private let alt = Fixtures.alt
+private let fn = CGEventFlags.maskSecondaryFn.rawValue
+private let ctrl = CGEventFlags.maskControl.rawValue
+private let cmd = CGEventFlags.maskCommand.rawValue
+private let alt = CGEventFlags.maskAlternate.rawValue
 
 @MainActor
 enum HotkeyModelTests {
