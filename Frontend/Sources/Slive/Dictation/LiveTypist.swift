@@ -19,11 +19,19 @@ import Foundation
 /// A freeze boundary bounds corrections to the last `editableTail` characters, so
 /// a late revision several sentences back can never cascade into a full rewrite.
 ///
+/// Keystrokes go through a `LiveTextSink` (default `TypingSink`), so the
+/// reconcile rules are self-tested against a fake field.
+///
 /// All keystroke work runs on one private serial queue (so steps never interleave);
 /// `setTarget` is safe to call from the main thread. `@unchecked Sendable`: all
-/// mutable state is isolated to `queue`.
+/// mutable state is isolated to `queue`; the sink is called only on `queue`.
 final class LiveTypist: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.slive.app.livetypist", qos: .userInitiated)
+    private let sink: LiveTextSink
+
+    init(sink: LiveTextSink = TypingSink()) {
+        self.sink = sink
+    }
 
     /// Cadence at/above which we type "instantly" — the frontier jumps straight
     /// to the end each tick, so text just appears.
@@ -45,9 +53,9 @@ final class LiveTypist: @unchecked Sendable {
     private var frozenLen = 0      // committed[0..<frozenLen] is settled; never backspaced
     private var pendingTick: DispatchWorkItem?   // the scheduled next tick
     private var waitingIdle = false              // that tick is just the idle poll
-    /// The field this session types into, re-checked before keystrokes (nil =
-    /// unguarded). Once focus leaves it, nothing more is typed or deleted.
-    private var focusTarget: PasteEngine.StreamTarget?
+    /// The field this session types into, re-checked (via the sink) before
+    /// keystrokes. Once focus leaves it, nothing more is typed or deleted.
+    private var handle: LiveStreamHandle?
     private var focusLost = false
     private var lastFocusCheck = Date.distantPast
     /// Set by `cancel()`: a `finish()` queued after it must not reconcile —
@@ -63,16 +71,22 @@ final class LiveTypist: @unchecked Sendable {
 
     /// Begin a session. `allowed` (from `PasteEngine.canStreamType()`, checked on
     /// the main thread) gates whether we actually post keystrokes this session.
-    func start(allowed: Bool, cps: Double, target: PasteEngine.StreamTarget? = nil) {
+    func start(allowed: Bool, cps: Double, target: StreamTarget? = nil) {
+        start(LiveStreamHandle(allowed: allowed, target: target), cps: cps)
+    }
+
+    /// Begin a session on a destination the sink claimed (`sink.beginStream()`,
+    /// on the main thread). `handle.allowed` gates whether we post keystrokes.
+    func start(_ handle: LiveStreamHandle, cps: Double) {
         queue.async {
             self.committed = ""
             self.target = ""
             self.revealed = 0
             self.frozenLen = 0
-            self.focusTarget = target
+            self.handle = handle
             self.focusLost = false
             self.lastFocusCheck = .distantPast
-            self.enabled = allowed
+            self.enabled = handle.allowed
             self.cancelled = false
             self.cps = cps
             self.instant = cps >= Self.instantThreshold
@@ -108,7 +122,7 @@ final class LiveTypist: @unchecked Sendable {
                 }
                 let result = FinishResult(text: self.committed, focusLost: self.focusLost)
                 self.committed = ""; self.target = ""; self.revealed = 0; self.frozenLen = 0
-                self.focusTarget = nil; self.focusLost = false
+                self.handle = nil; self.focusLost = false
                 continuation.resume(returning: result)
             }
         }
@@ -166,9 +180,8 @@ final class LiveTypist: @unchecked Sendable {
         guard deletes > 0 || desired.count > from else { return }   // nothing changed
         guard focusStillOurs(deleting: deletes > 0) else { return }
 
-        for _ in 0..<deletes { PasteEngine.postBackspace() }        // instant
         let insert = desired.count > from ? String(desired[from...]) : ""
-        if !insert.isEmpty { PasteEngine.postUnicode(insert) }      // instant
+        sink.replace(backspaces: deletes, insert: insert)            // instant
         // `committed` mirrors the FIELD: kept (old) prefix + what we just typed.
         committed = String(old[0..<keep]) + insert
         frozenLen = max(frozenLen, committed.count - Self.editableTail)
@@ -211,11 +224,11 @@ final class LiveTypist: @unchecked Sendable {
     /// mid-hold sent the corrections' backspaces into the new app.
     private func focusStillOurs(deleting: Bool) -> Bool {
         guard !focusLost else { return false }
-        guard let focusTarget else { return true }
+        guard let handle, handle.target != nil else { return true }   // unguarded
         let now = Date()
         if !deleting, now.timeIntervalSince(lastFocusCheck) < 0.15 { return true }
         lastFocusCheck = now
-        if PasteEngine.isStillStreamTarget(focusTarget) { return true }
+        if sink.stillOurs(handle) { return true }
         focusLost = true
         enabled = false
         Log.live("focus left the field — typing stopped; the text goes to the copy box")

@@ -28,9 +28,11 @@ enum AllSuites {
         StitchTests.suite,
         ParakeetWindowTests.suite,
         LiveTypingTests.suite,
+        TextSinkTests.suite,
         TranscriptDiffTests.suite,
         DictationRoutingTests.suite,
         CaptureAndHistoryTests.suite,
+        CaptureConsumerTests.suite,
         ModelLifecycleTests.suite,
         ProblemReportTests.suite,
     ]

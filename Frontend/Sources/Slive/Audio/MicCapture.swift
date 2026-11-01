@@ -22,6 +22,10 @@ import Foundation
 /// thread (`onBuffer`); the buffer is reused between callbacks, so consumers
 /// copy what they keep. The unit stays initialized between holds and only
 /// stops IO, so a re-start is a few ms and the mic indicator goes off.
+///
+/// Threading: `start`/`stop`/`dispose` are not thread-safe — one caller at a
+/// time (the recorder on main, or a live session's audio processor); `render`
+/// runs on the audio thread.
 final class MicCapture {
     /// One unit for the app: one-shot and continuous never capture at the
     /// same time, and sharing keeps the device warm across modes.
@@ -60,6 +64,7 @@ final class MicCapture {
     /// Start IO on `device`, rebuilding the unit if it was built for another
     /// device (or never), or the device's format changed since. Throws with
     /// the failing stage + OSStatus.
+    /// `onBuffer` runs ON THE AUDIO THREAD.
     func start(device: AudioDeviceID, onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws {
         if isRunning { return }
         self.onBuffer = onBuffer
