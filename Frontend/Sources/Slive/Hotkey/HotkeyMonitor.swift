@@ -179,6 +179,11 @@ final class HotkeyMonitor {
 
     // MARK: - Tap
 
+    /// The listen-only fallback was already logged (until a consuming tap takes).
+
+    private var loggedListenOnly = false
+
+
     @discardableResult
     private func installTap() -> Bool {
         guard eventTap == nil else { return true }
@@ -204,7 +209,13 @@ final class HotkeyMonitor {
         if made == nil, consuming {
             made = create(false)
             consuming = false
-            Log.event("hotkey tap: no Accessibility — listening only (chord shortcuts may type a character)")
+            // Once per fallback, not once per rebuild (launch rebuilds per shortcut).
+            if !loggedListenOnly {
+                Log.event("hotkey tap: no Accessibility — listening only (chord shortcuts may type a character)")
+            }
+            loggedListenOnly = true
+        } else if made != nil, consuming {
+            loggedListenOnly = false
         }
         guard let tap = made else { return false }
 

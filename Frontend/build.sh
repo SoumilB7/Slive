@@ -69,6 +69,28 @@ sed -e "s|__BACKEND_DIR__|$(plist_value "$BACKEND_DIR")|g" \
     -e "s|__BUILD__|$(plist_value "$BUILD_SHA")|g" \
     Resources/Info.plist.template > "$CONTENTS/Info.plist"
 
+# The problem reporter: its own little app inside Slive, so a frozen or
+# crashed Slive can still offer a GitHub issue (Sources/SliveReporter).
+REPORTER="$CONTENTS/Helpers/SliveReporter.app/Contents"
+mkdir -p "$REPORTER/MacOS"
+cp ".build/$CONFIG/SliveReporter" "$REPORTER/MacOS/SliveReporter"
+cat > "$REPORTER/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Slive Reporter</string>
+    <key>CFBundleIdentifier</key><string>com.slive.app.reporter</string>
+    <key>CFBundleExecutable</key><string>SliveReporter</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$(plist_value "$VERSION")</string>
+    <key>CFBundleVersion</key><string>$(plist_value "$VERSION")</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+</dict>
+</plist>
+PLIST
+
 if [[ "$BUNDLED" == "1" ]]; then
     # The Python server, self-contained: uv's standalone CPython (the one the
     # repo venv is built on), the venv's installed packages, and the server
@@ -155,6 +177,7 @@ if [[ "${1:-}" == "release" ]]; then
         find "$CONTENTS/Resources/backend" -type f \( -name "*.so" -o -name "*.dylib" -o -perm -u+x \) -print0 \
             | xargs -0 -n 64 -P 8 codesign --force --sign - >/dev/null 2>&1 || true
     fi
+    codesign --force --options runtime --sign - "$CONTENTS/Helpers/SliveReporter.app"
     codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$APP"
     verify_signature "$APP"
 else
@@ -232,6 +255,7 @@ if [[ ( "${1:-}" == "run" || "${1:-}" == "install" ) && -z "${SLIVE_SKIP_PREPARE
       done
       kill "$PREP_PID" 2>/dev/null ) &
     WATCHDOG=$!
+    disown "$WATCHDOG" 2>/dev/null || true   # no "Terminated" line when it's stopped below
     PREP_STATUS=0; wait "$PREP_PID" || PREP_STATUS=$?
     kill "$WATCHDOG" 2>/dev/null || true
     PREP_SECS=$(( $(date +%s) - PREP_START ))

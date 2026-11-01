@@ -378,6 +378,16 @@ final class TrainingStore: ObservableObject {
             // The next rewrite writes `samples` only — keep the bytes we
             // couldn't read before it drops them for good.
             let aside = Self.corruptBackupURL(for: indexFile, at: Date())
+            // Already set aside, byte for byte (no rewrite since the last
+            // launch): one copy is enough — don't add one per launch.
+            let size = (try? indexFile.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+            let prefix = "\(indexFile.lastPathComponent).corrupt-"
+            let copies = (try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+            if copies.contains(where: { $0.lastPathComponent.hasPrefix(prefix)
+                && (try? $0.resourceValues(forKeys: [.fileSizeKey]))?.fileSize == size }) {
+                return parsed.samples
+            }
             do {
                 try FileManager.default.copyItem(at: indexFile, to: aside)
                 NSLog("Slive: \(parsed.undecodable) unreadable training index line(s) — copied to \(aside.lastPathComponent)")

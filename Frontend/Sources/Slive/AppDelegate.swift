@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var backendStatusItem: NSMenuItem?
     private var statusCancellable: AnyCancellable?
+    /// Keeps the problem reporter's settings summary current and tells it
+    /// when the server dies on its own.
+    private var reporterWatches: Set<AnyCancellable> = []
     private var recordStart: Date?
     /// When the current continuous session began speaking (post hold-delay), so
     /// its pace can be measured on release.
@@ -75,6 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)   // normal app: Dock icon + Cmd-Tab
+        // First: the problem reporter (its own process) and the main-thread
+        // watchdog, so even a crash or freeze during launch can be reported.
+        FailureReporter.shared.start()
 
         // Keep the global hotkey + overlay alive when Slive has no open window
         // and sits in the background — otherwise App Nap throttles the event tap.
@@ -95,6 +101,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusCancellable = backend.$status.sink { [weak self] status in
             self?.updateBackendStatusUI(status)
         }
+        backend.$lastExit.compactMap { $0 }.filter { !$0.wasExpected }.sink { exit in
+            let how = exit.reason == .uncaughtSignal ? "signal \(exit.code)" : "exit code \(exit.code)"
+            FailureReporter.shared.report("server", "Slive Server stopped unexpectedly.",
+                                          detail: "\(how) after \(Int(exit.uptime)) s", serverLog: true)
+        }.store(in: &reporterWatches)
+        Settings.shared.objectWillChange.merge(with: whisper.objectWillChange)
+            // Throttle, not debounce: a steady stream of model updates must
+            // not hold the summary back (a freeze report used launch-time states).
+            .throttle(for: .seconds(2), scheduler: RunLoop.main, latest: true)
+            .sink { FailureReporter.shared.settingsChanged() }
+            .store(in: &reporterWatches)
 
         setupMainMenu()
         setupMenuBar()
@@ -151,6 +168,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the ~20ms synthesis + engine graph setup on the hot path.
         Task.detached(priority: .utility) { _ = FeedbackPlayer.shared }
 
+        // Test hooks for the problem reporter (like SLIVE_TEST_ANE_HANG):
+        // freeze the main thread N seconds, crash, or report a fake failure,
+        // 6 s after launch.
+        let env = ProcessInfo.processInfo.environment
+        if let freeze = env["SLIVE_TEST_FREEZE"].flatMap(Double.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { Thread.sleep(forTimeInterval: freeze) }
+        }
+        if env["SLIVE_TEST_CRASH"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { fatalError("SLIVE_TEST_CRASH") }
+        }
+        if env["SLIVE_TEST_FAILURE"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                FailureReporter.shared.report("speech model", "The speech model failed to load.",
+                                              error: NSError(domain: NSCocoaErrorDomain, code: 260, userInfo: [
+                                                  NSLocalizedDescriptionKey: "The file at \(NSHomeDirectory())/Library/x.mlmodelc couldn’t be opened."]),
+                                              detail: "model test")
+            }
+        }
+
         // First launch, or a missing permission → show the home window so the
         // user sees what Slive does and can grant permissions in place.
         if Settings.shared.isFirstRun || !HotkeyMonitor.inputMonitoringGranted {
@@ -171,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// synchronous (it `waitUntilExit`s on pkill), so the server is gone before
     /// the process exits.
     func applicationWillTerminate(_ notification: Notification) {
+        FailureReporter.shared.goodbye()   // a normal quit, not a crash
         hotkey.stop()
         transcribeTask?.cancel(); transcribeTask = nil
         waitingTasks.values.forEach { $0.cancel() }
@@ -478,6 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordStart = Date()
         if !recorder.start() {
             Log.event("mic unavailable — hold aborted")
+            FailureReporter.shared.report("microphone", "The microphone couldn't start.")
             toggleActive = nil   // else the next tap is eaten as this session's "stop"
             showNotice(Self.micFailedMessage)
             return
@@ -1148,6 +1186,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = appMenu.addItem(withTitle: "Settings…",
                                        action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
+        let report = appMenu.addItem(withTitle: "Report a Problem…",
+                                     action: #selector(reportProblem), keyEquivalent: "")
+        report.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Slive",
                         action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
@@ -1225,6 +1266,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let reportItem = NSMenuItem(title: "Report a Problem…",
+                                    action: #selector(reportProblem), keyEquivalent: "")
+        reportItem.target = self
+        menu.addItem(reportItem)
+
         menu.addItem(.separator())
         // Quit has no explicit target: it travels the responder chain to NSApp.
         menu.addItem(NSMenuItem(title: "Quit Slive",
@@ -1235,6 +1281,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settingsWindow.show()
+    }
+
+    /// Opens a GitHub issue prefilled with this build and Slive's recent log
+    /// (through the reporter, which strips anything personal first).
+    @objc private func reportProblem() {
+        FailureReporter.shared.reportManually()
     }
 
     /// Reflect the backend status in the menu-bar item (tooltip + menu line).
@@ -1258,6 +1310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quit and reopen Slive. Required after granting Input Monitoring, because
     /// macOS caches that permission until the app is relaunched.
     @objc private func relaunchApp() {
+        FailureReporter.shared.goodbye()
         let path = Bundle.main.bundlePath
         let pid = ProcessInfo.processInfo.processIdentifier
         // Wait for THIS process to exit, then reopen the app — no double instance.

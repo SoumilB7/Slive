@@ -24,10 +24,27 @@ let package = Package(
             name: "SliveObjC",
             path: "Sources/SliveObjC"
         ),
+        // Problem reports: redaction, crash/hang parsing, the GitHub issue
+        // body — shared by the app and its reporter, and self-tested.
+        .target(
+            name: "SliveReport",
+            path: "Sources/SliveReport",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // The reporter: a separate process (Contents/Helpers/SliveReporter.app)
+        // so a frozen or crashed Slive can still be reported.
+        .executableTarget(
+            name: "SliveReporter",
+            dependencies: ["SliveReport"],
+            path: "Sources/SliveReporter",
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("SwiftUI")]
+        ),
         .executableTarget(
             name: "Slive",
             dependencies: [
                 "SliveObjC",
+                "SliveReport",
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "FluidAudio", package: "FluidAudio")
             ],

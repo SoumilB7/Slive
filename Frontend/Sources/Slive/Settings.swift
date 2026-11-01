@@ -29,6 +29,7 @@ final class Settings: ObservableObject {
         static let continuousModel = "continuousModel"
         static let continuousTypeCPS = "continuousTypeCPS"
         static let verboseLogging = "verboseLogging"
+        static let reportProblems = "reportProblems"
         static let captureEdits = "captureEdits"
         static let captureMaxGB = "captureMaxGB"
         static let echoCancellation = "echoCancellation"
@@ -233,6 +234,16 @@ final class Settings: ObservableObject {
         didSet {
             UserDefaults.standard.set(verboseLogging, forKey: Keys.verboseLogging)
             Log.enabled = verboseLogging || ProcessInfo.processInfo.environment["SLIVE_DEBUG"] == "1"
+        }
+    }
+
+    /// Offer a prefilled GitHub issue when Slive crashes, freezes or hits a
+    /// failure (see FailureReporter). Nothing is sent unless the user submits
+    /// it on GitHub. "Report a Problem…" works either way.
+    @Published var reportProblems: Bool {
+        didSet {
+            UserDefaults.standard.set(reportProblems, forKey: Keys.reportProblems)
+            FailureReporter.shared.settingsChanged()
         }
     }
 
@@ -445,6 +456,7 @@ final class Settings: ObservableObject {
             continuousTypeCPS = UserDefaults.standard.double(forKey: Keys.continuousTypeCPS)
         }
         verboseLogging = UserDefaults.standard.bool(forKey: Keys.verboseLogging)
+        reportProblems = UserDefaults.standard.object(forKey: Keys.reportProblems) as? Bool ?? true
         captureEdits = UserDefaults.standard.object(forKey: Keys.captureEdits) == nil
             ? true : UserDefaults.standard.bool(forKey: Keys.captureEdits)
         if UserDefaults.standard.object(forKey: Keys.captureMaxGB) == nil {

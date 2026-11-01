@@ -595,9 +595,15 @@ final class TranscriptionModel: ObservableObject {
             await beginDecode(model)
             defer { endDecode(model) }
             let t0 = Date()
-            guard let text = try? await withTimeout(seconds: limit, what: "decode", {
-                try await engine.transcribe(samples)
-            }) else { return nil }
+            let text: String
+            do {
+                text = try await withTimeout(seconds: limit, what: "decode") {
+                    try await engine.transcribe(samples)
+                }
+            } catch {
+                Self.reportDecodeFailure(model, error)
+                return nil
+            }
             Self.recordDecode(model: model, audioSeconds: Double(samples.count) / 16_000,
                               decodeSeconds: Date().timeIntervalSince(t0))
             return text
@@ -608,15 +614,30 @@ final class TranscriptionModel: ObservableObject {
         defer { endDecode(model) }
         let t0 = Date()
         let options = decodeOptions(chunking: true)
-        let results: [TranscriptionResult]? = try? await withTimeout(seconds: limit, what: "decode") {
-            try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+        let results: [TranscriptionResult]
+        do {
+            results = try await withTimeout(seconds: limit, what: "decode") {
+                try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+            }
+        } catch {
+            Self.reportDecodeFailure(model, error)
+            return nil
         }
-        guard let results else { return nil }
         // Pure decode on a resident pipe — the only honest calibration source.
         Self.recordDecode(model: model,
                           audioSeconds: Double(samples.count) / 16_000,
                           decodeSeconds: Date().timeIntervalSince(t0))
         return Self.cleanStreamText(results.map { $0.text }.joined())
+    }
+
+    /// A decode that threw or never returned is a real fault (silence and
+    /// too-short clips never get here) — offer a report.
+    nonisolated static func reportDecodeFailure(_ model: String, _ error: Error) {
+        if error is CancellationError { return }
+        FailureReporter.shared.report("transcription",
+                                      error is TimeoutError ? "A dictation's transcription never finished."
+                                                            : "Transcribing a dictation failed.",
+                                      error: error, detail: "model \(model)")
     }
 
     /// A decode that hasn't returned by now never will: 60s plus twice the
@@ -1199,6 +1220,8 @@ final class TranscriptionModel: ObservableObject {
             Log.event("model load TIMED OUT: \(model)")
             failedLoadAt[model] = Date()
             statuses[model] = .failed("Timed out. Re-download or pick smaller.")
+            FailureReporter.shared.report("speech model", "The speech model didn't finish loading in 10 minutes.",
+                                          detail: "model \(model)")
             Log.stt("TIMEOUT loading \(model)")
         } catch {
             loadingModels.remove(model)
@@ -1211,6 +1234,8 @@ final class TranscriptionModel: ObservableObject {
             statuses[model] = .failed(error.localizedDescription)
             Log.stt("FAILED loading \(model) — \(error)")
             NSLog("Slive: WhisperKit load failed — \(error)")
+            FailureReporter.shared.report("speech model", "The speech model failed to load.",
+                                          error: error, detail: "model \(model)")
         }
     }
 
@@ -1268,11 +1293,15 @@ final class TranscriptionModel: ObservableObject {
             loadingModels.remove(model)
             failedLoadAt[model] = Date()
             statuses[model] = .failed("Timed out. Re-download.")
+            FailureReporter.shared.report("speech model", "The Parakeet model didn't finish loading.",
+                                          detail: "model \(model)")
         } catch {
             loadingModels.remove(model)
             failedLoadAt[model] = Date()
             statuses[model] = .failed(error.localizedDescription)
             NSLog("Slive: Parakeet load failed — \(error)")
+            FailureReporter.shared.report("speech model", "The Parakeet model failed to load.",
+                                          error: error, detail: "model \(model)")
         }
     }
 
@@ -1313,6 +1342,7 @@ final class TranscriptionModel: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             NSLog("Slive: transcription failed — \(error)")
+            Self.reportDecodeFailure(model, error)
             return nil
         }
     }

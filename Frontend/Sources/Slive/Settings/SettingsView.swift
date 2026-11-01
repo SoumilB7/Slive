@@ -463,6 +463,9 @@ struct SettingsView: View {
             CardDivider()
             ToggleRow(title: "Launch at login", isOn: $settings.launchAtLogin)
             CardDivider()
+            ToggleRow(title: "Offer to report problems", isOn: $settings.reportProblems)
+                .help("After a crash or freeze, offer a GitHub issue. Personal details are removed.")
+            CardDivider()
             ToggleRow(title: "Developer logs", isOn: $settings.verboseLogging)
                 .help("Console.app · filter Slive")
         }
