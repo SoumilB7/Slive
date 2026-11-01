@@ -3,9 +3,6 @@ import SwiftUI
 /// Observable state that drives the overlay. The audio thread pushes raw
 /// levels in via `pushLevels`; a 60 fps timer eases the *displayed* values
 /// toward those targets so the bars feel fluid and alive rather than jittery.
-/// The resting pill's right-click menu.
-enum PillMenuItem { case startContinuous, hideForAnHour, settings }
-
 final class AudioModel: ObservableObject {
 
     /// One displayed conversation turn (role is "user" or "assistant").
@@ -34,15 +31,6 @@ final class AudioModel: ObservableObject {
     var onContinue: (() -> Void)?
 
     @Published var phase: Phase = .idle
-    /// Idle and showing the resting pill (set by OverlayController).
-    @Published var resting = false
-    /// The current session was started by clicking the pill: it shows ■ / ✕.
-    @Published var clickSession = false
-    /// Resting pill clicked / its ■ stop / ✕ cancel / a right-click menu item.
-    var onPillClick: (() -> Void)?
-    var onPillStop: (() -> Void)?
-    var onPillCancel: (() -> Void)?
-    var onPillMenu: ((PillMenuItem) -> Void)?
     @Published private(set) var levels: [Float]
     /// Eased RMS driving the bar amplitude. Internal easing state — no view
     /// reads it directly (views read `levels`), so publishing it only fired
@@ -204,7 +192,6 @@ final class AudioModel: ObservableObject {
     func reset() {
         resultIsError = false
         phase = .idle
-        clickSession = false
         streaming = false
         assistantListening = false
         assistantResult = false

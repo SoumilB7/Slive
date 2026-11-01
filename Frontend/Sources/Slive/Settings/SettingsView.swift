@@ -448,41 +448,10 @@ struct SettingsView: View {
                 valueText: "\(Int(settings.overlayOpacity * 100))%"
             )
             CardDivider()
-            ToggleRow(title: "Keep the pill on screen", isOn: $settings.pillOnScreen)
-                .help("Click it to dictate")
-            if settings.pillOnScreen {
-                CardDivider()
-                menuRow("Place", selection: $settings.pillPlacement,
-                        options: [("middle", "Right, middle"), ("lower", "Right, lower")])
-                CardDivider()
-                menuRow("Click starts", selection: $settings.pillClickAction,
-                        options: [("dictate", "Dictation"), ("stream", "Continuous")])
-            }
-            CardDivider()
-            ToggleRow(title: "Hide in screen sharing", isOn: $settings.pillHiddenInShares)
-                .help("Also hidden in screenshots")
-            CardDivider()
             ToggleRow(title: "Launch at login", isOn: $settings.launchAtLogin)
             CardDivider()
             ToggleRow(title: "Developer logs", isOn: $settings.verboseLogging)
                 .help("Console.app · filter Slive")
-        }
-    }
-
-    private func menuRow(_ title: String, selection: Binding<String>,
-                         options: [(String, String)]) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .font(SliveTheme.rowFont)
-                .foregroundStyle(SliveTheme.textPrimary)
-            Spacer(minLength: 0)
-            Picker("", selection: selection) {
-                ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .tint(SliveTheme.accent)
-            .fixedSize()
         }
     }
 

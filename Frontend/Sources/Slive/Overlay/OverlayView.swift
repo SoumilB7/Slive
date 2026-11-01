@@ -5,13 +5,8 @@ import AppKit
 /// AppKit controller (NSPanel frame) size themselves from these numbers so the
 /// grown box and the window that hosts it stay in lock-step.
 enum OverlayMetrics {
-    /// The pill container (also the shadow-spill room). The pills stand
-    /// upright on the right edge; the tallest is the clicked-on waveform with
-    /// its ■ / ✕ below it.
-    static let pillSize = CGSize(width: 60, height: 140)
-    /// The resting capsule's container — small, so the interactive panel at
-    /// rest never sits over anything but the capsule itself.
-    static let restSize = CGSize(width: 28, height: 64)
+    /// The resting pill container (also the shadow-spill container size).
+    static let pillSize = CGSize(width: 120, height: 44)
 
     static let fontSize: CGFloat = 14
     static let maxBoxWidth: CGFloat = 420      // widest the result box may grow
@@ -141,17 +136,11 @@ struct OverlayView: View {
             return model.assistantResult ? OverlayMetrics.assistantPanelSize(for: t)
                                           : OverlayMetrics.panelSize(for: t)
         }
-        if isResting { return OverlayMetrics.restSize }
         return OverlayMetrics.pillSize
     }
 
-    private var isResting: Bool { model.resting && model.phase == .idle }
-
     var body: some View {
         ZStack {
-            restingPill
-                .opacity(isResting ? 1 : 0)
-
             listeningPill
                 .opacity(isDictationListening ? 1 : 0)
                 .scaleEffect(isDictationListening ? 1 : 0.9)
@@ -179,7 +168,7 @@ struct OverlayView: View {
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: phaseRank)
         // Click-through everywhere except while the result box is showing, so its
         // copy button can be clicked; the pill/transcribing states stay passive.
-        .allowsHitTesting(isResult || isResting || model.clickSession)
+        .allowsHitTesting(isResult)
         .onChange(of: model.phase) { _, newPhase in
             if case .result(let t) = newPhase { displayText = t }
         }
@@ -188,94 +177,27 @@ struct OverlayView: View {
     // MARK: - Listening (unchanged waveform pill)
 
     private var listeningPill: some View {
-        VStack(spacing: 6) {
-            Self.upright(WaveformView(levels: model.levels), width: 48, height: 18)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 8)
-                .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
-                .clipShape(Capsule())
-                .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
-            clickControls(stop: true, cancel: true)
-        }
-    }
-
-    /// Today's horizontal pill content, stood upright: drawn at its usual
-    /// size, rotated a quarter turn, laid out in the swapped frame.
-    private static func upright<V: View>(_ content: V, width: CGFloat, height: CGFloat) -> some View {
-        content
-            .frame(width: width, height: height)
-            .rotationEffect(.degrees(90))
-            .frame(width: height, height: width)
-    }
-
-    /// ■ stop / ✕ cancel under a pill when the session was started by a click.
-    @ViewBuilder private func clickControls(stop: Bool, cancel: Bool) -> some View {
-        if model.clickSession {
-            VStack(spacing: 6) {
-                if stop {
-                    pillButton("stop.fill", tint: Color(red: 1, green: 0.37, blue: 0.34), help: "Stop and type") {
-                        model.onPillStop?()
-                    }
-                }
-                if cancel {
-                    pillButton("xmark", tint: .white.opacity(0.75), help: "Cancel") { model.onPillCancel?() }
-                }
-            }
-        }
-    }
-
-    private func pillButton(_ symbol: String, tint: Color, help: String,
-                            action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(tint)
-                .frame(width: 20, height: 20)
-                .background(Circle().fill(Color.black.opacity(chromeOpacity)))
-                .overlay(Circle().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    // MARK: - Resting (between dictations)
-
-    /// A thin upright capsule: light enough to see on any wallpaper. Click to
-    /// dictate (or start continuous — Settings); right-click for more.
-    private var restingPill: some View {
-        Capsule()
-            .fill(Color.white.opacity(0.55))
-            .overlay(Capsule().strokeBorder(.black.opacity(0.5), lineWidth: 0.5))
-            .frame(width: 8, height: 40)
-            .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
-            .frame(width: OverlayMetrics.restSize.width, height: OverlayMetrics.restSize.height)
-            .contentShape(Rectangle())
-            .onTapGesture { model.onPillClick?() }
-            .help(settings.pillClickAction == "stream"
-                  ? "Click for continuous · hold \(settings.hotkey.label) to dictate"
-                  : "Click to dictate · hold \(settings.hotkey.label)")
-            .contextMenu {
-                Button("Start continuous") { model.onPillMenu?(.startContinuous) }
-                Button("Hide for an hour") { model.onPillMenu?(.hideForAnHour) }
-                Divider()
-                Button("Settings…") { model.onPillMenu?(.settings) }
-            }
+        WaveformView(levels: model.levels)
+            .frame(width: 48, height: 18)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
     }
 
     // MARK: - Continuous listening (pen scribbling a line)
 
     private var continuousPill: some View {
-        VStack(spacing: 6) {
-            Self.upright(PenScribbleView(active: isLiveDictating), width: 66, height: 26)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 8)
-                .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
-                .clipShape(Capsule())
-                .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
-            clickControls(stop: true, cancel: false)
-        }
+        PenScribbleView(active: isLiveDictating)
+            .frame(width: 66, height: 26)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.40), radius: 6, y: 2)
     }
 
     // MARK: - Assistant listening (black-hole orbit pill)
@@ -292,9 +214,10 @@ struct OverlayView: View {
     // MARK: - Transcribing (loading dots in the same pill)
 
     private func transcribingPill(active: Bool) -> some View {
-        Self.upright(LoadingDots(active: active), width: 48, height: 18)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 8)
+        LoadingDots(active: active)
+            .frame(width: 48, height: 18)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
             .clipShape(Capsule())

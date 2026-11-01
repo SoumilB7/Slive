@@ -44,8 +44,6 @@ final class OverlayController {
     /// Whether the result box's buttons are currently clickable — kept so a
     /// rebuild can restore the same interactivity on the fresh panel.
     private var interactive = false
-    /// "Hide for an hour" from the resting pill's menu.
-    private var hiddenUntil: Date?
 
     init(model: AudioModel) {
         self.model = model
@@ -102,8 +100,6 @@ final class OverlayController {
         panel.ignoresMouseEvents = true              // click-through
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        // Out of screen sharing and screenshots unless the user wants it shown.
-        panel.sharingType = Settings.shared.pillHiddenInShares ? .none : .readOnly
 
         let host = NSHostingView(rootView: OverlayView(model: model))
         host.frame = NSRect(origin: .zero, size: size)
@@ -167,7 +163,6 @@ final class OverlayController {
     /// screen currently has the mouse. Always resets to the resting pill size —
     /// a previous result box may have left the panel grown.
     func show() {
-        model.resting = false
         interactive = false
         panel.ignoresMouseEvents = true              // pill/transcribing stay click-through
         applyTopmostLevel()                          // refresh level (may be stale)
@@ -193,49 +188,6 @@ final class OverlayController {
         // orderOut, or the phase snap to .idle would render a box→pill
         // collapse for a frame while the panel is still on screen.
         model.reset()
-        rest()
-    }
-
-    // MARK: - Resting pill
-
-    /// Between dictations: keep a thin capsule on screen to click, if the user
-    /// wants it (Settings → Keep the pill on screen) and hasn't hidden it.
-    func rest() {
-        if let until = hiddenUntil, until > Date() { return }
-        hiddenUntil = nil
-        guard Settings.shared.pillOnScreen, model.phase == .idle else {
-            if model.resting { model.resting = false; panel.orderOut(nil) }
-            return
-        }
-        model.resting = true
-        interactive = true
-        panel.ignoresMouseEvents = false              // the capsule is clickable
-        applyTopmostLevel()
-        setPanelSize(OverlayMetrics.restSize)
-        reposition()
-        panel.orderFrontRegardless()
-        // No 2s heartbeat at rest: it would rebuild the panel every 2s while
-        // the display sleeps or the screen is locked (occlusion = not visible).
-        // Space/app switches and wake already re-assert or rebuild it.
-        verifyOnScreen()
-    }
-
-    /// "Hide for an hour" — the capsule comes back afterwards (dictation by
-    /// hotkey still shows the pill meanwhile).
-    func hideForAnHour() {
-        hiddenUntil = Date().addingTimeInterval(3600)
-        model.resting = false
-        panel.orderOut(nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3601) { [weak self] in
-            guard let self, self.model.phase == .idle else { return }
-            self.rest()
-        }
-    }
-
-    /// Re-apply the pill settings (placement, on-screen, screen sharing).
-    func applyPillSettings() {
-        panel.sharingType = Settings.shared.pillHiddenInShares ? .none : .readOnly
-        if model.phase == .idle { rest() } else { reposition() }
     }
 
     /// Trust, but verify: shortly after ordering in, ask the window server
@@ -294,7 +246,7 @@ final class OverlayController {
     }
 
     /// Grow (or shrink) the panel to fit the given content size, keeping it
-    /// docked on the right edge (a box grows leftward from the pill).
+    /// bottom-centred so the box grows upward with a fixed bottom edge.
     func resize(to size: NSSize) {
         setPanelSize(size)
         reposition()
@@ -319,12 +271,8 @@ final class OverlayController {
             ?? NSScreen.screens.first
         guard let frame = screen?.visibleFrame else { return }
         let size = panel.frame.size
-        // Docked on the right edge, upright: centred vertically, or low (just
-        // above the Dock) — Settings → Place.
-        let x = frame.maxX - size.width - 2
-        let y = Settings.shared.pillPlacement == "lower"
-            ? frame.minY + 8
-            : frame.midY - size.height / 2
+        let x = frame.midX - size.width / 2
+        let y = frame.minY + 8                         // lower, near the bottom edge
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
