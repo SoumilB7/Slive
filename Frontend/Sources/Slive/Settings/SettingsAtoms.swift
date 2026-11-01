@@ -361,31 +361,6 @@ struct EmptyState: View {
 
 // MARK: - Transcription model picker (shared by General + Continuous)
 
-/// The on-device Whisper model choices offered in the pickers.
-struct WhisperModelChoice: Identifiable {
-    let label: String
-    let model: String
-    let detail: String
-    var id: String { model }
-
-    static let all: [WhisperModelChoice] = [
-        .init(label: "Whisper – tiny.en", model: "tiny.en", detail: "Fastest · 75 MB"),
-        .init(label: "Whisper – base.en", model: "base.en", detail: "Fast · 150 MB"),
-        .init(label: "Whisper – large-v3 turbo", model: "large-v3-v20240930_626MB", detail: "Recommended · 600 MB"),
-        .init(label: "Whisper – large-v3", model: "large-v3", detail: "Most accurate · 1.5 GB"),
-    ]
-
-    /// The Parakeet engine (FluidAudio, Neural Engine). Offered only where a
-    /// caller opts in — hold-to-talk dictation. Continuous (WhisperKit's
-    /// live streaming) and the ground-truth judge stay Whisper-only.
-    static let parakeet: [WhisperModelChoice] = [
-        .init(label: ParakeetModel.ultra.displayName, model: ParakeetModel.ultra.rawValue,
-              detail: "Fastest · weaker on names · 610 MB"),
-        .init(label: ParakeetModel.v2.displayName, model: ParakeetModel.v2.rawValue,
-              detail: "English · 450 MB"),
-    ]
-}
-
 /// Live download/prepare status + action for one model. minHeight keeps state
 /// changes from reflowing the card.
 struct ModelStatusRow: View {
@@ -438,13 +413,14 @@ struct ModelPickerCard: View {
     @Binding var model: String
     /// Tooltip on the picker.
     var help: String = ""
-    var includeParakeet = false
+    /// Which catalog models it offers.
+    let use: ModelUse
     /// Offer the large-v3 turbo download while on tiny/base (dictation card).
     var suggestBalanced = false
 
     var body: some View {
         SettingsCard(title) {
-            ModelPickerRows(model: $model, includeParakeet: includeParakeet)
+            ModelPickerRows(model: $model, use: use)
                 .help(help)
             if suggestBalanced { BalancedSuggestion(model: $model) }
         }
@@ -460,7 +436,7 @@ struct BalancedSuggestion: View {
     @ObservedObject private var transcription = TranscriptionModel.shared
     @Binding var model: String
     @AppStorage("balancedSuggestionDismissed") private var dismissed = false
-    static let balanced = "large-v3-v20240930_626MB"
+    static let balanced = ModelCatalog.balanced
 
     var body: some View {
         if ["tiny.en", "base.en"].contains(model), !dismissed, !transcription.isDownloaded(Self.balanced) {
@@ -515,31 +491,25 @@ struct BalancedSuggestion: View {
     }
 }
 
-/// The embeddable heart of the Whisper model picker: choice menu + detail line
-/// + live download/prepare status row. Used by the dictation model card AND
-/// anywhere else that selects an on-device Whisper model (ground truth) — one
-/// component, identical download linkage everywhere.
+/// The embeddable heart of the model picker: choice menu + detail line + live
+/// download/prepare status row. Used by the dictation and continuous cards
+/// AND the ground-truth judge — one component, identical download linkage
+/// everywhere. The choices are `ModelCatalog`'s for `use`, one section per
+/// engine, then the installed fine-tunes.
 struct ModelPickerRows: View {
     @ObservedObject private var transcription = TranscriptionModel.shared
     @Binding var model: String
-    /// Offer the Parakeet ("Instant") models — hold-to-talk dictation only.
-    var includeParakeet = false
-
-    private var choices: [WhisperModelChoice] {
-        WhisperModelChoice.all + (includeParakeet ? WhisperModelChoice.parakeet : [])
-    }
+    let use: ModelUse
 
     var body: some View {
+        let picked = ModelCatalog.resolve(model, for: use, custom: transcription.customModels)
         Group {
             HStack(spacing: 10) {
                 Picker("", selection: $model) {
-                    ForEach(WhisperModelChoice.all) { c in
-                        Text(c.label).tag(c.model)
-                    }
-                    if includeParakeet {
-                        Divider()
-                        ForEach(WhisperModelChoice.parakeet) { c in
-                            Text(c.label).tag(c.model)
+                    ForEach(Array(ModelCatalog.sections(for: use).enumerated()), id: \.offset) { i, section in
+                        if i > 0 { Divider() }
+                        ForEach(section) { d in
+                            Text(d.label).tag(d.id)
                         }
                     }
                     if !transcription.customModels.isEmpty {
@@ -549,8 +519,7 @@ struct ModelPickerRows: View {
                         }
                     }
                     // Keep any custom/previously-saved model selectable.
-                    if !choices.contains(where: { $0.model == model })
-                        && !transcription.customModels.contains(where: { $0.id == model }) {
+                    if picked == nil {
                         Text("Custom").tag(model)
                     }
                 }
@@ -558,10 +527,7 @@ struct ModelPickerRows: View {
                 .pickerStyle(.menu)
                 .tint(SliveTheme.accent)
                 .fixedSize()
-                Text(choices.first { $0.model == model }?.detail
-                     ?? transcription.customModels.first { $0.id == model }
-                        .map { "Fine-tuned \($0.baseModel) · \($0.id)" }
-                     ?? "Custom model · \(model)")
+                Text(picked?.detail ?? "Custom model · \(model)")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textMuted)
                 Spacer(minLength: 0)

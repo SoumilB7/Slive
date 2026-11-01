@@ -5,6 +5,10 @@ import Foundation
 /// clips, WAV reading, word error rate. Dev tooling only.
 @MainActor
 enum BenchSupport {
+    /// The app's dictation stages (trim → decode → clean), with no
+    /// Vocabulary: WER is measured against the engine's own spelling.
+    static let pipeline = DictationPipeline.standard(vocabulary: "")
+
     struct Clip { let id: String; let url: URL; let reference: String?; var order = 0 }
 
     /// Newest-first; stratified across lengths unless `since` is given

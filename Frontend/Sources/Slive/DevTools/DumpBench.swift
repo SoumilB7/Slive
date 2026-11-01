@@ -14,7 +14,7 @@ enum DumpBench {
             guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
             return args[i + 1]
         }
-        let model = value("--model") ?? "large-v3-v20240930_626MB"
+        let model = value("--model") ?? ModelCatalog.balanced
         let limit = Int(value("--limit") ?? "") ?? 120
         guard let outPath = value("--out") else { print("✗ --out required"); return 2 }
         let whisper = TranscriptionModel.shared
@@ -26,7 +26,7 @@ enum DumpBench {
         let clips = BenchSupport.loadClips(minSeconds: 1, limit: limit, labeledOnly: true)
         for (i, clip) in clips.enumerated() {
             guard let samples = BenchSupport.readWAV(clip.url) else { continue }
-            let voiced = TranscriptionModel.trimSilence(samples)
+            let voiced = BenchSupport.pipeline.prepare(samples)
             guard voiced.count > 16_000 / 3 else { continue }
             let t = Date()
             let text = await whisper.transcribeSamples(Array(voiced), model: model) ?? ""

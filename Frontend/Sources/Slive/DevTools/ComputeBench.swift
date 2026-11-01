@@ -34,7 +34,7 @@ enum ComputeBench {
             guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
             return args[i + 1]
         }
-        let model = value("--model") ?? "large-v3-v20240930_626MB"
+        let model = value("--model") ?? ModelCatalog.balanced
         let limit = Int(value("--limit") ?? "") ?? 24
         let maxSeconds = Double(value("--max-seconds") ?? "") ?? 1e9
         let perClip = args.contains("--per-clip")
@@ -42,7 +42,7 @@ enum ComputeBench {
             : args.contains("--ane-only") ? Array(layouts.prefix(1)) : layouts
         let clips = BenchSupport.loadClips(minSeconds: 1, limit: limit)
             .compactMap { BenchSupport.readWAV($0.url) }
-            .map { Array(TranscriptionModel.trimSilence($0)) }
+            .map { Array(BenchSupport.pipeline.prepare($0)) }
             .filter { $0.count > 16_000 / 3 && Double($0.count) / 16_000 <= maxSeconds }
         let audio = clips.map { Double($0.count) / 16_000 }.reduce(0, +)
         print(String(format: "%d clips, %.0fs of speech · model %@", clips.count, audio, model))

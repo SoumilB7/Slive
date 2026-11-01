@@ -18,7 +18,7 @@ enum ColdStartBench {
             return args[i + 1]
         }
         let t0 = Date()
-        let model = value("--model") ?? "large-v3-v20240930_626MB"
+        let model = value("--model") ?? ModelCatalog.balanced
         if let from = value("--redecode-since"), let to = value("--until") {
             return await redecode(from: from, to: to, model: model)
         }
@@ -60,20 +60,20 @@ enum ColdStartBench {
             guard let clip = TranscriptionModel.warmUpAudio else { print("✗ no bundled WarmUp.wav"); return 2 }
             _ = await whisper.transcribeSamples(clip, model: model)
         case "speech":
-            _ = await whisper.transcribeSamples(Array(TranscriptionModel.trimSilence(warmClip)), model: model)
+            _ = await whisper.transcribeSamples(Array(BenchSupport.pipeline.prepare(warmClip)), model: model)
         default: break
         }
         if warmup != "none" { print(String(format: "warm-up took %.2fs", Date().timeIntervalSince(t))) }
 
         for (i, clip) in clips.enumerated() {
-            let voiced = Array(TranscriptionModel.trimSilence(clip))
+            let voiced = Array(BenchSupport.pipeline.prepare(clip))
             t = Date()
             let text = await whisper.transcribeSamples(voiced, model: model) ?? ""
             print(String(format: "dictation #%d  %4.1fs audio → %.2fs  «%@»", i + 1,
                          Double(voiced.count) / 16_000, Date().timeIntervalSince(t),
                          String(text.prefix(50))))
         }
-        let first = Array(TranscriptionModel.trimSilence(clips[0]))
+        let first = Array(BenchSupport.pipeline.prepare(clips[0]))
         t = Date()
         let again = await whisper.transcribeSamples(first, model: model) ?? ""
         print(String(format: "dictation #1 again (fully warm) → %.2fs  «%@»",
@@ -95,7 +95,7 @@ enum ColdStartBench {
                   let at = o["createdAt"] as? String, at >= from, at <= to,
                   let rel = o["audioFile"] as? String,
                   let samples = BenchSupport.readWAV(dir.appendingPathComponent(rel)) else { continue }
-            let now = await whisper.transcribeSamples(Array(TranscriptionModel.trimSilence(samples)), model: model) ?? ""
+            let now = await whisper.transcribeSamples(Array(BenchSupport.pipeline.prepare(samples)), model: model) ?? ""
             print("\(at)  \(String(format: "%.1f", Double(samples.count) / 16_000))s")
             print("   typed then: \((o["transcript"] as? String) ?? "")")
             print("   warm now  : \(now)")
@@ -136,7 +136,7 @@ enum ColdStartBench {
               let samples = BenchSupport.readWAV(clip.url) else { print("✗ audio"); return 2 }
         let t0 = Date()
         whisper.select(model)                         // app launch: background load
-        let voiced = Array(TranscriptionModel.trimSilence(samples))
+        let voiced = Array(BenchSupport.pipeline.prepare(samples))
         // The app's path since Oct 7: wait for the model (no racing warm-up),
         // then the normal in-memory decode.
         let wasReady = whisper.isReady(model)
@@ -160,7 +160,7 @@ enum ColdStartBench {
         var changed = 0, styleChanged = 0
         for clip in clips {
             guard let samples = BenchSupport.readWAV(clip.url) else { continue }
-            let new = TranscriptionModel.trimSilence(samples)
+            let new = BenchSupport.pipeline.prepare(samples)
             let frames = samples.count / 160
             guard frames > 0 else { continue }
             let rms = (0..<frames).map { f -> Float in
@@ -168,9 +168,9 @@ enum ColdStartBench {
                 for j in (f * 160)..<(f * 160 + 160) { sum += samples[j] * samples[j] }
                 return (sum / 160).squareRoot()
             }
-            let threshold = TranscriptionModel.edgeThreshold(frameRMS: rms)
+            let threshold = SilenceTrim.edgeThreshold(frameRMS: rms)
             guard let last = rms.lastIndex(where: { $0 > threshold }) else { continue }
-            let oldEnd = min(samples.count, (last + 1) * 160 + TranscriptionModel.trimTailPad)
+            let oldEnd = min(samples.count, (last + 1) * 160 + SilenceTrim.tailPad)
             guard oldEnd != new.endIndex else { continue }
             changed += 1
             let old = Array(samples[new.startIndex..<oldEnd])
@@ -192,7 +192,7 @@ enum ColdStartBench {
         guard let clip = BenchSupport.loadClips(minSeconds: 0, limit: 100_000).first(where: { $0.id.hasPrefix(idPrefix) }),
               let samples = BenchSupport.readWAV(clip.url) else { print("✗ clip"); return 2 }
         _ = await whisper.transcribeSamples(Array(samples.prefix(48_000)), model: model)   // warm
-        let trimmed = TranscriptionModel.trimSilence(samples)
+        let trimmed = BenchSupport.pipeline.prepare(samples)
         func show(_ label: String, _ audio: [Float]) async {
             let t = await whisper.transcribeSamples(audio, model: model) ?? "(nil)"
             print(String(format: "%@ (%.1fs): «%@»", label, Double(audio.count) / 16_000, t))

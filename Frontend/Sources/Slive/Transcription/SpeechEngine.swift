@@ -1,16 +1,33 @@
 import FluidAudio
 import Foundation
 
-/// Which speech engine runs a model id. Every id Slive has ever stored is a
-/// WhisperKit variant ("tiny.en", "large-v3-v20240930_626MB", custom
-/// fine-tunes); Parakeet ids carry a `parakeet-` prefix, so the split is
-/// unambiguous and old settings keep meaning exactly what they meant.
+/// Which speech engine runs a model id, resolved through `ModelCatalog`.
+/// Every id Slive stored before Parakeet is a WhisperKit variant ("tiny.en",
+/// "large-v3-v20240930_626MB", custom fine-tunes) and isn't in the catalog
+/// as anything else; Parakeet ids carry a `parakeet-` prefix, so the split
+/// is unambiguous and old settings keep meaning exactly what they meant.
 enum SpeechEngine: Equatable {
     case whisper
     case parakeet(ParakeetModel)
 
+    /// The engine alone, without its model — what a catalog entry records.
+    enum Kind {
+        case whisper
+        case parakeet
+    }
+
+    var kind: Kind {
+        switch self {
+        case .whisper: return .whisper
+        case .parakeet: return .parakeet
+        }
+    }
+
     static func of(_ modelID: String) -> SpeechEngine {
-        ParakeetModel(rawValue: modelID).map(SpeechEngine.parakeet) ?? .whisper
+        switch ModelCatalog.engine(of: modelID) {
+        case .whisper: return .whisper
+        case .parakeet: return ParakeetModel(rawValue: modelID).map(SpeechEngine.parakeet) ?? .whisper
+        }
     }
 }
 

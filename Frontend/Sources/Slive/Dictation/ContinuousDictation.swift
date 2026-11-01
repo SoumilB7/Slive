@@ -40,10 +40,10 @@ final class ContinuousDictation {
     private var typing = false
     /// Latest normalized transcript — the fallback text if the final pass fails.
     private var lastTranscript = ""
-    /// The user's Vocabulary, captured at start: every streamed pass and the
-    /// final text are spelling-corrected against it, so the field never shows
-    /// one spelling live and swaps to another on release.
-    private var vocabulary = ""
+    /// The text stages, with the user's Vocabulary captured at start: every
+    /// streamed pass and the final text are spelling-corrected against it, so
+    /// the field never shows one spelling live and swaps to another on release.
+    private var pipeline = DictationPipeline.live(vocabulary: "")
 
     /// Live mic energy (0…~1) forwarded for the waveform pill.
     var onEnergy: ((Float) -> Void)?
@@ -71,7 +71,7 @@ final class ContinuousDictation {
         self.session = session
         active = true
         lastTranscript = ""
-        vocabulary = Settings.shared.hotwords
+        pipeline = .live(vocabulary: Settings.shared.hotwords)
         let canType = PasteEngine.canStreamType()
         typing = canType
         Log.live("start — model=\(model) cps=\(Int(Settings.shared.continuousTypeCPS)) canType=\(canType)")
@@ -81,8 +81,7 @@ final class ContinuousDictation {
         let ok = whisper.startLiveDictation(model: model) { [weak self] transcript, energy in
             guard let self, self.active else { return }
             self.onEnergy?(energy)
-            let text = VocabularyCorrector.correct(Self.normalize(transcript),
-                                                   hotwords: self.vocabulary)
+            let text = self.pipeline.finish(transcript)
             self.lastTranscript = text
             // Just move the goal — the typist eases the field toward it smoothly.
             self.typist.setTarget(text)
@@ -107,9 +106,9 @@ final class ContinuousDictation {
         // replaces all of these.
         let typist = self.typist, model = self.model, typing = self.typing
         let session = self.session
-        let lastTranscript = self.lastTranscript, vocabulary = self.vocabulary
+        let lastTranscript = self.lastTranscript, pipeline = self.pipeline
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
-        let confirmedText = Self.normalize(whisper.liveConfirmedText)
+        let confirmedText = pipeline.clean(whisper.liveConfirmedText)
         let confirmedEnd = whisper.liveConfirmedEndSeconds
         whisper.stopLiveDictation()
         let duration = Double(snapshot.count) / 16_000.0
@@ -132,13 +131,13 @@ final class ContinuousDictation {
             let tailSamples = Array(snapshot[tailStart...])
             if let tailText = await whisper.transcribeSamples(tailSamples, model: model) {
                 final = Self.stitchTranscripts(confirmed: confirmedText,
-                                               tail: Self.normalize(tailText))
+                                               tail: pipeline.clean(tailText))
                 Log.live(String(format: "stitched release: tail %.1fs of %.1fs",
                                 Double(tailSamples.count) / 16_000.0, duration))
             }
         }
         if final == nil {
-            final = (await whisper.transcribeSamples(snapshot, model: model)).map(Self.normalize)
+            final = (await whisper.transcribeSamples(snapshot, model: model)).map(pipeline.clean)
         }
         // An empty final is a failed pass, not "the user said nothing": taken
         // at face value it backspaced the typed tail and returned no text.
@@ -146,7 +145,7 @@ final class ContinuousDictation {
         // Fall back to the last streamed transcript if the final pass fails
         // (already corrected; the stitched/full text is corrected here, after
         // the seam merge so a term split across the seam still matches).
-        let finalText = final.map { VocabularyCorrector.correct($0, hotwords: vocabulary) }
+        let finalText = final.map(pipeline.correct)
             ?? lastTranscript
         if cancelledSession == session {
             Log.live("cancelled during the final pass — nothing typed")
@@ -218,15 +217,11 @@ final class ContinuousDictation {
 
     // MARK: - Text hygiene
 
-    /// Drop Whisper's leading segment space (so the field doesn't start with a
-    /// space) and strip anything unsafe. Control tokens / placeholder are already
-    /// removed upstream; this is a final guard at the typing boundary.
+    /// The live pipeline's cleanup (`StreamHygiene`, then `LeadingSpaceStrip`):
+    /// drop Whisper's leading segment space (so the field doesn't start with
+    /// a space) and strip anything unsafe. Control tokens / placeholder are
+    /// already removed upstream; this is a final guard at the typing boundary.
     static func normalize(_ text: String) -> String {   // internal for tests
-        var t = text.replacingOccurrences(of: "Waiting for speech...", with: "")
-        if t.contains("<|") {
-            t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
-        }
-        while t.first == " " { t.removeFirst() }
-        return t
+        DictationPipeline.live(vocabulary: "").clean(text)
     }
 }

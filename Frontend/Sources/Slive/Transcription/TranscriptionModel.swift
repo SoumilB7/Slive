@@ -378,7 +378,7 @@ final class TranscriptionModel: ObservableObject {
             guard let device = InputDevices.resolve(uid: Settings.shared.inputDeviceUID)
                     ?? InputDevices.defaultInputID() else { return false }
             let session = ParakeetLiveSession(engine: engine) { text in
-                onUpdate(Self.cleanStreamText(text), 0)
+                onUpdate(StreamHygiene.clean(text), 0)
             }
             do { try session.start(device: device) } catch {
                 Log.live("parakeet START failed — \(error.localizedDescription)")
@@ -443,7 +443,7 @@ final class TranscriptionModel: ObservableObject {
                 // an early hallucination or the "Waiting for speech..." placeholder.)
                 let confirmed = state.confirmedSegments.map { $0.text }.joined()
                 let tail = state.unconfirmedSegments.map { $0.text }.joined()
-                let transcript = Self.cleanStreamText(confirmed + tail)
+                let transcript = StreamHygiene.clean(confirmed + tail)
                 let energy = state.bufferEnergy.last ?? 0
                 let now = Date()
                 guard transcript != lastTranscript else {   // energy-only tick
@@ -511,76 +511,19 @@ final class TranscriptionModel: ObservableObject {
         return Array(pipe.audioProcessor.audioSamples)
     }
 
-    /// A hold counts as speech only if some 10ms frame is louder than this —
-    /// below it the whole clip is treated as silence and the decode skipped.
-    nonisolated static let trimSpeechGate: Float = 0.01
-    /// Bounds for the per-clip edge threshold (see `trimSilence`).
-    nonisolated static let trimEdgeFloor: Float = 0.003
-    /// Edge threshold = this × the clip's own noise floor, clamped to
-    /// [`trimEdgeFloor`, `trimSpeechGate`].
-    nonisolated static let trimNoiseMultiple: Float = 4
-    /// Kept before the first voiced frame (150ms) and after the last (300ms).
-    nonisolated static let trimLeadPad = 2_400
-    nonisolated static let trimTailPad = 4_800
+    // Silence trim moved to `SilenceTrim` (the pipeline's audio stage);
+    // these forward so existing callers and tests keep working.
+    nonisolated static var trimSpeechGate: Float { SilenceTrim.speechGate }
+    nonisolated static var trimEdgeFloor: Float { SilenceTrim.edgeFloor }
+    nonisolated static var trimLeadPad: Int { SilenceTrim.leadPad }
+    nonisolated static var trimTailPad: Int { SilenceTrim.tailPad }
 
-    /// Trim leading and trailing silence from a canonical 16 kHz mono buffer
-    /// before decoding. Dead air costs decode windows and trips fallback
-    /// thresholds for nothing — every one-shot dictation runs through this
-    /// first. Pure function, covered by `--self-test`.
-    ///
-    /// Two thresholds, because one fixed level ate the ends of sentences:
-    /// - **Is there speech at all?** Some frame must exceed `trimSpeechGate`
-    ///   (0.01 RMS); otherwise the hold was silence → empty slice.
-    /// - **Where does it start and end?** Measured against the clip's OWN
-    ///   noise floor (10th-percentile frame RMS × 4, clamped 0.003…0.01).
-    ///   Voices trail off at the end of a sentence to ~0.003–0.009 RMS —
-    ///   still several times the room noise, but under the old fixed 0.01
-    ///   cut, so the last words were deleted before Whisper saw them (Sep
-    ///   2026 audit: ~85 of 1485 captured clips, confirmed by re-decoding).
     nonisolated static func trimSilence(_ samples: [Float]) -> ArraySlice<Float> {
-        let frame = 160   // 10ms at 16k
-        let frames = samples.count / frame
-        guard frames > 0 else { return samples[0..<0] }
-
-        var rms = [Float](repeating: 0, count: frames)
-        var loudest: Float = 0
-        for f in 0..<frames {
-            var sum: Float = 0
-            for j in (f * frame)..<(f * frame + frame) { sum += samples[j] * samples[j] }
-            rms[f] = (sum / Float(frame)).squareRoot()
-            loudest = max(loudest, rms[f])
-        }
-        guard loudest > trimSpeechGate else { return samples[0..<0] }
-
-        let threshold = edgeThreshold(frameRMS: rms)
-        // The END edge uses the gentler "true silence" line: anything above
-        // max(1.5 × room floor, ½ threshold) is still voice. In a noisy room
-        // the edge threshold clamps at 0.01 and soft final words (0.005–0.01)
-        // were cut — Oct 8: "…see this in a change [as well]". Replayed on 150
-        // recent clips with the real model: 143 identical, 5 endings
-        // recovered, 0 invented words.
-        let tailThreshold = max(1.5 * noiseFloor(frameRMS: rms), 0.5 * threshold)
-        guard let first = rms.firstIndex(where: { $0 > threshold }),
-              let last = rms.lastIndex(where: { $0 > min(threshold, tailThreshold) }) else { return samples[0..<0] }
-        let start = max(0, first * frame - trimLeadPad)
-        let end = min(samples.count, (last + 1) * frame + trimTailPad)
-        return samples[start..<end]
+        SilenceTrim.trim(samples)
     }
 
-    /// The per-clip edge threshold: `trimNoiseMultiple` × the 10th-percentile
-    /// frame RMS (the room's noise floor), clamped to
-    /// [`trimEdgeFloor`, `trimSpeechGate`]. A clip that is mostly speech
-    /// reads a high floor and clamps to the old 0.01 — never stricter.
     nonisolated static func edgeThreshold(frameRMS: [Float]) -> Float {
-        guard !frameRMS.isEmpty else { return trimSpeechGate }
-        return min(trimSpeechGate, max(trimEdgeFloor, trimNoiseMultiple * noiseFloor(frameRMS: frameRMS)))
-    }
-
-    /// The room's noise floor: the clip's 10th-percentile 10ms frame RMS.
-    nonisolated static func noiseFloor(frameRMS: [Float]) -> Float {
-        guard !frameRMS.isEmpty else { return 0 }
-        let sorted = frameRMS.sorted()
-        return sorted[min(sorted.count - 1, sorted.count / 10)]
+        SilenceTrim.edgeThreshold(frameRMS: frameRMS)
     }
 
     /// Transcribe a raw sample array in full on `model`'s pipe. Used on release to
@@ -627,7 +570,7 @@ final class TranscriptionModel: ObservableObject {
         Self.recordDecode(model: model,
                           audioSeconds: Double(samples.count) / 16_000,
                           decodeSeconds: Date().timeIntervalSince(t0))
-        return Self.cleanStreamText(results.map { $0.text }.joined())
+        return StreamHygiene.clean(results.map { $0.text }.joined())
     }
 
     /// A decode that threw or never returned is a real fault (silence and
@@ -738,15 +681,9 @@ final class TranscriptionModel: ObservableObject {
         return options
     }
 
-    /// Belt-and-suspenders: strip any residual Whisper control tokens like
-    /// `<|startoftranscript|>`, `<|en|>`, `<|0.00|>`, `<|endoftext|>` that can
-    /// slip through even with skipSpecialTokens set, plus the placeholder.
-    static func cleanStreamText(_ text: String) -> String {   // internal for tests
-        var t = text.replacingOccurrences(of: "Waiting for speech...", with: "")
-        if t.contains("<|") {
-            t = t.replacingOccurrences(of: "<\\|[^|]*\\|>", with: "", options: .regularExpression)
-        }
-        return t
+    /// Moved to `StreamHygiene` (the pipeline's cleanup stage); forwards.
+    nonisolated static func cleanStreamText(_ text: String) -> String {
+        StreamHygiene.clean(text)
     }
 
     /// Stop the live stream (ends its mic capture + realtime loop).

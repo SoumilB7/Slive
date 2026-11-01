@@ -35,9 +35,6 @@ enum SilenceTrimTests {
         t.check(ParakeetEngine.directory(for: .ultra, basket: basket).path == "/tmp/basket/parakeet/parakeet-ultra"
                 && ParakeetEngine.directory(for: .v2, basket: basket).path == "/tmp/basket/parakeet/parakeet-tdt-0.6b-v2",
               "Parakeet models live in the basket under FluidAudio's folder names")
-        t.check(WhisperModelChoice.parakeet.map(\.model) == ParakeetModel.allCases.map(\.rawValue)
-                && Set(WhisperModelChoice.all.map(\.model)).isDisjoint(with: WhisperModelChoice.parakeet.map(\.model)),
-              "picker: Parakeet entries separate from the Whisper list (dictation-only opt-in)")
         t.check(AppDelegate.postReleaseCaptureSeconds >= 0.1,
               "post-release capture keeps at least 0.1s")
         let rate = 16_000

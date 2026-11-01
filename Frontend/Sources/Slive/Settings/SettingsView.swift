@@ -197,9 +197,7 @@ struct SettingsView: View {
 
     /// "Parakeet – Ultra · Ready" for a dictation model id.
     private func modelStatusLine(_ model: String) -> String {
-        let name = (WhisperModelChoice.all + WhisperModelChoice.parakeet).first { $0.model == model }?.label
-            ?? transcription.customModels.first { $0.id == model }?.displayName
-            ?? model
+        let name = ModelCatalog.resolve(model, custom: transcription.customModels)?.label ?? model
         let state: String
         switch transcription.status(for: model) {
         case .ready: state = "Ready"
@@ -347,7 +345,7 @@ struct SettingsView: View {
             title: "MODEL",
             model: $settings.whisperModel,
             help: "Runs on this Mac",
-            includeParakeet: true,
+            use: .dictation,
             suggestBalanced: true
         )
     }

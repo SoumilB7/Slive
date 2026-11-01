@@ -20,7 +20,7 @@ enum TailBench {
             guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
             return args[i + 1]
         }
-        let model = value("--model") ?? "large-v3-v20240930_626MB"
+        let model = value("--model") ?? ModelCatalog.balanced
         let cut = Double(value("--cut") ?? "") ?? 0.2
         let since = value("--since") ?? "2026-08-05"
         let limit = Int(value("--limit") ?? "") ?? 300
@@ -75,7 +75,7 @@ enum TailBench {
 
     /// The release path's own decode: silence trim, then transcribeSamples.
     static func decode(_ samples: [Float], model: String) async -> String {
-        let voiced = TranscriptionModel.trimSilence(samples)
+        let voiced = BenchSupport.pipeline.prepare(samples)
         guard voiced.count > 16_000 / 3 else { return "" }
         return await TranscriptionModel.shared.transcribeSamples(Array(voiced), model: model) ?? ""
     }
@@ -91,7 +91,7 @@ enum TailBench {
             for j in (f * frame)..<(f * frame + frame) { sum += samples[j] * samples[j] }
             rms[f] = (sum / Float(frame)).squareRoot()
         }
-        let threshold = TranscriptionModel.edgeThreshold(frameRMS: rms)
+        let threshold = SilenceTrim.edgeThreshold(frameRMS: rms)
         let sorted = rms.sorted()
         let floor = sorted[min(sorted.count - 1, sorted.count / 10)]
         let silence = max(1.5 * floor, 0.5 * threshold)

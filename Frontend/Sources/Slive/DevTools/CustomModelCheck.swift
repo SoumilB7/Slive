@@ -6,14 +6,14 @@ import WhisperKit
 /// the real registry (`CustomWhisperModelRegistry.model(in:)`), loads it with
 /// the SAME WhisperKit config dictation uses (ANE encoder/decoder, CPU mel,
 /// no downloads), checks the tokenizer resolved locally, then transcribes
-/// labelled clips on the app path (trimSilence → app decode options) next to
+/// labelled clips on the app path (BenchSupport.pipeline around the app decode options) next to
 /// the stock Balanced model and prints WER + latency for both.
 ///
 /// Flags: --ids <file> (one clip id per line — e.g. a training run's held-out
 /// split; default: --clips N labelled clips) · --clips N (default 40).
 @MainActor
 enum CustomModelCheck {
-    static let stock = "large-v3-v20240930_626MB"
+    static let stock = ModelCatalog.balanced
 
     static func run(_ args: [String]) async -> Int32 {
         func value(_ flag: String) -> String? {
@@ -72,11 +72,11 @@ enum CustomModelCheck {
                 var decode = 0.0, errors = 0.0, words = 0.0
                 for clip in clips {
                     guard let audio = BenchSupport.readWAV(clip.url) else { texts.append(""); continue }
-                    let voiced = Array(TranscriptionModel.trimSilence(audio))
+                    let voiced = Array(BenchSupport.pipeline.prepare(audio))
                     t = Date()
                     let results = try await kit.transcribe(audioArray: voiced, decodeOptions: options)
                     decode += Date().timeIntervalSince(t)
-                    let text = TranscriptionModel.cleanStreamText(results.map(\.text).joined())
+                    let text = BenchSupport.pipeline.finish(results.map(\.text).joined())
                     texts.append(text)
                     let n = Double(BenchSupport.words(clip.reference ?? "").count)
                     errors += BenchSupport.wer(text, clip.reference ?? "") * n

@@ -571,7 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let action = currentAction
         let whisperModel = whisper.servingModel(wanted: Settings.shared.whisperModel,
                                                 fallback: servingDictationModel)
-        let vocabulary = Settings.shared.hotwords
+        let pipeline = DictationPipeline.standard(vocabulary: Settings.shared.hotwords)
         // Queued: every dictation, and an assistant request released while
         // the model isn't ready or behind dictations still in line. A queued
         // release is never cancelled by a newer hold and runs in turn (it
@@ -628,7 +628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Trim leading/trailing silence first: dead air before the first
             // word (hold → think → speak) and the release tail's quiet both
             // cost decode windows and trip fallback thresholds for nothing.
-            let voiced = TranscriptionModel.trimSilence(samples)
+            let voiced = pipeline.prepare(samples)
             var transcript: String?
             var waitedForModel = false
             if voiced.count > 16_000 / 3 {
@@ -658,6 +658,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if transcript == nil, samples.isEmpty || voiced.count > 16_000 / 3 {
                 transcript = await whisper.transcribe(wavURL, model: whisperModel)
             }
+            // Engine artifacts out, whichever engine and path decoded it
+            // (Whisper's in-memory decode already cleaned: a no-op there).
+            transcript = transcript.map(pipeline.clean)
             // Unconditional: one line per dictation, and THE number to check
             // whenever "dictation feels slow" comes up again.
             let decodeSeconds = Date().timeIntervalSince(tTranscribe)
@@ -681,7 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // Spell the user's Vocabulary terms the way they typed them
             // (both engines; a no-op when the list is empty).
-            let text = VocabularyCorrector.correct(decoded, hotwords: vocabulary)
+            let text = pipeline.correct(decoded)
             // Older waiting dictations type first.
             if let queueID { await self.waitingDictations.turn(queueID) }
             if Task.isCancelled { return }   // quit, or ✕ on a waiting assistant request

@@ -15,7 +15,7 @@ struct ContinuousSettingsView: View {
                 title: "MODEL",
                 model: $settings.continuousModel,
                 help: "Parakeet keeps up best. Same as Dictation = less memory",
-                includeParakeet: true
+                use: .continuous
             )
             typingSpeedCard
         }

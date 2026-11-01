@@ -99,7 +99,7 @@ enum EngineCheck {
             }
             let released = Date()
             session.stop()
-            let final = (try? await engine.transcribe(Array(TranscriptionModel.trimSilence(session.snapshot())))) ?? ""
+            let final = (try? await engine.transcribe(Array(BenchSupport.pipeline.prepare(session.snapshot())))) ?? ""
             print(String(format: "  release → final %.3fs  «%@»  (%d live passes)",
                          Date().timeIntervalSince(released), final, session.passes))
         }

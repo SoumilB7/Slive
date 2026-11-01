@@ -14,6 +14,7 @@ enum AllSuites {
         DefaultShortcutTests.suite,
         SilenceTrimTests.suite,
         TextHygieneTests.suite,
+        SpeechPipelineTests.suite,
         PasteFocusTests.suite,
         PacingTests.suite,
         WpmTests.suite,

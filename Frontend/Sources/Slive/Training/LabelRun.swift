@@ -360,7 +360,9 @@ final class LabelRun: ObservableObject {
     /// training already prefers them.
     private func applyConsensus(id: String, _ result: GroundTruthClient.ConsensusResult,
                                 hotwords: String, coalesced: Bool) {
-        let text = VocabularyCorrector.correct(result.text, hotwords: hotwords)
+        // The dictation pipeline's corrections only: an LLM transcript has
+        // no decoder artifacts to clean.
+        let text = DictationPipeline.standard(vocabulary: hotwords).correct(result.text)
         store.setLLMTranscript(id: id, text: text, model: LabelScope.modelTag(chosen: result.chosen),
                                agreement: result.agreement, coalesced: coalesced)
         TranscriptDiffCache.remove(id: id)

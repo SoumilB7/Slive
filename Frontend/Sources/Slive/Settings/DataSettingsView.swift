@@ -547,7 +547,7 @@ struct DataSettingsView: View {
         if settings.groundTruthProvider == .whisper {
             // The SAME picker + download linkage as the dictation model
             // card — status dot, download button, progress, all of it.
-            ModelPickerRows(model: $settings.groundTruthModel)
+            ModelPickerRows(model: $settings.groundTruthModel, use: .groundTruth)
         } else {
             HStack(spacing: 10) {
                 // The model id that will be sent, with a trailing chip listing
