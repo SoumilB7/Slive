@@ -37,6 +37,7 @@ final class Settings: ObservableObject {
         static let groundTruthModel = "groundTruthModel"
         static let groundTruthBaseURL = "groundTruthBaseURL"
         static let groundTruthPrompt = "groundTruthPrompt"
+        static let consensusPrompt = "consensusPrompt"
         static let groundTruthRecipe = "groundTruthRecipe"
         static let localQuantized = "localQuantized"
         static let localMemLimitGB = "localMemLimitGB"
@@ -281,6 +282,10 @@ final class Settings: ObservableObject {
     /// The user's edited base instruction for ground-truth transcription.
     /// Empty = follow the server's shipped default. The vocabulary tail is
     /// ALWAYS appended live server-side, whatever the base says.
+    /// The consensus speaker line; empty = the default (label_consensus.py).
+    @Published var consensusPrompt: String {
+        didSet { UserDefaults.standard.set(consensusPrompt, forKey: Keys.consensusPrompt) }
+    }
     @Published var groundTruthPrompt: String {
         didSet { UserDefaults.standard.set(groundTruthPrompt, forKey: Keys.groundTruthPrompt) }
     }
@@ -429,6 +434,7 @@ final class Settings: ObservableObject {
         groundTruthModel = gtModel
         groundTruthBaseURL = UserDefaults.standard.string(forKey: Keys.groundTruthBaseURL) ?? ""
         groundTruthPrompt = UserDefaults.standard.string(forKey: Keys.groundTruthPrompt) ?? ""
+        consensusPrompt = UserDefaults.standard.string(forKey: Keys.consensusPrompt) ?? ""
         groundTruthRecipe = UserDefaults.standard.string(forKey: Keys.groundTruthRecipe)
             .flatMap(GroundTruthRecipe.init(rawValue:)) ?? .consensus
         let localOpts = Self.localInferenceOptions()

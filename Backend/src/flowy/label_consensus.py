@@ -94,11 +94,13 @@ def parse_hotwords(raw: str | list[str] | None) -> list[str]:
     return words[:MAX_KEYWORDS]
 
 
-def compose_prompt(context: str | None) -> str:
-    """gpt-transcribe's prompt: the generic speaker line, then the user's
-    context sentence (clipped — the endpoint's prompt budget is small)."""
+def compose_prompt(context: str | None, base: str | None = None) -> str:
+    """gpt-transcribe's prompt: the speaker line (the user's edit, else the
+    default), then their context sentence (clipped — the endpoint's prompt
+    budget is small)."""
+    head = " ".join((base or "").split())[:400] or DEFAULT_CONTEXT
     ctx = " ".join((context or "").split())
-    return f"{DEFAULT_CONTEXT} {ctx[:400]}" if ctx else DEFAULT_CONTEXT
+    return f"{head} {ctx[:400]}" if ctx else head
 
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
@@ -247,6 +249,7 @@ async def label(
     typed: str = "",
     hotwords: str | list[str] | None = None,
     context: str | None = None,
+    base_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Label one clip by consensus. Returns ``{text, chosen, agreement,
     candidates, prompt}``; raises ``LabelFatalError`` on a key problem and
@@ -263,7 +266,7 @@ async def label(
     filename = "audio.mp3" if is_mp3 else "audio.wav"
 
     keywords = parse_hotwords(hotwords)
-    prompt = compose_prompt(context)
+    prompt = compose_prompt(context, base_prompt)
     # A list value becomes one multipart field per item — the API reads
     # repeated ``keywords[]`` / ``languages[]`` fields (and 400s on bad ones).
     gpt_fields: dict[str, str | list[str]] = {

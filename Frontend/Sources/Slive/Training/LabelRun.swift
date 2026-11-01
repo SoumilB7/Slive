@@ -256,10 +256,11 @@ final class LabelRun: ObservableObject {
         lastFailure = nil
         let hotwords = settings.hotwords
         let context = settings.contextPrompt
+        let base = settings.consensusPrompt
         task = Task { [weak self] in
             guard let self else { return }
             let completed = await self.consensusLoop(
-                ids: ids, key: key, hotwords: hotwords, context: context)
+                ids: ids, key: key, hotwords: hotwords, context: context, base: base)
             if completed {
                 let failed = self.failedIDs.count
                 self.message = failed == 0 ? nil
@@ -283,7 +284,8 @@ final class LabelRun: ObservableObject {
 
     /// A sliding window of `LabelEstimate.concurrency` clips. A failed clip
     /// is counted and the run moves on; only a key problem stops it.
-    private func consensusLoop(ids: [String], key: String, hotwords: String, context: String) async -> Bool {
+    private func consensusLoop(ids: [String], key: String, hotwords: String, context: String,
+                                base: String) async -> Bool {
         let byID = Dictionary(store.samples.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let jobs: [Job] = ids.compactMap { id in
             guard let sample = byID[id], let url = store.audioURL(sample) else { return nil }
@@ -296,7 +298,7 @@ final class LabelRun: ObservableObject {
                 let job = jobs[cursor]
                 cursor += 1
                 inFlight.insert(job.id)
-                group.addTask { await Self.consensusJob(job, key: key, hotwords: hotwords, context: context) }
+                group.addTask { await Self.consensusJob(job, key: key, hotwords: hotwords, context: context, base: base) }
             }
             while let outcome = await group.next() {
                 switch outcome {
@@ -329,7 +331,7 @@ final class LabelRun: ObservableObject {
                     let job = jobs[cursor]
                     cursor += 1
                     inFlight.insert(job.id)
-                    group.addTask { await Self.consensusJob(job, key: key, hotwords: hotwords, context: context) }
+                    group.addTask { await Self.consensusJob(job, key: key, hotwords: hotwords, context: context, base: base) }
                 }
             }
             return true
@@ -338,12 +340,12 @@ final class LabelRun: ObservableObject {
 
     /// One clip, off the main actor: validate the audio, ask the backend.
     private nonisolated static func consensusJob(_ job: Job, key: String, hotwords: String,
-                                                 context: String) async -> Outcome {
+                                                 context: String, base: String) async -> Outcome {
         do {
             _ = try validatedAudioSeconds(job.url)
             let result = try await GroundTruthClient().consensus(
                 audioURL: job.url, apiKey: key, typed: job.typed,
-                hotwords: hotwords, context: context)
+                hotwords: hotwords, context: context, base: base)
             return .labeled(job.id, result)
         } catch is CancellationError {
             return .skipped(job.id)
@@ -444,6 +446,7 @@ final class LabelRun: ObservableObject {
         let model = settings.groundTruthModel
         let hotwords = settings.hotwords
         let context = settings.contextPrompt
+        let base = settings.consensusPrompt
         let key = providers.apiKey(for: .openai)
         Task { [weak self] in
             guard let self else { return }
@@ -453,7 +456,7 @@ final class LabelRun: ObservableObject {
                     _ = try Self.validatedAudioSeconds(url)
                     let result = try await GroundTruthClient().consensus(
                         audioURL: url, apiKey: key, typed: sample.transcript,
-                        hotwords: hotwords, context: context)
+                        hotwords: hotwords, context: context, base: base)
                     self.applyConsensus(id: sample.id, result, hotwords: hotwords, coalesced: false)
                 } else {
                     let text = try await self.singleText(url: url, provider: provider, model: model)

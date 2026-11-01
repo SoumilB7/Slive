@@ -31,6 +31,9 @@ struct DataSettingsView: View {
     @State private var promptExpanded = false
     /// The editable base instruction: draft, fetched default, editor state.
     @State private var editorExpanded = false
+    @State private var consensusExpanded = false
+    @State private var consensusDraft = ""
+    @State private var consensusNote: String?
     @State private var promptDraft = ""
     @State private var defaultPrompt: String?
     @State private var editorNote: String?
@@ -273,6 +276,7 @@ struct DataSettingsView: View {
 
             if isConsensus {
                 consensusControls
+                consensusPromptEditor
             } else {
                 singleProviderControls
             }
@@ -343,6 +347,83 @@ struct DataSettingsView: View {
 
     /// One click labels everything: the price and time up front, then the
     /// run's progress; afterwards the follow-ups (retry, rows worth a listen).
+    /// What gpt-transcribe is told, before any run: the editable speaker
+    /// line, then (live, read-only) the Vocabulary context and keywords.
+    @ViewBuilder private var consensusPromptEditor: some View {
+        let custom = !settings.consensusPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { consensusExpanded.toggle() }
+            if consensusExpanded {
+                consensusDraft = custom ? settings.consensusPrompt : GroundTruthClient.consensusDefaultBase
+                consensusNote = nil
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(consensusExpanded ? 90 : 0))
+                Text("Transcription prompt")
+                    .font(SliveTheme.font(11, .semibold))
+                Text(custom ? "Customized" : "Default")
+                    .font(SliveTheme.font(9, .semibold))
+                    .foregroundStyle(custom ? SliveTheme.accent : SliveTheme.textTertiary)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(.white.opacity(0.07)))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(SliveTheme.textSecondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if consensusExpanded {
+            TextEditor(text: $consensusDraft)
+                .font(SliveTheme.mono(11))
+                .foregroundStyle(.white.opacity(0.85))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(height: 64)
+                .innerWell()
+            HStack(spacing: 10) {
+                Button("Save") {
+                    let draft = consensusDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    settings.consensusPrompt = draft == GroundTruthClient.consensusDefaultBase ? "" : draft
+                    consensusNote = "Saved"
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(SliveTheme.accent)
+                .controlSize(.small)
+                .disabled(run.isRunning)
+                Button("Reset to default") {
+                    settings.consensusPrompt = ""
+                    consensusDraft = GroundTruthClient.consensusDefaultBase
+                    consensusNote = nil
+                }
+                .buttonStyle(.plain)
+                .font(SliveTheme.font(11, .semibold))
+                .foregroundStyle(SliveTheme.accent)
+                if let consensusNote {
+                    Text(consensusNote)
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(SliveTheme.textTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            // Exactly what one clip sends — live from Vocabulary.
+            let keywords = GroundTruthClient.consensusKeywords(settings.hotwords)
+            Text(GroundTruthClient.consensusPrompt(base: settings.consensusPrompt,
+                                                   context: settings.contextPrompt)
+                 + "\nKeywords: " + (keywords.isEmpty ? "none" : keywords.joined(separator: ", ")))
+                .font(SliveTheme.mono(10))
+                .foregroundStyle(SliveTheme.accent.opacity(0.75))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .innerWell()
+            Text("+ Vocabulary context and words")
+                .sliveCaption()
+        }
+    }
+
     @ViewBuilder private var consensusControls: some View {
         let scope = run.scope
         let hasKey = providers.hasKey(.openai)

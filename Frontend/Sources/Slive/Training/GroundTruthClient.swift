@@ -70,6 +70,35 @@ struct GroundTruthClient {
         return try JSONDecoder().decode(Resp.self, from: data).prompt
     }
 
+    /// The consensus speaker line when the user hasn't edited it. Mirrors
+    /// DEFAULT_CONTEXT in Backend/src/flowy/label_consensus.py.
+    static let consensusDefaultBase =
+        "Dictation to a computer: prompts, messages and notes, often technical."
+
+    /// What gpt-transcribe gets as its prompt — mirrors compose_prompt().
+    static func consensusPrompt(base: String, context: String) -> String {
+        func squash(_ s: String) -> String {
+            String(s.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(400))
+        }
+        let head = squash(base).isEmpty ? consensusDefaultBase : squash(base)
+        let ctx = squash(context)
+        return ctx.isEmpty ? head : "\(head) \(ctx)"
+    }
+
+    /// gpt-transcribe's keywords — mirrors parse_hotwords(): comma/newline
+    /// separated, whitespace collapsed, first spelling wins, no markup, ≤ 50.
+    static func consensusKeywords(_ raw: String) -> [String] {
+        var seen = Set<String>()
+        var words: [String] = []
+        for part in raw.split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == "\r" }) {
+            let word = part.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard !word.isEmpty, !word.contains("<"), !word.contains(">"),
+                  seen.insert(word.lowercased()).inserted else { continue }
+            words.append(word)
+        }
+        return Array(words.prefix(50))
+    }
+
     /// The vocabulary context that rides with every ground-truth request —
     /// the SAME "possible words" the user gave the main dictation model
     /// (Settings → Vocabulary), so the judge gets their spellings right
@@ -166,6 +195,7 @@ struct GroundTruthClient {
         let typed: String
         let hotwords: String
         let context: String
+        let base_prompt: String
     }
 
     private struct ConsensusReply: Decodable {
@@ -196,7 +226,7 @@ struct GroundTruthClient {
     }
 
     func consensus(audioURL: URL, apiKey: String, typed: String,
-                   hotwords: String, context: String) async throws -> ConsensusResult {
+                   hotwords: String, context: String, base: String) async throws -> ConsensusResult {
         guard !apiKey.isEmpty else {
             throw GroundTruthError.fatal(Self.missingOpenAIKeyMessage)
         }
@@ -206,7 +236,8 @@ struct GroundTruthClient {
         let audio = try Data(contentsOf: audioURL)
         let body = ConsensusBody(
             api_key: apiKey, audio_b64: audio.base64EncodedString(),
-            media_type: "audio/wav", typed: typed, hotwords: hotwords, context: context)
+            media_type: "audio/wav", typed: typed, hotwords: hotwords, context: context,
+            base_prompt: base)
         var request = URLRequest(url: URL(string: "http://127.0.0.1:50711/label_consensus")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

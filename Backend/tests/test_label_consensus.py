@@ -256,3 +256,10 @@ def test_endpoint_reports_per_clip_failure_as_400(mock_openai) -> None:
 def test_endpoint_rejects_truncated_audio() -> None:
     resp = _post({"audio_b64": base64.b64encode(b"\0" * 100).decode()})
     assert resp.status_code == 400
+
+
+def test_compose_prompt_uses_the_users_base_line():
+    from flowy.label_consensus import DEFAULT_CONTEXT, compose_prompt
+    assert compose_prompt("", None) == DEFAULT_CONTEXT
+    assert compose_prompt("Talks about Kore.", "  Notes  for   code. ") == "Notes for code. Talks about Kore."
+    assert compose_prompt(None, "   ") == DEFAULT_CONTEXT

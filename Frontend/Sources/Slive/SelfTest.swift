@@ -1022,6 +1022,13 @@ enum SelfTest {
 
         // Response mapping: key problems stop the run, a bad clip doesn't.
         let fatal = #"{"error":"OpenAI rejected the key (401)","fatal":"auth"}"#
+        // The card's prompt preview mirrors compose_prompt / parse_hotwords.
+        check(GroundTruthClient.consensusPrompt(base: "", context: "")
+                == GroundTruthClient.consensusDefaultBase, "consensus prompt defaults")
+        check(GroundTruthClient.consensusPrompt(base: " Notes  for code. ", context: "Talks about Kore.")
+                == "Notes for code. Talks about Kore.", "consensus prompt = base + context")
+        check(GroundTruthClient.consensusKeywords("Kore, kore\nSlive,<x>, ") == ["Kore", "Slive"],
+              "consensus keywords dedupe and drop markup")
         do {
             _ = try GroundTruthClient.decodeConsensus(Data(fatal.utf8))
             check(false, "fatal reply stops the run", "no error thrown")

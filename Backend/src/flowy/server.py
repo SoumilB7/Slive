@@ -308,6 +308,8 @@ class LabelConsensusRequest(BaseModel):
     hotwords: list[str] | str = ""
     #: The user's Vocabulary context sentence (may be empty).
     context: str = ""
+    #: The user's edit of the speaker line; empty = the default.
+    base_prompt: str = ""
 
     _clean_key = field_validator("api_key")(_clean_api_key)
 
@@ -322,6 +324,7 @@ async def label_consensus_endpoint(req: LabelConsensusRequest) -> JSONResponse:
             typed=req.typed,
             hotwords=req.hotwords,
             context=req.context,
+            base_prompt=req.base_prompt,
         )
     except LabelFatalError as exc:
         # A key problem fails every clip the same way — flagged so the app
