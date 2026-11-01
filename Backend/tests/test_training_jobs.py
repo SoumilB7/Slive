@@ -15,7 +15,20 @@ from flowy.training.models import get_training_model, training_models_payload
 def test_fine_tuned_model_name_is_picker_and_filesystem_safe() -> None:
     now = datetime(2026, 7, 18, 14, 5, 9, tzinfo=timezone.utc)
 
-    assert jobs.fine_tuned_model_name(now) == "balanced-ft-20260718-140509"
+    assert jobs.fine_tuned_model_name(now=now) == "balanced-ft-20260718-140509"
+    assert jobs.fine_tuned_model_name("tiny.en", now) == "tiny-en-ft-20260718-140509"
+    assert jobs.fine_tuned_model_name("large-v3", now) == "large-v3-ft-20260718-140509"
+
+
+def test_picker_shows_the_checkpoint_it_was_trained_from() -> None:
+    def name(model_name, source):
+        return pipeline.model_display_name(
+            PipelineConfig.for_model(model_name=model_name, source_model=source))
+
+    assert name("tiny-en-ft-20261102-012734", "tiny.en") == "Tiny English · fine-tuned Nov 2"
+    # Runs named before the fix keep their id but still show the real model.
+    assert name("balanced-ft-20261102-012734", "tiny.en") == "Tiny English · fine-tuned Nov 2"
+    assert name("My-Voice", "tiny.en") == "My-Voice"
 
 
 def test_catalog_covers_pinned_whisperkit_variants_and_optimized_alias() -> None:

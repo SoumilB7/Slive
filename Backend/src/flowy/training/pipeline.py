@@ -772,6 +772,21 @@ def _run_converter(executable: str, work: Path, log_path: Path,
     return out
 
 
+_DEFAULT_NAME = re.compile(r".+-ft-(\d{4})(\d{2})(\d{2})-\d{6}")
+
+
+def model_display_name(config: PipelineConfig) -> str:
+    """What the Dictation picker shows: a name the user chose, as typed; a
+    default timestamped name, as the checkpoint's label + date
+    ("Tiny English · fine-tuned Nov 2")."""
+    match = _DEFAULT_NAME.fullmatch(config.model_name)
+    if not match:
+        return config.model_name
+    day = datetime(*(int(part) for part in match.groups()))
+    label = get_training_model(config.source_model).label
+    return f"{label} · fine-tuned {day:%b} {day.day}"
+
+
 def _install_model(
     config: PipelineConfig,
     model_folder: Path,
@@ -804,7 +819,7 @@ def _install_model(
         raise RuntimeError(f"No tokenizer.json in {merged_dir}")
     manifest = {
         "id": config.model_name,
-        "display_name": config.model_name,
+        "display_name": model_display_name(config),
         "base_model": config.base_model,
         "source_model": config.source_model,
         "training_method": config.method,

@@ -50,10 +50,12 @@ def required_disk_gb(family: str, clips: int) -> float:
     return cache + 3 * _FAMILY_WEIGHTS_GB.get(family, 3.1) + 1.0
 
 
-def fine_tuned_model_name(now: datetime | None = None) -> str:
-    """Filesystem- and picker-safe name required for trained Balanced models."""
-
-    return (now or datetime.now().astimezone()).strftime("balanced-ft-%Y%m%d-%H%M%S")
+def fine_tuned_model_name(source_model: str = DEFAULT_TRAINING_MODEL,
+                          now: datetime | None = None) -> str:
+    """The default, filesystem- and picker-safe name: the checkpoint it was
+    trained from + a timestamp (it used to say "balanced" for every model)."""
+    slug = "balanced" if source_model == DEFAULT_TRAINING_MODEL else source_model.replace(".", "-")
+    return (now or datetime.now().astimezone()).strftime(f"{slug}-ft-%Y%m%d-%H%M%S")
 
 
 def sanitize_model_name(raw: str) -> str:
@@ -161,7 +163,7 @@ def start_job(
     # Only NEW fine-tunes are nameable — the name is the installed folder and
     # the picker id, so collisions must fail here, not after an hour of
     # training when the installer refuses to overwrite.
-    model_name = sanitize_model_name(custom_name or "") or fine_tuned_model_name()
+    model_name = sanitize_model_name(custom_name or "") or fine_tuned_model_name(profile.id)
     if (pipeline.custom_models_root() / model_name).exists():
         raise TrainingConflict(
             f"“{model_name}” already exists."

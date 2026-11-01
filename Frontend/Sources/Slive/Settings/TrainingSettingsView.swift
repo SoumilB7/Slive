@@ -304,7 +304,7 @@ struct TrainingSettingsView: View {
                     Text("Name")
                         .font(SliveTheme.font(11, .semibold))
                         .foregroundStyle(SliveTheme.textSecondary)
-                    TextField("balanced-ft-<date>-<time>", text: $customName)
+                    TextField("\(selectedModel == "large-v3-v20240930_626MB" ? "balanced" : selectedModel.replacingOccurrences(of: ".", with: "-"))-ft-<date>-<time>", text: $customName)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11, design: .monospaced))
                         .frame(maxWidth: 260)
