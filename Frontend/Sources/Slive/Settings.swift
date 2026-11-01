@@ -75,7 +75,7 @@ final class Settings: ObservableObject {
             if let hk = assistantHotkey, let data = try? JSONEncoder().encode(hk) {
                 UserDefaults.standard.set(data, forKey: Keys.assistantHotkey)
             } else {
-                UserDefaults.standard.removeObject(forKey: Keys.assistantHotkey)
+                UserDefaults.standard.set(Data(), forKey: Keys.assistantHotkey)   // cleared ≠ never set
             }
             onAssistantHotkeyChange?(assistantHotkey)
         }
@@ -107,7 +107,7 @@ final class Settings: ObservableObject {
             if let hk = dictateToggleHotkey, let data = try? JSONEncoder().encode(hk) {
                 UserDefaults.standard.set(data, forKey: Keys.dictateToggleHotkey)
             } else {
-                UserDefaults.standard.removeObject(forKey: Keys.dictateToggleHotkey)
+                UserDefaults.standard.set(Data(), forKey: Keys.dictateToggleHotkey)   // cleared ≠ never set
             }
             onToggleBindingsChange?()
         }
@@ -326,7 +326,7 @@ final class Settings: ObservableObject {
         let quantized = d.object(forKey: Keys.localQuantized) == nil
             ? true : d.bool(forKey: Keys.localQuantized)
         let mem = d.object(forKey: Keys.localMemLimitGB) == nil
-            ? 10.0 : d.double(forKey: Keys.localMemLimitGB)
+            ? 9.0 : d.double(forKey: Keys.localMemLimitGB)
         return (quantized, mem)
     }
 
@@ -335,6 +335,24 @@ final class Settings: ObservableObject {
     /// cache-prone IOHIDCheckAccess API.
     @Published var hotkeyActive = false
 
+    // MARK: Defaults for a fresh install — Soumil's own setup (Nov 2026).
+
+    /// A hotkey from its stored JSON, the same form Settings persists.
+    private static func hotkey(_ json: String) -> Hotkey? {
+        try? JSONDecoder().decode(Hotkey.self, from: Data(json.utf8))
+    }
+    static let defaultDictateToggle = hotkey(#"{"modifiers":262144,"taps":2,"label":"⌃ ×2"}"#)
+    static let defaultAssistantHotkey = hotkey(#"{"modifiers":8650752,"label":"⌃fn"}"#)
+    /// Live typing stays off until asked for; the General page suggests these.
+    static let suggestedStreamHotkey = hotkey(#"{"taps":1,"keyCode":44,"modifiers":524288,"label":"⌥ /"}"#)
+    static let suggestedStreamToggleHotkey = hotkey(#"{"taps":1,"keyCode":47,"modifiers":524288,"label":"⌥ ."}"#)
+
+    /// Never set → `fallback`; set → the stored shortcut; cleared (empty) → nil.
+    private static func storedHotkey(_ key: String, default fallback: Hotkey?) -> Hotkey? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return fallback }
+        return try? JSONDecoder().decode(Hotkey.self, from: data)
+    }
+
     private init() {
         if let data = UserDefaults.standard.data(forKey: Keys.hotkey),
            let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
@@ -342,24 +360,14 @@ final class Settings: ObservableObject {
         } else {
             hotkey = .fnDefault
         }
-        if let data = UserDefaults.standard.data(forKey: Keys.assistantHotkey),
-           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
-            assistantHotkey = decoded
-        } else {
-            assistantHotkey = nil
-        }
+        assistantHotkey = Self.storedHotkey(Keys.assistantHotkey, default: Self.defaultAssistantHotkey)
         if let data = UserDefaults.standard.data(forKey: Keys.streamHotkey),
            let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
             streamHotkey = decoded
         } else {
             streamHotkey = nil
         }
-        if let data = UserDefaults.standard.data(forKey: Keys.dictateToggleHotkey),
-           let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
-            dictateToggleHotkey = decoded
-        } else {
-            dictateToggleHotkey = nil
-        }
+        dictateToggleHotkey = Self.storedHotkey(Keys.dictateToggleHotkey, default: Self.defaultDictateToggle)
         if let data = UserDefaults.standard.data(forKey: Keys.streamToggleHotkey),
            let decoded = try? JSONDecoder().decode(Hotkey.self, from: data) {
             streamToggleHotkey = decoded
@@ -392,12 +400,12 @@ final class Settings: ObservableObject {
         hotwords = UserDefaults.standard.string(forKey: Keys.hotwords) ?? ""
         contextPrompt = UserDefaults.standard.string(forKey: Keys.contextPrompt) ?? ""
         if UserDefaults.standard.object(forKey: Keys.holdActivationDelay) == nil {
-            holdActivationDelay = 0.2
+            holdActivationDelay = 0
         } else {
             holdActivationDelay = UserDefaults.standard.double(forKey: Keys.holdActivationDelay)
         }
         if UserDefaults.standard.object(forKey: Keys.overlayOpacity) == nil {
-            overlayOpacity = 0.92
+            overlayOpacity = 0.4
         } else {
             overlayOpacity = UserDefaults.standard.double(forKey: Keys.overlayOpacity)
         }
@@ -406,16 +414,17 @@ final class Settings: ObservableObject {
         whisperModel = UserDefaults.standard.string(forKey: Keys.whisperModel) ?? "tiny.en"
         // Continuous dictation defaults to the same bundled tiny model (so both
         // sections share one instance until the user changes either one).
-        continuousModel = UserDefaults.standard.string(forKey: Keys.continuousModel) ?? "tiny.en"
+        continuousModel = UserDefaults.standard.string(forKey: Keys.continuousModel) ?? "parakeet-ultra"
         if UserDefaults.standard.object(forKey: Keys.continuousTypeCPS) == nil {
-            continuousTypeCPS = 30
+            continuousTypeCPS = 80
         } else {
             continuousTypeCPS = UserDefaults.standard.double(forKey: Keys.continuousTypeCPS)
         }
         verboseLogging = UserDefaults.standard.bool(forKey: Keys.verboseLogging)
-        captureEdits = UserDefaults.standard.bool(forKey: Keys.captureEdits)
+        captureEdits = UserDefaults.standard.object(forKey: Keys.captureEdits) == nil
+            ? true : UserDefaults.standard.bool(forKey: Keys.captureEdits)
         if UserDefaults.standard.object(forKey: Keys.captureMaxGB) == nil {
-            captureMaxGB = 1.0
+            captureMaxGB = 2.0
         } else {
             captureMaxGB = UserDefaults.standard.double(forKey: Keys.captureMaxGB)
         }
@@ -443,7 +452,7 @@ final class Settings: ObservableObject {
         localQuantized = localOpts.quantized
         localMemLimitGB = localOpts.memGB
         speedTier = UserDefaults.standard.object(forKey: Keys.speedTier) == nil
-            ? SpeedTier.instant.rawValue
+            ? SpeedTier.relaxed.rawValue
             : UserDefaults.standard.integer(forKey: Keys.speedTier)
         // Apply the gate immediately (didSet doesn't fire from init). Env var can
         // force it on regardless of the stored/UI setting.

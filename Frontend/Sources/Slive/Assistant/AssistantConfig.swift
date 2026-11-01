@@ -107,12 +107,12 @@ struct AssistantConfig: Codable, Equatable {
         + "request; answer directly and briefly in plain text with no markdown."
 
     static let `default` = AssistantConfig(
-        provider: .anthropic,
-        models: [:],
+        provider: .openai,
+        models: ["openai": "gpt-5.4-mini"],
         baseURL: "",
-        promptName: "assistant",   // the shipped prompts/assistant.md
+        promptName: "rewrite",     // the shipped prompts/rewrite.md
         systemPrompt: defaultSystemPrompt,
-        attachScreenshot: false,
+        attachScreenshot: true,
         fetchedModels: [:]
     )
 

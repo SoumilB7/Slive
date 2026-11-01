@@ -27,6 +27,7 @@ enum SelfTest {
         vocabHintChecks()
         vocabularyCorrectorChecks()
         dictationQueueChecks()
+        defaultShortcutChecks()
         silenceTrimChecks()
         textHygieneChecks()
         pasteFocusChecks()
@@ -521,6 +522,14 @@ enum SelfTest {
         equal(ParakeetLiveSession.join("and then", "I left"), "and then I left", "\"I\" stays capital")
         equal(ParakeetLiveSession.join("deploy the", "API now"), "deploy the API now", "acronyms stay")
         equal(ParakeetLiveSession.join("", "Hello"), "Hello", "no settled text yet")
+    }
+
+    private static func defaultShortcutChecks() {
+        print("[Default shortcuts]")
+        check(Settings.defaultDictateToggle?.label == "⌃ ×2", "double-tap ⌃ toggles dictation by default")
+        check(Settings.defaultAssistantHotkey?.label == "⌃fn", "⌃fn asks by default")
+        check(Settings.suggestedStreamHotkey?.keyCode == 44 && Settings.suggestedStreamToggleHotkey?.keyCode == 47,
+              "the live typing suggestion's shortcuts decode (⌥ / and ⌥ .)")
     }
 
     private static func vocabularyCorrectorChecks() {
