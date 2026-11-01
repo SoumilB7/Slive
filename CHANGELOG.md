@@ -2,6 +2,20 @@
 
 Notable changes to Slive, newest first. Versions follow [semver](https://semver.org).
 
+## [0.2.2] - 2026-11-01
+
+### Added
+- First run suggests downloading Whisper – large-v3 turbo (600 MB) while you're on the small built-in model; dictation keeps working until it's ready.
+- Correct answers: the 3-way check is now called "Slive Custom : 3 way check", and its transcription prompt is editable, with a preview of what each clip sends. New installs default to OpenAI for labeling, with a prompt to add a key.
+- Training: a run that failed after training can be resumed from the Training page without retraining.
+
+### Changed
+- Fine-tuned models are named after the model they came from, e.g. "tiny.en · fine-tuned Nov 2".
+- QLoRA is removed; training uses the local methods only.
+
+### Fixed
+- The WhisperKit converter no longer picks up the server's Python packages, which broke converting trained models.
+
 ## [0.2.1] - 2026-11-01
 
 ### Changed
@@ -41,5 +55,6 @@ First release, in two downloads: **Slive** (on-device speech only) and **Slive F
 - Fine-tune Whisper on your own voice, on this Mac.
 - The bundled server starts only when needed, stops after 10 idle minutes, and only answers Slive.
 
+[0.2.2]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.2
 [0.2.1]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.1
 [0.2.0]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.0

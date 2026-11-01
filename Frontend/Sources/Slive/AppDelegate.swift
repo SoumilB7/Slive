@@ -877,7 +877,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             message = "Model not downloaded. Open Settings."
         case .downloading(let p):
             message = "Downloading model · \(Int(p * 100))%"
-        case .preparing(let stage):
+        case .preparing:
             message = "Loading model…"
         case .failed(let e):
             message = "Model failed: \(e)"
