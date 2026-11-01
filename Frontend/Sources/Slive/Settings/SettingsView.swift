@@ -237,6 +237,7 @@ struct SettingsView: View {
                         VStack(spacing: SliveTheme.cardGap) {
                             modelCard
                             micCard
+                            overlayCard
                         }
                     }
                     speedCard
@@ -248,6 +249,7 @@ struct SettingsView: View {
                     modelCard
                     micCard
                     behaviorCard
+                    overlayCard
                     speedCard
                 }
             }
@@ -428,11 +430,29 @@ struct SettingsView: View {
 
     // MARK: Behavior
 
+    /// What you see: where the pill sits (the preview is the control), how
+    /// solid it is, and whether results type in or show in the overlay.
+    private var overlayCard: some View {
+        SettingsCard("OVERLAY") {
+            HStack(alignment: .center, spacing: 20) {
+                PillPositionPicker(settings: settings)
+                VStack(alignment: .leading, spacing: 12) {
+                    ToggleRow(title: "Type at cursor", isOn: $settings.autoInsert)
+                        .help("Off: shows text in the overlay")
+                    CardDivider()
+                    SliderRow(
+                        title: "Opacity",
+                        value: $settings.overlayOpacity,
+                        range: 0.35...1.0, step: 0.01,
+                        valueText: "\(Int(settings.overlayOpacity * 100))%"
+                    )
+                }
+            }
+        }
+    }
+
     private var behaviorCard: some View {
         SettingsCard("BEHAVIOR") {
-            ToggleRow(title: "Type at cursor", isOn: $settings.autoInsert)
-                .help("Off: shows text to copy")
-            CardDivider()
             SliderRow(
                 title: "Hold delay",
                 value: $settings.holdActivationDelay,
@@ -440,16 +460,6 @@ struct SettingsView: View {
                 valueText: String(format: "%.2fs", settings.holdActivationDelay)
             )
             .help("Wait before recording starts")
-            CardDivider()
-            SliderRow(
-                title: "Overlay opacity",
-                value: $settings.overlayOpacity,
-                range: 0.35...1.0, step: 0.01,
-                valueText: "\(Int(settings.overlayOpacity * 100))%"
-            )
-            CardDivider()
-            ToggleRow(title: "Pill on the right", isOn: $settings.pillOnRight)
-                .help("Upright on the right edge. Text still shows at the bottom.")
             CardDivider()
             ToggleRow(title: "Launch at login", isOn: $settings.launchAtLogin)
             CardDivider()
