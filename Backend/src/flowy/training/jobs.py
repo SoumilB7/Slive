@@ -148,8 +148,8 @@ def start_job(
     recommended = profile.qlora_ram_gb if method == "qlora" else profile.lora_ram_gb
     if max_ram_gb < recommended:
         raise ValueError(
-            f"{profile.label} {method.upper()} needs about {recommended:g} GB RAM; "
-            f"raise the SFT limit or choose a smaller model."
+            f"{profile.label} needs about {recommended:g} GB RAM. "
+            f"Raise the limit or pick a smaller model."
         )
 
     # Only NEW fine-tunes are nameable — the name is the installed folder and
@@ -158,8 +158,7 @@ def start_job(
     model_name = sanitize_model_name(custom_name or "") or fine_tuned_model_name()
     if (pipeline.custom_models_root() / model_name).exists():
         raise TrainingConflict(
-            f"A personal model named “{model_name}” already exists — pick a "
-            f"different name."
+            f"“{model_name}” already exists."
         )
 
     # The real pipeline converts for WhisperKit only after training — make a
@@ -173,10 +172,9 @@ def start_job(
     ready = readiness(store_root)
     if not ready["ready"]:
         raise ValueError(
-            f"Training needs at least {MIN_TRAINING_SAMPLES} well-populated "
-            f"samples and {MIN_TRAINING_AUDIO_MINUTES:g} minutes of audio; "
-            f"have {ready['eligible_count']} samples and "
-            f"{ready.get('eligible_audio_minutes', 0):g} minutes."
+            f"Needs {MIN_TRAINING_SAMPLES} samples and {MIN_TRAINING_AUDIO_MINUTES:g} min "
+            f"(have {ready['eligible_count']}, "
+            f"{ready.get('eligible_audio_minutes', 0):g})."
         )
     run_root = Path(output_root).expanduser() if output_root else pipeline.default_output_root()
     need = required_disk_gb(profile.family, ready["eligible_count"])
@@ -184,14 +182,13 @@ def start_job(
     free = shutil.disk_usage(run_root).free / 1024**3
     if free < need:
         raise TrainingUnavailable(
-            f"Training needs about {need:.0f} GB of free disk; {free:.0f} GB is free. "
-            f"Free some space and try again."
+            f"Needs {need:.0f} GB free disk ({free:.0f} free)."
         )
 
     with _lock:
         active = next((j for j in _jobs.values() if j.state in {"queued", "running"}), None)
         if active is not None:
-            raise TrainingConflict(f"Training job {active.id} is already running")
+            raise TrainingConflict("Already training.")
 
         # No job is running, so any leftover run folder for this name is a
         # failed run (the installed-model check above rules out a success).
@@ -237,8 +234,7 @@ def _require_cuda_qlora() -> None:
         cuda = False
     if not cuda or importlib.util.find_spec("bitsandbytes") is None:
         raise TrainingUnavailable(
-            "QLoRA needs an NVIDIA GPU with bitsandbytes. On this Mac, choose "
-            "Hybrid (best) or Decoder only (quick)."
+            "QLoRA needs an NVIDIA GPU."
         )
 
 
@@ -307,8 +303,7 @@ def recover_interrupted(output_root: Path | None = None) -> int:
             job.failed_stage = job.stage
             job.state = job.stage = "error"
             job.error = job.message = (
-                "Interrupted — Slive or its server quit while this model was training. "
-                "Nothing was installed; start training again."
+                "Interrupted. Nothing installed."
             )
             _prune_failed_run(path.parent)
             _write_job_file(job)

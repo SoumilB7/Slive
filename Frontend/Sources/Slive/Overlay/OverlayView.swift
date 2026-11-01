@@ -248,7 +248,7 @@ struct OverlayView: View {
                     .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
-                .help("Keep this chat — your next assistant question continues it")
+                .help("Follow up")
             }
         }
     }
@@ -332,7 +332,8 @@ struct OverlayView: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous)
-                    .strokeBorder(.white.opacity(0.06), lineWidth: 0.5)
+                    .strokeBorder(model.resultIsError ? Color.orange.opacity(0.8) : .white.opacity(0.06),
+                                  lineWidth: model.resultIsError ? 1 : 0.5)
             )
             .clipShape(RoundedRectangle(cornerRadius: OverlayMetrics.cornerRadius, style: .continuous))
             .shadow(color: .black.opacity(0.40), radius: 8, y: 3)

@@ -122,10 +122,9 @@ struct TrainingEvaluation: Decodable {
         case tunedWer = "tuned_wer"
     }
 
-    /// e.g. "6.9% → 6.4% word errors · 63 held-out clips".
+    /// e.g. "Errors 6.9% → 6.4%" (on `clips` held-out clips).
     var summary: String {
-        String(format: "%.1f%% → %.1f%% word errors · %d held-out clips",
-               100 * baseWer, 100 * tunedWer, clips)
+        String(format: "Errors %.1f%% → %.1f%%", 100 * baseWer, 100 * tunedWer)
     }
 }
 

@@ -176,9 +176,7 @@ def check_improvement(evaluation: dict | None) -> None:
     base, tuned = evaluation["base_wer"], evaluation["tuned_wer"]
     if tuned > base + MAX_WER_REGRESSION:
         raise RuntimeError(
-            f"The fine-tuned model was less accurate on {evaluation['clips']} held-out "
-            f"recordings ({100 * base:.1f}% → {100 * tuned:.1f}% word errors), so it "
-            f"wasn't installed. More or cleaner corrected recordings usually help."
+            f"Not installed: errors rose {100 * base:.1f}% → {100 * tuned:.1f}%."
         )
 
 
@@ -207,8 +205,7 @@ def require_finite_loss(where: str, **values: float) -> None:
     if bad:
         detail = ", ".join(f"{name}={value}" for name, value in bad.items())
         raise RuntimeError(
-            f"Training diverged at {where}: {detail}. Nothing was installed — "
-            f"try a lower learning rate, the Decoder method, or remove odd samples."
+            f"Training diverged at {where}: {detail}. Nothing installed."
         )
 
 
@@ -255,15 +252,11 @@ def whisperkit_converter() -> str:
             "whisperkit-generate-model")
         if not executable:
             raise ConverterUnavailable(
-                "The WhisperKit converter isn't installed, so a trained model "
-                f"couldn't be made runnable in Slive. To set it up, {INSTALL_TOOLS_HINT} "
-                "(one time, ~3 GB), then train again."
+                f"Converter not installed: {INSTALL_TOOLS_HINT} once (~3 GB)."
             )
     if not _compiler_available():
         raise ConverterUnavailable(
-            "The WhisperKit converter is installed, but compiling Core ML models "
-            f"needs Xcode or the Slive compile shim — {INSTALL_TOOLS_HINT} again "
-            "to add the shim."
+            f"Compile shim missing: {INSTALL_TOOLS_HINT} again."
         )
     return executable
 
@@ -384,12 +377,12 @@ def run_pipeline(config: PipelineConfig, progress: Progress) -> Path:
                                                  encoding="utf-8")
         check_improvement(evaluation)
     memory.check("adapter merge")
-    progress(stage="merging", message="Merging LoRA into Balanced Whisper", value=0.76)
+    progress(stage="merging", message="Merging", value=0.76)
     _merge_adapter(config, adapter_dir, merged_dir)
     memory.check("WhisperKit conversion")
-    progress(stage="converting", message="Converting merged model for WhisperKit", value=0.84)
+    progress(stage="converting", message="Converting", value=0.84)
     model_folder = _convert_whisperkit(merged_dir, converted_dir, converter, progress)
-    progress(stage="installing", message="Installing fine-tuned model", value=0.96)
+    progress(stage="installing", message="Installing", value=0.96)
     installed = _install_model(config, model_folder, merged_dir, run_dir, manifest_path,
                                evaluation=evaluation)
     # The installed copy is what Slive serves; the run keeps adapter + logs.
@@ -446,9 +439,7 @@ class MemoryGuard:
         used = self.process.memory_info().rss + self.extra_bytes()
         if used > self.limit_bytes:
             raise RuntimeError(
-                f"SFT stopped during {stage}: RAM use reached {used / 1024**3:.2f} GB, "
-                f"above the {self.limit_gb:g} GB limit. Choose a smaller model, the "
-                "Decoder method, or raise the limit."
+                f"Stopped: RAM hit {used / 1024**3:.2f} GB (limit {self.limit_gb:g})."
             )
 
 
@@ -751,8 +742,7 @@ def _evaluate_heldout(model, processor, heldout: list, device, progress: Progres
                 base += processor.batch_decode(
                     model.generate(input_features=features, **kwargs), skip_special_tokens=True)
             progress(stage="training", value=0.74,
-                     message=f"Checking accuracy on held-out clips "
-                             f"{min(start + 8, len(heldout))}/{len(heldout)}")
+                     message=f"Testing {min(start + 8, len(heldout))}/{len(heldout)}")
     references = [sample.reference_text for sample in heldout]
     (base_cased, base_punct), (tuned_cased, tuned_punct) = style_rates(base), style_rates(tuned)
     evaluation = {
@@ -859,7 +849,7 @@ def _run_converter(executable: str, work: Path, log_path: Path,
                     f"see {log_path}")
             if progress is not None:
                 progress(stage="converting", value=0.84,
-                         message=f"Converting for WhisperKit · {int(elapsed // 60)} min")
+                         message=f"Converting · {int(elapsed // 60)} min")
             time.sleep(15)
     if process.returncode != 0:
         tail = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-3:]

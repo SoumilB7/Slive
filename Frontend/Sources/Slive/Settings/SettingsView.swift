@@ -14,6 +14,7 @@ struct SettingsView: View {
     @ObservedObject private var stats = SpeakingStats.shared
     @ObservedObject private var inputDevices = InputDevices.shared
     @ObservedObject private var providers = ProviderStore.shared
+    @ObservedObject private var trainingStore = TrainingStore.shared
     var onRelaunch: () -> Void
 
     @StateObject private var scrollKeeper = SettingsScrollKeeper()
@@ -194,6 +195,10 @@ struct SettingsView: View {
             return ("\(grantedCount) of 3 granted", grantedCount == 3 ? SliveTheme.textSecondary : .orange)
         case .history:
             return (history.entries.isEmpty ? nil : "\(history.entries.count) · last 24 h", SliveTheme.textSecondary)
+        case .data:
+            guard trainingStore.count > 0 else { return (nil, SliveTheme.textSecondary) }
+            let size = ByteCountFormatter.string(fromByteCount: trainingStore.totalBytes, countStyle: .file)
+            return ("\(trainingStore.count) sample\(trainingStore.count == 1 ? "" : "s") · \(size)", SliveTheme.textSecondary)
         case .models:
             let n = [AssistantProvider.anthropic, .openai, .gemini, .openaiCompatible]
                 .filter { providers.hasKey($0) }.count

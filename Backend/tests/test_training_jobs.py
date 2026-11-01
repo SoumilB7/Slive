@@ -99,14 +99,14 @@ def test_memory_guard_counts_metal_allocations(monkeypatch) -> None:
     guard = MemoryGuard(4)
     monkeypatch.setattr(guard.process, "memory_info", lambda: type("M", (), {"rss": 1 * 1024**3})())
     guard.extra_bytes = lambda: 4 * 1024**3
-    with pytest.raises(RuntimeError, match="above the 4 GB limit"):
+    with pytest.raises(RuntimeError, match=r"limit 4\)"):
         guard.check("training")
 
 
 def test_memory_guard_stops_after_process_crosses_cap(monkeypatch) -> None:
     guard = MemoryGuard(4)
     monkeypatch.setattr(guard.process, "memory_info", lambda: type("M", (), {"rss": 5 * 1024**3})())
-    with pytest.raises(RuntimeError, match="above the 4 GB limit"):
+    with pytest.raises(RuntimeError, match=r"limit 4\)"):
         guard.check("training")
 
 
@@ -140,7 +140,7 @@ def test_start_job_requires_fifty_eligible_samples(monkeypatch) -> None:
         },
     )
 
-    with pytest.raises(ValueError, match="50 well-populated samples and 5 minutes"):
+    with pytest.raises(ValueError, match="50 samples and 5 min"):
         jobs.start_job()
 
 
@@ -267,7 +267,7 @@ def test_run_pipeline_checks_converter_before_reading_the_store(monkeypatch, tmp
         pipeline, "TrainingStore", lambda *_a, **_k: pytest.fail("store read before preflight"))
     config = PipelineConfig.for_model(model_name="x", source_model="tiny", output_root=tmp_path)
 
-    with pytest.raises(ValueError, match="isn't installed"):
+    with pytest.raises(ValueError, match="Converter not installed"):
         pipeline.run_pipeline(config, lambda **_: None)
     assert not (tmp_path / "x").exists()
 
@@ -389,7 +389,7 @@ def test_converter_without_any_compiler_is_unavailable(monkeypatch, tmp_path) ->
     monkeypatch.setenv("WHISPERKIT_GENERATE_MODEL", str(_executable(tmp_path / "wk")))
     monkeypatch.setattr(
         pipeline.subprocess, "run", lambda *_a, **_k: type("R", (), {"returncode": 1})())
-    with pytest.raises(pipeline.ConverterUnavailable, match="Xcode or the Slive compile shim"):
+    with pytest.raises(pipeline.ConverterUnavailable, match="Compile shim missing"):
         pipeline.whisperkit_converter()
 
 

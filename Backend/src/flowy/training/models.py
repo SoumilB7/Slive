@@ -84,7 +84,7 @@ _OPTIMIZED_BALANCED = TrainingModel(
     **{
         **asdict(_large_v3),
         "id": "large-v3-v20240930_626MB",
-        "label": "Balanced (626 MB source)",
+        "label": "Balanced",
         # The served 626 MB package is large-v3-turbo (32 encoder / 4 decoder
         # layers) — training plain large-v3 (32 decoder layers) produced a
         # different, slower model, not a personalised Balanced.

@@ -33,7 +33,7 @@ struct TrainingSettingsView: View {
     var body: some View {
         VStack(spacing: SliveTheme.cardGap) {
             pipelineCard
-            signalCard
+            if metrics.count > 1 || job?.isActive == true { signalCard }
             outputCard
         }
         .frame(maxWidth: layout == .compact ? .infinity : SliveTheme.formWidth * 1.35)
@@ -66,13 +66,13 @@ struct TrainingSettingsView: View {
         }
         return [
             .init(keys: ["preparing", "dataset"], icon: "waveform",
-                  title: "Dataset", detail: "your corrected dictations"),
+                  title: "Data", detail: ""),
             .init(keys: ["training"], icon: "slider.horizontal.3",
-                  title: "SFT adapter", detail: sft),
+                  title: "Train", detail: sft),
             .init(keys: ["merging"], icon: "arrow.triangle.merge",
                   title: "Merge", detail: "adapter → full weights"),
             .init(keys: ["converting"], icon: "cpu.fill",
-                  title: "ANE convert", detail: "CoreML · WhisperKit"),
+                  title: "Convert", detail: ""),
             .init(keys: ["installing", "installed"], icon: "checkmark.seal.fill",
                   title: "Install", detail: "Dictation model picker"),
         ]
@@ -106,12 +106,9 @@ struct TrainingSettingsView: View {
     }
 
     private var pipelineCard: some View {
-        SettingsCard("FINE-TUNE PIPELINE", trailing: {
+        SettingsCard("NEW MODEL", trailing: {
             if checking { ProgressView().controlSize(.small) }
         }) {
-            Text("Teach a WhisperKit model your voice from the dictations you corrected on the Data page.")
-                .sliveCaption()
-
             // 1. Can I train yet? — the first question, answered first.
             readinessSection
             labelRunStatus
@@ -120,12 +117,13 @@ struct TrainingSettingsView: View {
 
             // 2. What to train.
             choicesRow
-            summaryLine
             advancedDisclosure
 
-            // 3. The journey your data takes (comes alive during a run).
-            stageRail
-                .padding(.vertical, 6)
+            // 3. The journey your data takes — only once a run exists.
+            if job != nil {
+                stageRail
+                    .padding(.vertical, 6)
+            }
 
             if let job, job.isActive {
                 VStack(alignment: .leading, spacing: 6) {
@@ -221,34 +219,15 @@ struct TrainingSettingsView: View {
                 .font(SliveTheme.font(11, .semibold))
                 .foregroundStyle(SliveTheme.textSecondary)
             Picker("", selection: $selectedMethod) {
-                Text("Hybrid (this Mac)").tag(TrainingMethod.hybrid)
-                Text("Decoder only (quick)").tag(TrainingMethod.decoder)
-                Text("QLoRA (4-bit CUDA)").tag(TrainingMethod.qlora)
+                // QLoRA needs a CUDA host; this app trains on the Mac.
+                Text("Hybrid").tag(TrainingMethod.hybrid)
+                Text("Decoder only").tag(TrainingMethod.decoder)
             }
             .labelsHidden().pickerStyle(.menu).fixedSize()
             .disabled(job?.isActive == true)
+            .help(selectedMethod == TrainingMethod.decoder
+                  ? "3× faster · no accent" : "Best quality · ~6 GB")
             Spacer(minLength: 0)
-        }
-    }
-
-    /// One quiet line naming what will run — no hyperparameters, no caveats.
-    /// The small print lives under "Advanced".
-    @ViewBuilder private var summaryLine: some View {
-        if let model = selectedTrainingModel {
-            HStack(spacing: 8) {
-                Text(model.hfModel)
-                    .font(SliveTheme.mono(11))
-                    .foregroundStyle(SliveTheme.textMid)
-                Text(model.multilingual ? "multilingual" : "English-only")
-                    .font(SliveTheme.font(9, .semibold))
-                    .foregroundStyle(SliveTheme.textSecondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(.white.opacity(0.07)))
-                Spacer(minLength: 0)
-            }
-        } else {
-            Text("Loading models…").sliveCaption()
         }
     }
 
@@ -268,10 +247,6 @@ struct TrainingSettingsView: View {
                     Text("Advanced")
                         .font(SliveTheme.font(11, .semibold))
                         .foregroundStyle(SliveTheme.textSecondary)
-                    Text(advancedSummary)
-                        .font(SliveTheme.mono(10))
-                        .foregroundStyle(SliveTheme.textTertiary)
-                        .lineLimit(1)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .bold))
@@ -288,28 +263,8 @@ struct TrainingSettingsView: View {
         }
     }
 
-    /// The collapsed row still tells you the two values you'd most want to check.
-    private var advancedSummary: String {
-        "\(TrainingMethod.label(selectedMethod)) · \(Int(maxRamGB)) GB cap"
-    }
-
     private var advancedBody: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Profile — what the backend will actually run.
-            if let model = selectedTrainingModel {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let profile = model.profileSummary {
-                        Text(profile)
-                            .font(SliveTheme.mono(10))
-                            .foregroundStyle(SliveTheme.accent.opacity(0.9))
-                    }
-                    Text(model.detail).sliveCaption()
-                }
-            }
-            Text(methodCaption).sliveCaption()
-
-            Divider().overlay(SliveTheme.divider)
-
             // Max RAM.
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
@@ -323,29 +278,17 @@ struct TrainingSettingsView: View {
                         .font(SliveTheme.mono(11))
                         .foregroundStyle(SliveTheme.accent)
                         .frame(width: 42, alignment: .trailing)
-                    if let model = selectedTrainingModel {
-                        let recommended = selectedMethod == TrainingMethod.qlora
-                            ? model.qloraRamGB : model.loraRamGB
-                        Text("~\(Int(recommended)) GB recommended")
-                            .font(SliveTheme.captionFont)
-                            .foregroundStyle(maxRamGB < recommended ? Color.orange : SliveTheme.textTertiary)
-                    }
                     Spacer(minLength: 0)
                 }
-                Text("The backend refuses an undersized profile and stops SFT if its total process RAM crosses this ceiling. CUDA VRAM is separate.")
-                    .sliveCaption()
+                .help("Training stops above this")
+                if let model = selectedTrainingModel, maxRamGB < model.loraRamGB {
+                    Text("Below the \(Int(model.loraRamGB)) GB recommended.")
+                        .font(SliveTheme.captionFont)
+                        .foregroundStyle(Color.orange)
+                }
             }
 
             Divider().overlay(SliveTheme.divider)
-
-            // Est. time.
-            HStack(spacing: 10) {
-                Text("Est. time")
-                    .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(SliveTheme.textSecondary)
-                estTimeValue
-                Spacer(minLength: 0)
-            }
 
             // Name.
             VStack(alignment: .leading, spacing: 6) {
@@ -359,45 +302,10 @@ struct TrainingSettingsView: View {
                         .frame(maxWidth: 260)
                         .disabled(job?.isActive == true)
                 }
-                Text("What the finished model goes by in your Dictation picker — spaces turn to dashes, letters/digits/._- only. Leave it empty for a dated default.")
-                    .sliveCaption()
             }
         }
         .padding(10)
         .innerWell()
-    }
-
-    /// The est-time readout (Hybrid/Decoder on this Mac are estimable; QLoRA depends on the
-    /// CUDA host; both need eligible audio to know).
-    @ViewBuilder private var estTimeValue: some View {
-        if selectedMethod == TrainingMethod.qlora {
-            Text("depends on your CUDA host")
-                .font(SliveTheme.captionFont)
-                .foregroundStyle(SliveTheme.textTertiary)
-        } else if let estimate = estimatedMinutes {
-            Text(timeText(estimate))
-                .font(SliveTheme.mono(11))
-                .foregroundStyle(SliveTheme.accent)
-            Text("3 epochs · \(readiness?.eligibleCount ?? 0) clips · rough")
-                .font(SliveTheme.captionFont)
-                .foregroundStyle(SliveTheme.textTertiary)
-        } else {
-            Text("known once eligible recordings exist")
-                .font(SliveTheme.captionFont)
-                .foregroundStyle(SliveTheme.textTertiary)
-        }
-    }
-
-    /// What the selected method trains, and what it costs — one caption.
-    private var methodCaption: String {
-        switch selectedMethod {
-        case TrainingMethod.hybrid:
-            return "Runs each recording through the frozen encoder once, then trains the top quarter of the encoder (your accent) and the decoder (your words). Best quality in testing; ~6 GB on this Mac."
-        case TrainingMethod.decoder:
-            return "Trains only the decoder (your words and formatting) on top of a one-time encoding pass — about 3× quicker than Hybrid overall, but it can't learn your accent and drifted on casing in testing."
-        default:
-            return "QLoRA uses NF4 + double quantization during SFT and needs a CUDA/bitsandbytes host. On Apple silicon 4-bit is slower than Hybrid with no memory win — choose Hybrid to train on this Mac."
-        }
     }
 
     // MARK: - Time estimates
@@ -519,12 +427,6 @@ struct TrainingSettingsView: View {
                 .foregroundStyle(state == .failed ? Color.orange
                                  : state == .pending ? SliveTheme.textSecondary : SliveTheme.textPrimary)
                 .multilineTextAlignment(.center)
-            if layout != .compact {
-                Text(stage.detail)
-                    .font(SliveTheme.mono(9))
-                    .foregroundStyle(SliveTheme.textTertiary)
-                    .multilineTextAlignment(.center)
-            }
         }
         .frame(width: layout == .compact ? 62 : 96)
     }
@@ -605,8 +507,6 @@ struct TrainingSettingsView: View {
                         met: readiness.requiredAudioMinutes <= 0
                             || readiness.eligibleAudioMinutes >= readiness.requiredAudioMinutes)
                     HStack(alignment: .top, spacing: 10) {
-                        Text("Slive trains once you've banked \(readiness.requiredSamples) solid recordings — real audio with a 3-plus-word fix — and \(Int(max(readiness.requiredAudioMinutes, 1))) minutes of speech.")
-                            .sliveCaption()
                         Spacer(minLength: 0)
                         Button {
                             openData()
@@ -624,7 +524,7 @@ struct TrainingSettingsView: View {
         } else {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("Checking your data…").sliveCaption()
+                Text("Checking…").sliveCaption()
             }
         }
     }
@@ -635,7 +535,7 @@ struct TrainingSettingsView: View {
         if labelRun.isRunning {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Labeling ground truth · \(labelRun.done.formatted()) of \(labelRun.total.formatted())")
+                Text("Labeling · \(labelRun.done.formatted())/\(labelRun.total.formatted())")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(SliveTheme.textSecondary)
                 Spacer(minLength: 0)
@@ -678,6 +578,11 @@ struct TrainingSettingsView: View {
     private var trainButtonRow: some View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
+            if selectedMethod != TrainingMethod.qlora, let estimate = estimatedMinutes {
+                Text(timeText(estimate))
+                    .font(SliveTheme.mono(11))
+                    .foregroundStyle(SliveTheme.accent)
+            }
             Button {
                 start()
             } label: {
@@ -697,7 +602,7 @@ struct TrainingSettingsView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(SliveTheme.accent)
-            .help("Refresh readiness and job state")
+            .help("Refresh")
         }
     }
 
@@ -707,37 +612,24 @@ struct TrainingSettingsView: View {
 
     private var signalCard: some View {
         SettingsCard("TRAINING SIGNAL") {
-            if metrics.count > 1 {
+            if metrics.count > 1 || job?.isActive == true {
                 TrainingSignalChart(metrics: metrics)
                     .frame(height: 150)
                     .padding(10)
                     .innerWell()
                 HStack(spacing: 16) {
-                    legendEntry(color: SliveTheme.accent, label: "CE loss",
+                    legendEntry(color: SliveTheme.accent, label: "Loss",
                                 value: metrics.last.map { String(format: "%.3f", $0.loss) })
-                    legendEntry(color: .orange.opacity(0.9), label: "KL vs base",
+                    legendEntry(color: .orange.opacity(0.9), label: "Drift",
                                 value: metrics.last(where: { $0.kl != nil })?.kl
                                     .map { String(format: "%.4f", $0) })
                     Spacer()
                     if let job, job.totalUpdates > 0 {
-                        Text("update \(metrics.count)/\(job.totalUpdates)")
+                        Text("\(metrics.count)/\(job.totalUpdates)")
                             .font(SliveTheme.mono(10))
                             .foregroundStyle(.white.opacity(0.45))
                     }
                 }
-            } else {
-                // What the two curves will mean, before there's anything to plot.
-                VStack(alignment: .leading, spacing: 8) {
-                    legendExplainer(color: SliveTheme.accent, title: "CE loss",
-                                    text: "How closely the model matches your fixes — it should drop as it picks up your voice.")
-                    legendExplainer(color: .orange.opacity(0.9), title: "KL divergence vs the base model",
-                                    text: "How far the tuned model drifts from the checkpoint you started with, in nats per token. Staying low means it keeps its general smarts while picking up your voice.")
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .innerWell()
-                Text("The chart comes alive once a run kicks off.")
-                    .sliveCaption()
             }
         }
     }
@@ -756,39 +648,12 @@ struct TrainingSettingsView: View {
         }
     }
 
-    private func legendExplainer(color: Color, title: String, text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle().fill(color).frame(width: 6, height: 6).padding(.top, 3)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(SliveTheme.font(11, .semibold))
-                    .foregroundStyle(SliveTheme.textPrimary)
-                Text(text).sliveCaption()
-            }
-        }
-    }
-
     // MARK: - Output (what you get, where it lives, how it runs)
 
     private var outputCard: some View {
-        SettingsCard("OUTPUT MODEL") {
-            infoRow("Base", job?.baseModel ?? selectedTrainingModel?.hfModel ?? "Loading models…")
-            infoRow("Method", TrainingMethod.label(job?.method ?? selectedMethod))
-            infoRow("RAM cap", "\(Int(job?.maxRamGB ?? maxRamGB)) GB")
-            infoRow("Held-out check", job?.evaluation?.summary
-                    ?? "Before installing, the model is tested on recordings it never trained on — it's only installed if it isn't worse")
-            infoRow("Name", job?.modelName
-                    ?? (customName.trimmingCharacters(in: .whitespaces).isEmpty
-                        ? "balanced-ft-<date>-<time>"
-                        : customName.trimmingCharacters(in: .whitespaces)))
-            infoRow("Runs on", "Neural Engine — compiled .mlmodelc, same serving path as stock models")
-            infoRow("Stored in", "~/Library/Application Support/Slive/Models/Custom")
-
-            CardDivider()
-
+        SettingsCard("YOUR MODELS") {
             if transcription.customModels.isEmpty {
-                Text("No models of your own yet. Finish a run and it lands here, ready in your Dictation picker.")
-                    .sliveCaption()
+                Text("No models yet.").sliveCaption()
             } else {
                 ForEach(transcription.customModels) { model in
                     HStack(spacing: 8) {
@@ -798,27 +663,19 @@ struct TrainingSettingsView: View {
                         Text(model.displayName)
                             .font(SliveTheme.mono(11))
                             .foregroundStyle(SliveTheme.textPrimary)
+                        if model.id == job?.modelName, let eval = job?.evaluation {
+                            Text(eval.summary).sliveCaption()
+                        }
                         Spacer()
-                        Text("in the Dictation picker")
-                            .font(SliveTheme.captionFont)
-                            .foregroundStyle(SliveTheme.textTertiary)
                     }
                 }
             }
-        }
-    }
-
-    private func infoRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(label)
-                .font(SliveTheme.font(11, .semibold))
-                .foregroundStyle(SliveTheme.textSecondary)
-                .frame(width: 64, alignment: .leading)
-            Text(value)
-                .font(SliveTheme.mono(11))
-                .foregroundStyle(SliveTheme.textMid)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
+            Button("Show in Finder") {
+                NSWorkspace.shared.open(CustomWhisperModelRegistry.root)
+            }
+            .buttonStyle(.plain)
+            .font(SliveTheme.font(11, .semibold))
+            .foregroundStyle(.white.opacity(0.45))
         }
     }
 

@@ -136,8 +136,12 @@ final class AudioModel: ObservableObject {
         glow = 0
     }
 
+    /// The result box is a failure message (drawn with an orange edge).
+    @Published private(set) var resultIsError = false
+
     /// Backend returned text (dictation, or an error) — grow the pill into a box.
-    func showResult(_ text: String) {
+    func showResult(_ text: String, isError: Bool = false) {
+        resultIsError = isError
         streaming = false
         assistantResult = false
         priorTurns = []
@@ -149,6 +153,7 @@ final class AudioModel: ObservableObject {
     /// Final assistant answer — like `showResult` but flags it so the Continue
     /// footer shows. Keeps the transcript (priorTurns/currentQuestion) in place.
     func showAssistantResult(_ text: String) {
+        resultIsError = false
         streaming = false
         assistantResult = true
         phase = .result(text: text)
@@ -158,7 +163,7 @@ final class AudioModel: ObservableObject {
     /// Start streaming an assistant answer into a fixed-size box. `priorTurns`
     /// are shown above the answer when continuing a chat.
     func beginStreaming(priorTurns: [ChatTurn] = [], question: String = "") {
-        streaming = true
+        streaming = true; resultIsError = false
         assistantResult = true
         self.priorTurns = priorTurns
         self.currentQuestion = question
@@ -185,6 +190,7 @@ final class AudioModel: ObservableObject {
     }
 
     func reset() {
+        resultIsError = false
         phase = .idle
         streaming = false
         assistantListening = false

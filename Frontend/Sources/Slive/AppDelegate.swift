@@ -527,7 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // instead of silent "processing" dots. The dictation is kept and
         // types the moment the model is ready, replacing this box.
         if !modelReady {
-            let msg = "Preparing the speech model — your words will type as soon as it's ready."
+            let msg = "Loading model. Text will follow."
             model.showResult(msg)
             overlay.resize(to: OverlayMetrics.panelSize(for: msg))
             // Clickable, so a stalled load's box can be closed: ✕ hides it,
@@ -701,7 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                fallback: servingContinuousModel)
         guard whisper.isReady(streamModel) else {
             whisper.select(Settings.shared.continuousModel)
-            let msg = "Preparing the transcription model — hold again in a moment."
+            let msg = "Loading model. Try again shortly."
             model.showResult(msg)
             overlay.show()
             overlay.resize(to: OverlayMetrics.panelSize(for: msg))
@@ -827,7 +827,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             if Task.isCancelled { return }
-            let shown = accumulated.isEmpty ? "⚠️ \(error)" : accumulated + "\n\n⚠️ \(error)"
+            let shown = accumulated.isEmpty ? "\(error)" : accumulated + "\n\n\(error)"
             showAssistantError(shown)
             return
         }
@@ -863,7 +863,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if afterWaiting {
             // Never drop a real dictation silently: it had speech, it waited
             // for the model, and still came back empty.
-            let msg = "Sorry — that one didn't come through while the model was getting ready. Please say it again."
+            let msg = "Missed that. Please repeat."
             model.showResult(msg)
             overlay.resize(to: OverlayMetrics.panelSize(for: msg))
             overlay.setInteractive(true)
@@ -874,13 +874,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch whisper.status(for: whisper.servingModel(wanted: Settings.shared.whisperModel,
                                                         fallback: servingDictationModel)) {
         case .notDownloaded:
-            message = "Transcription model isn't downloaded yet — open Settings → General to download it."
+            message = "Model not downloaded. Open Settings."
         case .downloading(let p):
-            message = "Downloading the transcription model… \(Int(p * 100))%"
+            message = "Downloading model · \(Int(p * 100))%"
         case .preparing(let stage):
-            message = "Preparing the model (\(stage))…"
+            message = "Loading model…"
         case .failed(let e):
-            message = "Transcription model failed to load: \(e)"
+            message = "Model failed: \(e)"
         case .ready:
             message = nil   // genuinely empty (silence) — just fade
         }
@@ -896,7 +896,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Show an assistant failure (no Continue footer) and collapse soon.
     @MainActor private func showAssistantError(_ text: String) {
         pendingTurn = nil
-        model.showResult(text)
+        model.showResult(text, isError: true)
         overlay.resize(to: OverlayMetrics.panelSize(for: text))
         overlay.setInteractive(true)
         scheduleCollapse(after: 6.0)
@@ -1083,7 +1083,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Live backend status (updated via the Combine subscription).
         if Edition.hasServer {
-            let statusLine = NSMenuItem(title: "Backend: …", action: nil, keyEquivalent: "")
+            let statusLine = NSMenuItem(title: "…", action: nil, keyEquivalent: "")
             statusLine.isEnabled = false
             menu.addItem(statusLine)
             backendStatusItem = statusLine
@@ -1111,8 +1111,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Reflect the backend status in the menu-bar item (tooltip + menu line).
     private func updateBackendStatusUI(_ status: BackendManager.Status) {
-        statusItem?.button?.toolTip = "Slive — backend: \(status.rawValue)"
-        backendStatusItem?.title = "Backend: \(status.rawValue)"
+        statusItem?.button?.toolTip = "Slive"
+        backendStatusItem?.title = status == .running ? "Ready" : status.rawValue
     }
 
     /// Shown when the backend couldn't be brought up in time — a clear message
@@ -1120,7 +1120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func showBackendError() {
         endDictationActivityIfIdle()
         // A spawn that can't start says what to fix — retrying never helps it.
-        let msg = backend.lastSpawnError ?? "Backend is still starting — hold and try again in a moment."
+        let msg = backend.lastSpawnError ?? "Starting up. Try again shortly."
         model.showResult(msg)
         overlay.resize(to: OverlayMetrics.panelSize(for: msg))
         overlay.setInteractive(true)

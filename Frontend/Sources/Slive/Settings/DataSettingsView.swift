@@ -22,6 +22,8 @@ struct DataSettingsView: View {
     var openModels: () -> Void = {}
 
     @State private var confirmClear = false
+    /// Sample awaiting delete confirmation.
+    @State private var pendingDeleteID: String?
     @State private var samplePage = 0
     @State private var editingSampleID: String?
     @State private var shouldBeDraft = ""
@@ -89,8 +91,7 @@ struct DataSettingsView: View {
     private var captureCard: some View {
         SettingsCard("CAPTURE") {
             ToggleRow(
-                title: "Save dictations (audio + transcript)",
-                caption: "Saves once your text has landed — never adds a beat of latency.",
+                title: "Save dictations",
                 isOn: $settings.captureEdits
             )
             CardDivider()
@@ -123,13 +124,13 @@ struct DataSettingsView: View {
                     .foregroundStyle(.white.opacity(0.55))
                 Spacer()
                 if store.isOverLimit {
-                    Label("Paused — limit reached", systemImage: "pause.circle.fill")
+                    Label("Full · paused", systemImage: "pause.circle.fill")
                         .foregroundStyle(.orange)
                 } else if settings.captureEdits {
                     Label("Capturing", systemImage: "record.circle")
                         .foregroundStyle(.green)
                 } else {
-                    Text("Capture off").foregroundStyle(.white.opacity(0.4))
+                    Text("Off").foregroundStyle(.white.opacity(0.4))
                 }
             }
             .font(SliveTheme.font(11, .semibold))
@@ -233,17 +234,17 @@ struct DataSettingsView: View {
                 }
             }
             .buttonStyle(.plain)
-            .help(isConsensus ? "Uses your OpenAI key from Models"
+            .help(isConsensus ? "Manage keys"
                   : settings.groundTruthProvider == .whisper
-                  ? "Runs fully on this Mac — no key"
+                  ? "On this Mac"
                   : settings.groundTruthProvider.isLocal
-                  ? "Models are downloaded in Models" : "Keys are managed in Models")
+                  ? "Manage models" : "Manage keys")
         }) {
             Text(isConsensus
-                 ? "gpt-transcribe writes the label; Whisper and what Slive typed check it."
+                 ? "gpt-transcribe labels; 2 others check."
                  : settings.groundTruthProvider == .whisper
-                 ? "A bigger Whisper re-judges your audio on-device — dictate on Tiny, ground-truth with Accurate. No cloud, no key."
-                 : "A model with ears re-transcribes your audio into the Should-be column — the answer key Slive learns from.")
+                 ? "On this Mac."
+                 : "Writes the Correct column.")
                 .sliveCaption()
 
             HStack(spacing: 10) {
@@ -266,13 +267,6 @@ struct DataSettingsView: View {
                     if p.isLocal && providers.models(for: p).isEmpty {
                         Task { await providers.fetchModels(for: .local) }
                     }
-                }
-                if isConsensus {
-                    Text("Recommended")
-                        .font(SliveTheme.font(9, .semibold))
-                        .foregroundStyle(SliveTheme.accent)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(.white.opacity(0.07)))
                 }
                 if isConsensus || settings.groundTruthProvider == .whisper { Spacer(minLength: 0) }
             }
@@ -308,7 +302,7 @@ struct DataSettingsView: View {
             // What actually went in: the exact instruction the most recent
             // generation was seeded with — vocabulary visible at its tail,
             // so "are my words in there?" is a look, not a guess.
-            if let lastPrompt = run.lastPrompt {
+            if settings.verboseLogging, let lastPrompt = run.lastPrompt {
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) { promptExpanded.toggle() }
                 } label: {
@@ -340,8 +334,6 @@ struct DataSettingsView: View {
                     }
                     .frame(maxHeight: 170)
                     .innerWell()
-                    Text("Your Vocabulary words ride at the end — edit them in Dictation → Vocabulary.")
-                        .sliveCaption()
                 }
             }
         }
@@ -356,7 +348,7 @@ struct DataSettingsView: View {
         let hasKey = providers.hasKey(.openai)
         if !hasKey {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("Needs your OpenAI key — add it in Models → OpenAI.")
+                Text("Needs an OpenAI key.")
                     .font(SliveTheme.captionFont)
                     .foregroundStyle(.orange.opacity(0.95))
                 Spacer(minLength: 0)
@@ -373,7 +365,7 @@ struct DataSettingsView: View {
                 Button {
                     run.labelEverything()
                 } label: {
-                    Label("Label everything · \(scope.count.formatted()) clip\(scope.count == 1 ? "" : "s") · \(LabelEstimate.dollarsText(scope.dollars)) · \(LabelEstimate.durationText(scope.seconds))",
+                    Label("Label \(scope.count.formatted()) · \(LabelEstimate.dollarsText(scope.dollars)) · \(LabelEstimate.durationText(scope.seconds))",
                           systemImage: "wand.and.stars")
                         .font(SliveTheme.font(12, .semibold))
                         .frame(maxWidth: .infinity)
@@ -382,12 +374,12 @@ struct DataSettingsView: View {
                 .tint(SliveTheme.accent)
                 .controlSize(.large)
                 .disabled(!hasKey)
-                .help("Labels every recording without a consensus label or a human edit. Human edits are never touched; stop any time and press again to resume.")
+                .help("Skips your edits. Resumable.")
             }
 
             HStack(spacing: 12) {
                 if scope.count == 0 && hasAudioSamples {
-                    Label("Everything labeled", systemImage: "checkmark.seal.fill")
+                    Label("All labeled", systemImage: "checkmark.seal.fill")
                         .font(SliveTheme.font(11, .semibold))
                         .foregroundStyle(.white.opacity(0.4))
                 }
@@ -401,7 +393,6 @@ struct DataSettingsView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(.orange)
-                    .help("Run the clips the last run couldn't label again")
                 }
                 followUpJumps
                 Spacer(minLength: 0)
@@ -409,32 +400,19 @@ struct DataSettingsView: View {
         }
     }
 
-    /// Jumps to rows worth a human ear: consensus disagreement and way-off.
+    /// Rows worth a human ear (consensus disagreement, way off), as one jump.
     @ViewBuilder private var followUpJumps: some View {
-        if !lookIDs.isEmpty {
+        let ids = lookIDs + wayOffIDs.filter { !lookIDs.contains($0) }
+        if let first = ids.first {
             Button {
-                jumpToWayOff(lookIDs[0])
+                jumpToWayOff(first)
             } label: {
-                Label("\(lookIDs.count) need\(lookIDs.count == 1 ? "s" : "") a look", systemImage: "ear.fill")
+                Label("\(ids.count) to check", systemImage: "ear.fill")
                     .font(SliveTheme.font(11, .semibold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.orange)
-            .help("The transcribers disagreed on \(lookIDs.count) label\(lookIDs.count == 1 ? "" : "s") — jump to the first and give it a listen")
-        }
-        // Ground truths that disagree with the output by more than half are
-        // usually failures, not corrections — surface the count and jump to
-        // the first so they get eyes.
-        if !wayOffIDs.isEmpty {
-            Button {
-                jumpToWayOff(wayOffIDs[0])
-            } label: {
-                Label("\(wayOffIDs.count) way off", systemImage: "exclamationmark.triangle.fill")
-                    .font(SliveTheme.font(11, .semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.orange)
-            .help("\(wayOffIDs.count) ground truths differ from the output by more than half — jump to the first and check it")
+            .help("Low agreement or far from output")
         }
     }
 
@@ -444,7 +422,7 @@ struct DataSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(run.isConsensusRun ? "Labeling" : "Transcribing")
+                Text("Labeling")
                     .font(SliveTheme.rowFont)
                     .foregroundStyle(SliveTheme.textPrimary)
                 Text("\(run.done.formatted()) / \(run.total.formatted())")
@@ -459,7 +437,6 @@ struct DataSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Stop after the clips in flight — labels so far are kept")
             }
 
             GeometryReader { geo in
@@ -491,8 +468,6 @@ struct DataSettingsView: View {
                     .font(SliveTheme.font(11, .semibold))
                     .foregroundStyle(SliveTheme.textSecondary)
                 }
-                Text("Keeps going if you close Settings; the Mac stays awake until it's done.")
-                    .sliveCaption()
             }
         }
     }
@@ -516,7 +491,7 @@ struct DataSettingsView: View {
                 // The model id that will be sent, with a trailing chip listing
                 // the provider's live (audio-capable) models once fetched — so a
                 // wrong guess turns into a pick instead of a 404.
-                TextField("model (audio-capable)", text: $settings.groundTruthModel)
+                TextField("Model", text: $settings.groundTruthModel)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .overlay(alignment: .trailing) {
@@ -548,9 +523,6 @@ struct DataSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(SliveTheme.accent)
-                    .help(settings.groundTruthProvider.isLocal
-                          ? "List your downloaded models"
-                          : "Fetch this provider's live model list")
                 }
             }
         }
@@ -560,7 +532,7 @@ struct DataSettingsView: View {
                 Button {
                     run.runSingle(includeExisting: false)
                 } label: {
-                    Label("Transcribe missing (\(missingCount))", systemImage: "wand.and.stars")
+                    Label("Label \(missingCount) missing", systemImage: "wand.and.stars")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(SliveTheme.accent)
@@ -573,13 +545,13 @@ struct DataSettingsView: View {
                 Button {
                     run.runSingle(includeExisting: true)
                 } label: {
-                    Label("Run all (\(audioSampleCount))", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Redo all", systemImage: "arrow.triangle.2.circlepath")
                         .font(SliveTheme.font(11, .semibold))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(audioSampleCount == 0)
-                .help("Re-transcribe every recording with \(settings.groundTruthModel), replacing existing ground truth")
+                .help("Replaces all labels")
 
                 // Appears only after a run stopped early — resumes the untouched
                 // tail, which "Transcribe missing" can't reach once a Run-all has
@@ -588,19 +560,18 @@ struct DataSettingsView: View {
                     Button {
                         run.runRemaining()
                     } label: {
-                        Label("Run left (\(run.leftoverIDs.count))", systemImage: "arrow.uturn.left")
+                        Label("Resume \(run.leftoverIDs.count)", systemImage: "arrow.uturn.left")
                             .font(SliveTheme.font(11, .semibold))
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(.orange)
-                    .help("Resume where the last run stopped — only the \(run.leftoverIDs.count) it didn't reach")
                 }
 
                 followUpJumps
 
                 if missingCount == 0 && hasAudioSamples {
-                    Label("All caught up", systemImage: "checkmark.seal.fill")
+                    Label("All labeled", systemImage: "checkmark.seal.fill")
                         .font(SliveTheme.font(11, .semibold))
                         .foregroundStyle(.white.opacity(0.4))
                 }
@@ -671,7 +642,7 @@ struct DataSettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                     .innerWell()
-                Text("This tail repopulates automatically from Dictation → Vocabulary and is appended to whatever base you save — edit the words there, not here.")
+                Text("+ Vocabulary words")
                     .sliveCaption()
             }
         }
@@ -686,14 +657,14 @@ struct DataSettingsView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !custom.isEmpty { promptDraft = custom; return }
         if let defaultPrompt { promptDraft = defaultPrompt; return }
-        editorNote = "loading default…"
+        editorNote = "Loading…"
         Task { @MainActor in
             defer { editorNote = nil }
             if let fetched = try? await GroundTruthClient().defaultPrompt() {
                 defaultPrompt = fetched
                 if promptDraft.isEmpty { promptDraft = fetched }
             } else {
-                editorNote = "couldn't load the default — type your own or retry"
+                editorNote = "Couldn't load default."
             }
         }
     }
@@ -705,17 +676,17 @@ struct DataSettingsView: View {
         let draft = promptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         if draft.isEmpty || draft == defaultPrompt {
             settings.groundTruthPrompt = ""
-            editorNote = "following the default"
+            editorNote = nil
         } else {
             settings.groundTruthPrompt = draft
-            editorNote = "saved — applies to the next generation"
+            editorNote = "Saved"
         }
     }
 
     private func resetEditor() {
         settings.groundTruthPrompt = ""
         promptDraft = defaultPrompt ?? ""
-        editorNote = "reset to default"
+        editorNote = nil
         if defaultPrompt == nil { loadEditor() }
     }
 
@@ -734,9 +705,6 @@ struct DataSettingsView: View {
     private var dataCard: some View {
         SettingsCard("DATA", trailing: {
             HStack(spacing: 12) {
-                Text("\(store.count) sample\(store.count == 1 ? "" : "s") · \(byteText(store.totalBytes))")
-                    .font(SliveTheme.font(12))
-                    .foregroundStyle(.white.opacity(0.55))
                 if !store.samples.isEmpty {
                     Button("Clear all") { confirmClear = true }
                         .buttonStyle(.plain)
@@ -748,8 +716,7 @@ struct DataSettingsView: View {
             if store.samples.isEmpty {
                 EmptyState(
                     icon: "waveform",
-                    title: "No samples yet",
-                    caption: "Flip on Capture above and start dictating — each row is one take: the audio, what Slive wrote, and what it should've been."
+                    title: "No samples yet."
                 )
             } else {
                 VStack(alignment: .leading, spacing: 0) {
@@ -777,6 +744,19 @@ struct DataSettingsView: View {
                 samplePage = 0
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete this sample?", isPresented: Binding(
+            get: { pendingDeleteID != nil }, set: { if !$0 { pendingDeleteID = nil } })) {
+            Button("Delete", role: .destructive) {
+                if let id = pendingDeleteID {
+                    if player.currentID == id { player.stop() }
+                    if editingSampleID == id { editingSampleID = nil }
+                    TranscriptDiffCache.remove(id: id)
+                    store.remove(id: id)
+                }
+                pendingDeleteID = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteID = nil }
         }
     }
 
@@ -821,8 +801,8 @@ struct DataSettingsView: View {
     private var tableHeaderRow: some View {
         HStack(alignment: .center, spacing: 12) {
             Text("AUDIO").frame(width: 40, alignment: .leading)
-            Text("OUTPUT").frame(maxWidth: textColumnCap, alignment: .leading)
-            Text("SHOULD BE").frame(maxWidth: textColumnCap, alignment: .leading)
+            Text("TYPED").frame(maxWidth: textColumnCap, alignment: .leading)
+            Text("CORRECT").frame(maxWidth: textColumnCap, alignment: .leading)
             Spacer(minLength: 0)
         }
         .font(SliveTheme.font(10, .bold))
@@ -856,17 +836,14 @@ struct DataSettingsView: View {
 
                 // Drop this one sample (audio + row).
                 Button {
-                    if player.currentID == sample.id { player.stop() }
-                    if editingSampleID == sample.id { editingSampleID = nil }
-                    TranscriptDiffCache.remove(id: sample.id)
-                    store.remove(id: sample.id)
+                    pendingDeleteID = sample.id
                 } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.35))
                 }
                 .buttonStyle(.plain)
-                .help("Delete this sample")
+                .help("Delete")
             }
 
             DataPlaybackScrubber(sampleID: sample.id)
@@ -888,7 +865,7 @@ struct DataSettingsView: View {
                     Image(systemName: "person.crop.circle.badge.checkmark")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.green)
-                        .help("Human edited — this label takes priority for training")
+                        .help("Your edit")
                 }
                 // >50% divergence is rarely a correction — flag it for a
                 // human ear (listen, then redo or leave it).
@@ -896,7 +873,7 @@ struct DataSettingsView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.orange)
-                        .help("Differs from the output by more than half — listen and redo if the model went wrong")
+                        .help("Far from output")
                 }
                 // The consensus transcribers disagreed — the label is their
                 // best guess; a listen (and the pencil) settles it.
@@ -904,7 +881,7 @@ struct DataSettingsView: View {
                     Image(systemName: "ear.fill")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.orange)
-                        .help("The transcribers only agreed \(Int(((sample.llmAgreement ?? 0) * 100).rounded()))% — give it a listen")
+                        .help("\(Int(((sample.llmAgreement ?? 0) * 100).rounded()))% agreement")
                 }
                 if sample.finalText.isEmpty, sample.llmTranscript != nil {
                     // Redo the model label. A human edit, once present, remains
@@ -915,7 +892,7 @@ struct DataSettingsView: View {
                             .foregroundStyle(.white.opacity(0.4))
                     }
                     .buttonStyle(.plain)
-                    .help("Re-label with \(labelerName)")
+                    .help("Redo")
                 }
                 Button { beginShouldBeEdit(sample) } label: {
                     Image(systemName: "pencil")
@@ -923,25 +900,24 @@ struct DataSettingsView: View {
                         .foregroundStyle(SliveTheme.accent)
                 }
                 .buttonStyle(.plain)
-                .help("Edit Should be")
+                .help("Edit")
             }
         } else if store.audioURL(sample) != nil {
             HStack(spacing: 8) {
                 Button { run.labelOne(sample) } label: {
-                    Label("Get", systemImage: "wand.and.stars")
+                    Label("Label", systemImage: "wand.and.stars")
                         .font(SliveTheme.font(11, .semibold))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
-                .help("Label with \(labelerName)")
+                .help(labelerName)
                 Button { beginShouldBeEdit(sample) } label: {
                     Label("Edit", systemImage: "pencil")
                         .font(SliveTheme.font(11, .semibold))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(SliveTheme.accent)
-                .help("Write the correct transcript yourself")
-            }
+                            }
         } else {
             Text("—").foregroundStyle(.white.opacity(0.4))
         }
