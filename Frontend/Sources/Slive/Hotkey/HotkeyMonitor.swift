@@ -187,20 +187,26 @@ final class HotkeyMonitor {
             | (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
         )
-        let consuming = needsConsume
-        let option: CGEventTapOptions = consuming ? .defaultTap : .listenOnly
+        var consuming = needsConsume
         let refcon = Unmanaged.passUnretained(self).toOpaque()
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: option,
-            eventsOfInterest: mask,
-            callback: hotkeyTapCallback,
-            userInfo: refcon
-        ) else {
-            return false
+        func create(_ consume: Bool) -> CFMachPort? {
+            CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                              options: consume ? .defaultTap : .listenOnly,
+                              eventsOfInterest: mask, callback: hotkeyTapCallback, userInfo: refcon)
         }
+        // A chord shortcut (⌥ . for continuous) needs a CONSUMING tap, and that
+        // needs Accessibility. Without it the tap used to fail outright and EVERY
+        // shortcut — fn included — went dead, silently (Nov 5: "the pill is not
+        // coming up at all" after setting ⌥ . / ⌥ ,). Listen instead: shortcuts
+        // work (the chord's character may also type) and the permission poll
+        // upgrades to consuming once Accessibility is granted.
+        var made = create(consuming)
+        if made == nil, consuming {
+            made = create(false)
+            consuming = false
+            Log.event("hotkey tap: no Accessibility — listening only (chord shortcuts may type a character)")
+        }
+        guard let tap = made else { return false }
 
         let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
@@ -218,14 +224,14 @@ final class HotkeyMonitor {
         if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
         eventTap = nil; runLoopSource = nil
         installTap()
-        if !tapGranted { startPolling() }
+        if !tapGranted || installedConsuming != needsConsume { startPolling() }
     }
 
     private func startPolling() {
         pollTimer?.invalidate()
         let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
-            if self.tapGranted {
+            if self.tapGranted, self.eventTap == nil || self.installedConsuming != self.needsConsume {
                 NSLog("Slive: permission granted — re-arming hotkey tap.")
                 self.reinstallTap()
                 timer.invalidate(); self.pollTimer = nil
