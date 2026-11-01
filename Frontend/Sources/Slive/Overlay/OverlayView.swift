@@ -28,6 +28,9 @@ enum OverlayMetrics {
     /// Total horizontal room the copy + dismiss buttons (plus gaps) claim.
     static let copyReserve: CGFloat = copyGap + copyButtonWidth + buttonGap + dismissButtonWidth
 
+    static let noteFontSize: CGFloat = 11       // the "why not typed" line
+    static let noteGap: CGFloat = 3             // between that line and the text
+
     /// Font used for both rendering (SwiftUI) and measurement (AppKit).
     static func roundedFont(size: CGFloat) -> NSFont {
         let base = NSFont.systemFont(ofSize: size)
@@ -37,29 +40,38 @@ enum OverlayMetrics {
         return base
     }
 
-    /// The black box's own size for a given transcript, wrapped at `maxBoxWidth`.
-    static func boxSize(for text: String) -> CGSize {
-        let font = roundedFont(size: fontSize)
+    /// The black box's own size for a given transcript (plus its optional
+    /// note line above it), wrapped at `maxBoxWidth`.
+    static func boxSize(for text: String, note: String? = nil) -> CGSize {
         // The copy button (plus its gap) eats into the text column, so measure
         // the text against the narrower width and add the reserve back below.
         let maxTextW = maxBoxWidth - hInset * 2 - copyReserve
-        let bounds = (text as NSString).boundingRect(
-            with: CGSize(width: maxTextW, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font]
-        )
+        func measure(_ s: String, _ size: CGFloat) -> CGSize {
+            let r = (s as NSString).boundingRect(
+                with: CGSize(width: maxTextW, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: roundedFont(size: size)]
+            )
+            return CGSize(width: ceil(r.width), height: ceil(r.height))
+        }
+        var content = measure(text, fontSize)
+        if let note, !note.isEmpty {
+            let n = measure(note, noteFontSize)
+            content = CGSize(width: max(content.width, n.width),
+                             height: content.height + n.height + noteGap)
+        }
         // +1 guards against SwiftUI/AppKit rounding disagreements that would clip
         // the last glyph and force an unwanted extra wrap.
-        let w = min(maxBoxWidth, ceil(bounds.width) + hInset * 2 + copyReserve + 1)
+        let w = min(maxBoxWidth, content.width + hInset * 2 + copyReserve + 1)
         // Cap the height: taller answers scroll inside the box instead of growing
         // off-screen.
-        let h = min(maxBoxHeight, max(minBoxHeight, ceil(bounds.height) + vInset * 2))
+        let h = min(maxBoxHeight, max(minBoxHeight, content.height + vInset * 2))
         return CGSize(width: w, height: h)
     }
 
     /// The container (and NSPanel) size for a result box — box plus shadow margin.
-    static func panelSize(for text: String) -> CGSize {
-        let b = boxSize(for: text)
+    static func panelSize(for text: String, note: String? = nil) -> CGSize {
+        let b = boxSize(for: text, note: note)
         return CGSize(width: b.width + margin * 2, height: b.height + margin * 2)
     }
 
@@ -137,7 +149,7 @@ struct OverlayView: View {
         if case .result(let t) = model.phase {
             if model.isChat { return OverlayMetrics.assistantStreamingPanelSize }
             return model.assistantResult ? OverlayMetrics.assistantPanelSize(for: t)
-                                          : OverlayMetrics.panelSize(for: t)
+                                          : OverlayMetrics.panelSize(for: t, note: model.resultNote)
         }
         return OverlayMetrics.pillSize
     }
@@ -170,8 +182,9 @@ struct OverlayView: View {
         // spring and the text never settles/paints.
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: phaseRank)
         // Click-through everywhere except while the result box is showing, so its
-        // copy button can be clicked; the pill/transcribing states stay passive.
-        .allowsHitTesting(isResult)
+        // copy button can be clicked, and a stuck transcribing pill's ✕; the
+        // listening pills stay passive.
+        .allowsHitTesting(isResult || (isTranscribing && model.transcribingStuck))
         .onChange(of: model.phase) { _, newPhase in
             if case .result(let t) = newPhase { displayText = t }
         }
@@ -229,7 +242,16 @@ struct OverlayView: View {
     // MARK: - Transcribing (loading dots in the same pill)
 
     private func transcribingPill(active: Bool) -> some View {
-        oriented(LoadingDots(active: active), width: 48, height: 18)
+        // A ✕ joins the dots once the wait looks stuck (see AudioModel) —
+        // beside them, or below when the pill stands upright.
+        let layout = upright ? AnyLayout(VStackLayout(spacing: 6))
+                             : AnyLayout(HStackLayout(spacing: 6))
+        return layout {
+            oriented(LoadingDots(active: active), width: 48, height: 18)
+            if model.transcribingStuck {
+                DismissButton { model.onDismiss?() }
+            }
+        }
             .padding(.horizontal, upright ? 6 : 8)
             .padding(.vertical, upright ? 8 : 6)
             .background(Capsule().fill(Color.black.opacity(chromeOpacity)))
@@ -293,7 +315,7 @@ struct OverlayView: View {
         // Streaming or a multi-turn chat uses the fixed scrolling box; a fresh
         // single answer sizes to its text.
         let box = (model.streaming || model.isChat) ? OverlayMetrics.streamingBoxSize
-                                                     : OverlayMetrics.boxSize(for: text)
+                                                     : OverlayMetrics.boxSize(for: text, note: model.resultNote)
         // Text column is the box minus its padding, the button, and the gap.
         let textWidth = box.width - OverlayMetrics.hInset * 2
             - OverlayMetrics.copyReserve
@@ -308,6 +330,14 @@ struct OverlayView: View {
                         }
                         bubble("assistant", text)
                     } else {
+                        if let note = model.resultNote {
+                            Text(note)
+                                .font(.system(size: OverlayMetrics.noteFontSize, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.55))
+                                .frame(width: textWidth, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.bottom, OverlayMetrics.noteGap)
+                        }
                         Text(text)
                             .font(.system(size: OverlayMetrics.fontSize, design: .rounded))
                             .foregroundStyle(.white.opacity(0.95))

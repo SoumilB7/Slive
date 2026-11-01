@@ -28,6 +28,8 @@ final class ContinuousDictation {
     struct Outcome {
         let text: String
         let typed: Bool
+        /// ✕ (or quit) landed during the final pass: show nothing, record nothing.
+        var cancelled = false
     }
 
     private var active = false
@@ -45,6 +47,13 @@ final class ContinuousDictation {
 
     /// Live mic energy (0…~1) forwarded for the waveform pill.
     var onEnergy: ((Float) -> Void)?
+    /// The live stream failed after `start` returned (the mic wouldn't open).
+    /// The session is already cancelled; the caller says so.
+    var onFailure: (() -> Void)?
+    /// Identifies the session, so a late failure or a ✕ can't touch a newer one.
+    private var session = UUID()
+    /// The session `cancel()` ended — its final pass, if running, must not type.
+    private var cancelledSession: UUID?
 
     var isActive: Bool { active }
 
@@ -58,6 +67,8 @@ final class ContinuousDictation {
             return false
         }
         self.model = model
+        let session = UUID()
+        self.session = session
         active = true
         lastTranscript = ""
         vocabulary = Settings.shared.hotwords
@@ -75,6 +86,10 @@ final class ContinuousDictation {
             self.lastTranscript = text
             // Just move the goal — the typist eases the field toward it smoothly.
             self.typist.setTarget(text)
+        } onFailure: { [weak self] in
+            guard let self, self.active, self.session == session else { return }
+            self.cancel()
+            self.onFailure?()
         }
         if !ok { active = false; typist.cancel() }
         return ok
@@ -91,6 +106,7 @@ final class ContinuousDictation {
         // This session's own copies: a new start() during the final pass below
         // replaces all of these.
         let typist = self.typist, model = self.model, typing = self.typing
+        let session = self.session
         let lastTranscript = self.lastTranscript, vocabulary = self.vocabulary
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         let confirmedText = Self.normalize(whisper.liveConfirmedText)
@@ -132,6 +148,10 @@ final class ContinuousDictation {
         // the seam merge so a term split across the seam still matches).
         let finalText = final.map { VocabularyCorrector.correct($0, hotwords: vocabulary) }
             ?? lastTranscript
+        if cancelledSession == session {
+            Log.live("cancelled during the final pass — nothing typed")
+            return Outcome(text: "", typed: true, cancelled: true)
+        }
 
         let result: String
         var typed = typing
@@ -154,6 +174,7 @@ final class ContinuousDictation {
 
     /// Abort without a final pass or field edits (app quit / dismiss).
     func cancel() {
+        cancelledSession = session
         active = false
         whisper.stopLiveDictation()
         typist.cancel()

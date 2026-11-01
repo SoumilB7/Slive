@@ -263,7 +263,8 @@ final class TranscriptionModel: ObservableObject {
     /// `stopLiveDictation()`.
     func startLiveDictation(
         model: String,
-        onUpdate: @escaping @MainActor (_ transcript: String, _ energy: Float) -> Void
+        onUpdate: @escaping @MainActor (_ transcript: String, _ energy: Float) -> Void,
+        onFailure: (@MainActor () -> Void)? = nil
     ) -> Bool {
         if let engine = parakeets[model] {
             stopLiveDictation()   // never run two at once
@@ -372,8 +373,16 @@ final class TranscriptionModel: ObservableObject {
                 // releases, the loop died on a decode error (streaming is dead until
                 // release). Normally it logs right after stopLiveDictation().
                 Log.live("stream loop ended")
+            } catch where error is CancellationError || Task.isCancelled {
+                Log.live("stream stopped")   // stopLiveDictation, not a failure
             } catch {
+                // The mic failed to open: without this the pill kept
+                // "listening" and nothing ever typed.
                 Log.live("stream ERROR — \(error)")
+                let ns = error as NSError
+                Log.event("live stream failed to start (\(ns.domain) \(ns.code))")
+                FailureReporter.shared.report("live typing", "Live typing couldn't start the microphone.", error: error)
+                onFailure?()
             }
         }
         return true

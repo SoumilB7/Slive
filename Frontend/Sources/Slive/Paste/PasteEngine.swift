@@ -1,5 +1,7 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
+import IOKit
 
 /// Types transcripts into whatever currently has keyboard focus, using pure
 /// synthetic keystrokes — the same trust model as the user's own keyboard.
@@ -35,6 +37,10 @@ enum PasteEngine {
     static func canStreamType() -> Bool {
         func check() -> Bool {
             guard AXIsProcessTrusted() else { return false }
+            guard !secureInputBlocksTyping() else {
+                Log.paste("stream refused — secure event input on")
+                return false
+            }
             switch probeFocus() {
             case .element(let element):
                 if isSecure(element) {
@@ -89,6 +95,9 @@ enum PasteEngine {
     /// from the typist's queue (AX reads are thread-safe; no main hop, which
     /// would stall typing behind UI work). Unknown answers fail open.
     static func isStillStreamTarget(_ target: StreamTarget) -> Bool {
+        // A password field took focus (Chrome/Electron ones don't always
+        // show as secure in AX, but they do switch secure input on).
+        if secureInputBlocksTyping() { return false }
         if let focused = rawFocusedElement() {
             if isSecure(focused) { return false }
             var pid: pid_t = 0
@@ -106,14 +115,14 @@ enum PasteEngine {
     private static func rawFocusedElement() -> AXUIElement? {
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
-            AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &value)
+            systemWide, kAXFocusedUIElementAttribute as CFString, &value)
         return err == .success ? axElement(value) : nil
     }
 
     private static func focusedAppPID() -> pid_t? {
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
-            AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value)
+            systemWide, kAXFocusedApplicationAttribute as CFString, &value)
         guard err == .success, let app = axElement(value) else { return nil }
         var pid: pid_t = 0
         return AXUIElementGetPid(app, &pid) == .success ? pid : nil
@@ -228,6 +237,12 @@ enum PasteEngine {
                                       onDeliveryFailure: @escaping () -> Void) -> Bool {
         // No Accessibility permission → posted events would be dropped.
         guard AXIsProcessTrusted() else { return false }
+        // Secure event input is on while a password field has focus — also
+        // in Chrome/Electron, whose password inputs AX may not mark secure.
+        guard !secureInputBlocksTyping() else {
+            Log.paste("insert refused — secure event input on")
+            return false
+        }
 
         // Never type into a password field, a positively non-text target, or
         // THE VOID. Fail-open only where AX genuinely couldn't answer — a
@@ -296,6 +311,10 @@ enum PasteEngine {
             let afterValue = stringAttribute(before.element, kAXValueAttribute as String)
             let afterRange = rangeAttribute(
                 before.element, kAXSelectedTextRangeAttribute as String)
+            // Neither could be read (a slow app past the AX timeout, or the
+            // field went away): unknown — fail open like every other check,
+            // rather than put up a copy box for text that was likely typed.
+            if afterValue == nil && afterRange == nil { return }
             if deliveryChanged(beforeValue: before.value, beforeRange: before.range,
                                afterValue: afterValue, afterRange: afterRange) {
                 return
@@ -334,6 +353,67 @@ enum PasteEngine {
         return range
     }
 
+    // MARK: - Bounded AX
+
+    /// Longest any one AX message may block, in seconds. The default is six,
+    /// and the focus probe runs on the main thread — the thread the hotkey's
+    /// consuming tap lives on — so one hung target app froze Slive and held
+    /// every keystroke on the Mac behind it. A timed-out read answers
+    /// `.cannotComplete`, which every check here already treats as "couldn't
+    /// tell" (fail open).
+    static let axTimeout: Float = 0.25
+    /// Total time the focused-descendant walk may spend.
+    static let descendantWalkBudget: CFAbsoluteTime = 0.3
+
+    /// The system-wide element, timeout applied. Setting it on the
+    /// system-wide element sets the process-wide default, so every element
+    /// AX hands back afterwards is bounded too.
+    private static let systemWide: AXUIElement = {
+        let element = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(element, axTimeout)
+        return element
+    }()
+
+    /// Secure input is on in the app we'd type into (its password field has
+    /// focus). macOS reports secure input machine-wide, and Terminal's Secure
+    /// Keyboard Entry or a password manager can leave it on for hours, so
+    /// the app holding it is matched against the frontmost one. When the
+    /// holder can't be read, any secure input counts.
+    static func secureInputBlocksTyping() -> Bool {
+        guard IsSecureEventInputEnabled() else { return false }
+        guard let owner = secureInputOwnerPID() else { return true }
+        return owner == NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
+    /// The process that turned secure input on (the window server records it
+    /// on the console user's registry entry).
+    private static func secureInputOwnerPID() -> pid_t? {
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
+        defer { IOObjectRelease(root) }
+        guard let value = IORegistryEntryCreateCFProperty(root, "IOConsoleUsers" as CFString,
+                                                          kCFAllocatorDefault, 0)?.takeRetainedValue(),
+              let users = value as? [[String: Any]] else { return nil }
+        for user in users {
+            if let pid = user["kCGSSessionSecureInputPID"] as? Int, pid > 0 { return pid_t(pid) }
+        }
+        return nil
+    }
+
+    /// Why typing is blocked outright, in a few words for the copy box —
+    /// the machine-wide reasons a user can act on. nil when typing was
+    /// possible, or refused for this field only.
+    static var typingBlockedNote: String? {
+        typingBlockedNote(accessibility: AXIsProcessTrusted(),
+                          secureInput: secureInputBlocksTyping())
+    }
+
+    /// Pure copy rule, self-tested.
+    static func typingBlockedNote(accessibility: Bool, secureInput: Bool) -> String? {
+        if !accessibility { return "Not typed · Accessibility is off" }
+        if secureInput { return "Not typed · secure input is on" }
+        return nil
+    }
+
     // MARK: - Focus
 
     /// What the focus probe actually learned — the three answers mean three
@@ -358,7 +438,6 @@ enum PasteEngine {
 
     static func probeFocus() -> FocusProbe {
         let frontmost = NSWorkspace.shared.frontmostApplication
-        let systemWide = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
             systemWide, kAXFocusedUIElementAttribute as CFString, &value)
@@ -391,6 +470,7 @@ enum PasteEngine {
     private static func corroboratedNone(frontmost app: NSRunningApplication?) -> FocusProbe {
         guard let app else { return .none }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, axTimeout)
 
         // The app-scoped query sometimes succeeds when the system-wide query
         // incorrectly returns .noValue. Prefer that concrete element.
@@ -518,13 +598,18 @@ enum PasteEngine {
     /// Bounded breadth-first search used only for focused containers. It scans
     /// the whole bounded slice and ranks candidates, so a parent group cannot
     /// beat a deeper text field merely because it appeared first.
+    /// Bounded by time as well as count: 256 elements are ~600 AX messages,
+    /// and a slow (not hung) app answering each near the timeout would still
+    /// hold the main thread for a minute.
     private static func bestFocusedDescendant(in root: AXUIElement) -> AXUIElement? {
+        let deadline = CFAbsoluteTimeGetCurrent() + descendantWalkBudget
         var queue: [AXUIElement] = children(of: root)
         var index = 0
         let limit = 256
         var best: AXUIElement?
         var bestRank = 0
-        while index < queue.count && index < limit {
+        while index < queue.count && index < limit
+                && CFAbsoluteTimeGetCurrent() < deadline {
             let element = queue[index]
             index += 1
             if isFocused(element) {

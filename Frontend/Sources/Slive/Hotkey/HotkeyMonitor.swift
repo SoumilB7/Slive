@@ -129,8 +129,9 @@ final class HotkeyMonitor {
         _ = Self.ensureAccessibility(prompt: false)
         NSLog("Slive: InputMonitoring=\(Self.inputMonitoringGranted) Accessibility=\(AXIsProcessTrusted())")
 
-        installTap()
-        if !tapGranted { startPolling() }
+        // A tap that can't be created even with the permission granted is
+        // retried by the poll too, not given up on.
+        if !installTap() || !tapGranted { startPolling() }
 
         // macOS kills a session event tap when the machine sleeps; re-enabling it
         // afterwards doesn't revive it, so on wake we rebuild it from scratch —
@@ -142,8 +143,7 @@ final class HotkeyMonitor {
             guard let self else { return }
             Log.hotkey("wake — rebuilding tap")
             NSLog("Slive: wake — rebuilding hotkey tap.")
-            self.reinstallTap()
-            if !self.tapGranted { self.startPolling() }
+            self.reinstallTap()   // polls until it takes, if it doesn't now
         }
     }
 
@@ -223,8 +223,11 @@ final class HotkeyMonitor {
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
         eventTap = nil; runLoopSource = nil
-        installTap()
-        if !tapGranted || installedConsuming != needsConsume { startPolling() }
+        // Right after wake the window server can refuse a new tap. Without a
+        // tap, the poll's `eventTap == nil` keeps retrying until one takes —
+        // before, a granted permission skipped the poll and the hotkey stayed
+        // dead until relaunch.
+        if !installTap() || !tapGranted || installedConsuming != needsConsume { startPolling() }
     }
 
     private func startPolling() {
@@ -233,8 +236,10 @@ final class HotkeyMonitor {
             guard let self else { timer.invalidate(); return }
             if self.tapGranted, self.eventTap == nil || self.installedConsuming != self.needsConsume {
                 NSLog("Slive: permission granted — re-arming hotkey tap.")
-                self.reinstallTap()
+                // Drop this poll FIRST: a reinstall that fails starts a fresh
+                // one, which must not be orphaned by clearing `pollTimer` after.
                 timer.invalidate(); self.pollTimer = nil
+                self.reinstallTap()
             }
         }
         t.tolerance = 0.5   // let macOS coalesce the wakeup (battery)

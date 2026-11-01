@@ -120,6 +120,7 @@ final class AudioModel: ObservableObject {
     /// Stopped recording; the audio is now on its way to the backend. Keep the
     /// pill on screen (a loading indicator is shown instead of the waveform).
     func beginTranscribing() {
+        transcribingStuck = false
         phase = .transcribing
         settleMeterNow()
     }
@@ -138,10 +139,22 @@ final class AudioModel: ObservableObject {
 
     /// The result box is a failure message (drawn with an orange edge).
     @Published private(set) var resultIsError = false
+    /// A short line above a copy box saying why it wasn't typed (nil = none).
+    @Published private(set) var resultNote: String?
+    /// The transcribing pill has waited long enough to offer a ✕ — it's
+    /// click-through otherwise, so a stuck decode left an unclosable pill.
+    @Published private(set) var transcribingStuck = false
+
+    /// Show the ✕ on the transcribing pill (no-op once it has moved on).
+    func offerTranscribingDismiss() {
+        guard phase == .transcribing else { return }
+        transcribingStuck = true
+    }
 
     /// Backend returned text (dictation, or an error) — grow the pill into a box.
-    func showResult(_ text: String, isError: Bool = false) {
+    func showResult(_ text: String, isError: Bool = false, note: String? = nil) {
         resultIsError = isError
+        resultNote = note
         streaming = false
         assistantResult = false
         priorTurns = []
@@ -154,6 +167,7 @@ final class AudioModel: ObservableObject {
     /// footer shows. Keeps the transcript (priorTurns/currentQuestion) in place.
     func showAssistantResult(_ text: String) {
         resultIsError = false
+        resultNote = nil
         streaming = false
         assistantResult = true
         phase = .result(text: text)
@@ -163,7 +177,7 @@ final class AudioModel: ObservableObject {
     /// Start streaming an assistant answer into a fixed-size box. `priorTurns`
     /// are shown above the answer when continuing a chat.
     func beginStreaming(priorTurns: [ChatTurn] = [], question: String = "") {
-        streaming = true; resultIsError = false
+        streaming = true; resultIsError = false; resultNote = nil
         assistantResult = true
         self.priorTurns = priorTurns
         self.currentQuestion = question
@@ -191,6 +205,8 @@ final class AudioModel: ObservableObject {
 
     func reset() {
         resultIsError = false
+        resultNote = nil
+        transcribingStuck = false
         phase = .idle
         streaming = false
         assistantListening = false

@@ -50,6 +50,9 @@ final class LiveTypist: @unchecked Sendable {
     private var focusTarget: PasteEngine.StreamTarget?
     private var focusLost = false
     private var lastFocusCheck = Date.distantPast
+    /// Set by `cancel()`: a `finish()` queued after it must not reconcile —
+    /// cancel had already cleared `committed`, so it retyped the WHOLE text.
+    private var cancelled = false
 
     /// What a finished session left in the field, and whether focus moved
     /// away mid-session (then the caller should show the text instead).
@@ -70,6 +73,7 @@ final class LiveTypist: @unchecked Sendable {
             self.focusLost = false
             self.lastFocusCheck = .distantPast
             self.enabled = allowed
+            self.cancelled = false
             self.cps = cps
             self.instant = cps >= Self.instantThreshold
             self.running = true
@@ -98,7 +102,7 @@ final class LiveTypist: @unchecked Sendable {
             queue.async {
                 self.running = false
                 self.pendingTick?.cancel(); self.pendingTick = nil
-                if self.enabled {
+                if self.enabled && !self.cancelled {
                     self.revealed = self.target.count
                     self.reconcile(to: Array(self.target))
                 }
@@ -114,6 +118,7 @@ final class LiveTypist: @unchecked Sendable {
     func cancel() {
         queue.async {
             self.running = false
+            self.cancelled = true
             self.pendingTick?.cancel(); self.pendingTick = nil
             self.committed = ""; self.target = ""; self.revealed = 0; self.frozenLen = 0
         }

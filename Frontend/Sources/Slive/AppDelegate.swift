@@ -156,6 +156,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Settings.shared.isFirstRun || !HotkeyMonitor.inputMonitoringGranted {
             openSettings()
             Settings.shared.markFirstRunComplete()
+            // Ask for the mic here, beside the permission list — otherwise the
+            // first prompt came mid-hold and that dictation was lost to it.
+            if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+                AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            }
         }
     }
 
@@ -290,6 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onDismiss = { [weak self] in self?.dismissOverlay() }
         model.onContinue = { [weak self] in self?.continueChat() }
         continuous.onEnergy = { [weak self] energy in self?.model.pushStreamEnergy(energy) }
+        continuous.onFailure = { [weak self] in self?.liveStreamFailed() }
         hotkey.onToggle = { [weak self] action in self?.toggleTapped(action) }
     }
 
@@ -333,6 +339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         currentAction = action
         // No hold-activation delay for a tap: the tap IS deliberate.
         if action == .stream { beginLiveDictation() } else { beginRecording() }
+        // Nothing started (mic blocked, model not ready, stream refused): no
+        // toggle is live — else the next tap is eaten as this one's "stop".
+        if !recorder.isRecording && !continuous.isActive { toggleActive = nil }
     }
 
     /// True when the live session began moments ago — i.e. it is the first
@@ -441,6 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginRecording() {
         guard !recorder.isRecording else { return }
+        guard micAllowed() else { return }
         // A new recording supersedes an in-flight assistant answer and any
         // result box. Released dictations are queued and still type.
         transcribeTask?.cancel()
@@ -460,8 +470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !recorder.start() {
             Log.event("mic unavailable — hold aborted")
             toggleActive = nil   // else the next tap is eaten as this session's "stop"
-            model.finishListening()
-            hideOverlaySoon()
+            showNotice(Self.micFailedMessage)
             return
         }
         // Hold the machine at speed for the whole hold→type window (tier
@@ -515,8 +524,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Pure zeros: the mic heard nothing at all (blocked, muted at the
+        // hardware, a dead device) — say so instead of fading like silence.
+        if samples.count >= 16_000 / 4, AudioRecorder.isDigitalSilence(samples) {
+            try? FileManager.default.removeItem(at: wavURL)
+            Log.event(String(format: "captured %.1fs of digital silence — no mic signal", duration))
+            showNotice("No sound. Check your microphone.")
+            endDictationActivityIfIdle()
+            return
+        }
+
         // Keep the overlay up and show a loading state while we save + transcribe.
-        model.beginTranscribing()
+        beginTranscribingPill()
 
         // Which shortcut started this recording decides what we do with the text.
         let action = currentAction
@@ -703,6 +722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// still-forming tail in the overlay. Needs a model already loaded.
     private func beginLiveDictation() {
         guard !recorder.isRecording else { return }
+        guard micAllowed() else { return }
         transcribeTask?.cancel(); transcribeTask = nil
         collapseWorkItem?.cancel(); collapseWorkItem = nil
 
@@ -737,10 +757,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         liveStart = Date()   // for the post-release WPM measurement
         DispatchQueue.main.async { FeedbackPlayer.shared.playActivation(for: .stream) }
 
-        if !continuous.start(model: streamModel) {
-            model.finishListening()
-            hideOverlaySoon()
-        }
+        if !continuous.start(model: streamModel) { liveStreamFailed() }
+    }
+
+    /// The live stream couldn't start (its mic wouldn't open — now, or
+    /// moments later for Whisper's async start). The pill used to keep
+    /// "listening" while nothing ever typed.
+    private func liveStreamFailed() {
+        toggleActive = nil
+        liveStart = nil
+        showNotice(Self.micFailedMessage)
     }
 
     /// Stop live dictation: run the final accurate pass (which also catches the
@@ -755,7 +781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // reflects speaking time, not the final-pass latency.
         let heldSeconds = liveStart.map { Date().timeIntervalSince($0) } ?? 0
         liveStart = nil
-        model.beginTranscribing()
+        beginTranscribingPill()
         Task { @MainActor in
             let outcome = await continuous.stop()
             endDictationActivityIfIdle()
@@ -764,14 +790,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       Date().timeIntervalSince(releasedAt)))
                 self.releasedAt = nil
             }
+            // ✕ during the final pass: the overlay is gone (or a newer
+            // session owns it) — touch nothing.
+            if outcome.cancelled { return }
             let text = outcome.text
             if !text.isEmpty {
                 HistoryStore.shared.add(text)
                 SpeakingStats.shared.record(text: text, seconds: heldSeconds)  // after write
             }
             if !outcome.typed && !text.isEmpty {
-                model.showResult(text)
-                overlay.resize(to: OverlayMetrics.panelSize(for: text))
+                let note = PasteEngine.typingBlockedNote
+                model.showResult(text, note: note)
+                overlay.resize(to: OverlayMetrics.panelSize(for: text, note: note))
                 overlay.setInteractive(true)          // copy button clickable
                 scheduleCollapse(after: resultDisplayDuration)
             } else {
@@ -974,7 +1004,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if ownsOverlay {
-            if typed { model.finishListening(); hideOverlaySoon() } else { showDictationCopyBox(trimmed) }
+            if typed { model.finishListening(); hideOverlaySoon() }
+            else {
+                // Say why, when it's something the user can fix (not when
+                // they turned typing off themselves).
+                showDictationCopyBox(trimmed, note: Settings.shared.autoInsert
+                                     ? PasteEngine.typingBlockedNote : nil)
+            }
         } else if !typed {
             Log.event("dictation not typed (overlay busy) — kept in history")
         }
@@ -994,15 +1030,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SpeakingStats.shared.record(text: trimmed, seconds: seconds)
     }
 
-    @MainActor private func showDictationCopyBox(_ text: String) {
+    @MainActor private func showDictationCopyBox(_ text: String, note: String? = nil) {
         // Order the panel in first: the late delivery-failure callback lands
         // after hideOverlaySoon has already hidden it, and the copy box was
         // built off-screen (words neither typed nor shown).
         overlay.show()
-        model.showResult(text)
-        overlay.resize(to: OverlayMetrics.panelSize(for: text))
+        model.showResult(text, note: note)
+        overlay.resize(to: OverlayMetrics.panelSize(for: text, note: note))
         overlay.setInteractive(true)
         scheduleCollapse(after: resultDisplayDuration)
+    }
+
+    static let micFailedMessage = "Couldn't start the microphone."
+
+    /// Mic permission, checked before every session: denied or never asked,
+    /// macOS records pure zeros and the hold just faded away. False (after
+    /// saying what to do) when nothing could be heard.
+    private func micAllowed() -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            // The system prompt takes this hold either way; ask now.
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            showNotice("Allow the microphone, then try again.")
+        default:
+            showNotice("Microphone blocked. Open Settings.")
+        }
+        Log.event("mic not authorized — hold aborted")
+        return false
+    }
+
+    /// A short message in the result box (✕ closes it), shown whether or not
+    /// the pill was already up.
+    private func showNotice(_ message: String, for seconds: TimeInterval = 5.0) {
+        overlay.show()
+        model.showResult(message)
+        overlay.resize(to: OverlayMetrics.panelSize(for: message))
+        overlay.setInteractive(true)
+        scheduleCollapse(after: seconds)
+    }
+
+    /// Pending "offer a ✕" on the transcribing pill.
+    private var stuckWorkItem: DispatchWorkItem?
+    /// How long the dots may spin before the pill offers a ✕.
+    private static let stuckTranscribingSeconds: TimeInterval = 8
+
+    /// Enter the transcribing pill. It's click-through, so a decode or final
+    /// pass that never returned left a pill nobody could close; past
+    /// `stuckTranscribingSeconds` it grows a ✕ (→ dismissOverlay: queued
+    /// dictations still type if they ever decode, a final pass types nothing).
+    private func beginTranscribingPill() {
+        model.beginTranscribing()
+        stuckWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.model.phase == .transcribing else { return }
+            self.model.offerTranscribingDismiss()
+            self.overlay.setInteractive(true)
+        }
+        stuckWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.stuckTranscribingSeconds, execute: work)
     }
 
     private func scheduleCollapse(after seconds: TimeInterval) {

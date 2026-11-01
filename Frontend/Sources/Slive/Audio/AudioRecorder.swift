@@ -35,6 +35,18 @@ final class AudioRecorder {
     /// Echo cancellation is the only reason to run the engine.
     static func usesEngine(echoCancellation: Bool) -> Bool { echoCancellation }
 
+    /// A hold whose every sample is (near) digital zero heard nothing at all:
+    /// macOS hands a mic without permission — or a dead input — pure zeros,
+    /// and that used to fade away like an ordinary silent hold. Any live mic,
+    /// even in a quiet room, has a noise floor far above this. Pure;
+    /// self-tested.
+    static func isDigitalSilence(_ samples: [Float]) -> Bool {
+        guard !samples.isEmpty else { return false }
+        var peak: Float = 0
+        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
+        return peak < 2e-5
+    }
+
     /// Everything is recorded in this canonical format — 16 kHz mono Float32,
     /// what Whisper actually consumes — regardless of what the hardware hands
     /// us. The input node's format is a moving target (voice processing flips

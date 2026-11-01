@@ -29,11 +29,17 @@ final class FeedbackPlayer {
     private let player = AVAudioPlayerNode()
     private let format: AVAudioFormat
 
+    /// Every engine call runs here, never on main: `engine.start()` blocks
+    /// while the output route settles — a Bluetooth HFP↔A2DP flip takes
+    /// hundreds of ms — and on main that stalled the pill and the hotkey tap
+    /// right at key-down. Serial, since AVAudioEngine isn't thread-safe.
+    private let queue = DispatchQueue(label: "com.slive.app.feedback", qos: .userInitiated)
+
     /// Set when the graph must be re-wired + re-prepared before the next cue:
     /// after an `AVAudioEngineConfigurationChange` (output device switched,
     /// e.g. a Bluetooth HFP↔A2DP flip) or a failed start. Never latches the
     /// engine off — a transient failure must not cost every later cue the
-    /// fallback sound until relaunch. Main thread only.
+    /// fallback sound until relaunch. `queue` only.
     private var needsRebuild = false
     private var configObserver: NSObjectProtocol?
 
@@ -83,8 +89,11 @@ final class FeedbackPlayer {
         // The engine stops itself on a route change; rebuild lazily on the
         // next cue rather than spinning audio hardware up here.
         configObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in self?.needsRebuild = true }
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { self.needsRebuild = true }
+        }
     }
 
     deinit {
@@ -94,9 +103,19 @@ final class FeedbackPlayer {
     // MARK: - Public API
 
     /// Plays a subtle activation cue for the given action. Non-blocking; safe to
-    /// call on the main thread. Falls back to a system sound if synthesis playback
+    /// call from any thread. Falls back to a system sound if synthesis playback
     /// is unavailable.
     func playActivation(for action: HotkeyAction) {
+        let requested = CFAbsoluteTimeGetCurrent()
+        queue.async { [self] in
+            // A cue stuck behind a slow engine start is no longer "you're
+            // live" — drop it rather than thump mid-sentence.
+            guard CFAbsoluteTimeGetCurrent() - requested < 0.5 else { return }
+            play(for: action)
+        }
+    }
+
+    private func play(for action: HotkeyAction) {
         let buffer: AVAudioPCMBuffer?
         switch action {
         case .dictate: buffer = dictateBuffer
@@ -173,7 +192,7 @@ final class FeedbackPlayer {
         case .assist:  name = NSSound.Name("Submarine")   // deep sonar-ish
         case .stream:  name = NSSound.Name("Bottle")
         }
-        NSSound(named: name)?.play()
+        DispatchQueue.main.async { NSSound(named: name)?.play() }
     }
 
     // MARK: - Tone synthesis

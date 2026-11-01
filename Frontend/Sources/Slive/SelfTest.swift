@@ -853,6 +853,19 @@ enum SelfTest {
               "AX can't-answer errors fail open and type")
         check(PasteEngine.confirmsNoFocus(windowError: .noValue),
               "app confirming 'no focused window' corroborates the void → copy box")
+        // The copy box says why only for machine-wide blocks the user can fix.
+        check(PasteEngine.typingBlockedNote(accessibility: true, secureInput: false) == nil,
+              "typing possible → copy box carries no note")
+        check(PasteEngine.typingBlockedNote(accessibility: false, secureInput: false)?
+                .contains("Accessibility") == true,
+              "no Accessibility → copy box says so")
+        check(PasteEngine.typingBlockedNote(accessibility: true, secureInput: true)?
+                .contains("secure input") == true,
+              "secure input on → copy box says so")
+        // A hung app can't hold the main thread (and the hotkey tap) for long.
+        check(PasteEngine.axTimeout > 0 && PasteEngine.axTimeout <= 0.5
+                && PasteEngine.descendantWalkBudget <= 0.5,
+              "AX reads and the focus walk are time-bounded")
         check(!PasteEngine.confirmsNoFocus(windowError: .success)
                 && !PasteEngine.confirmsNoFocus(windowError: .cannotComplete)
                 && !PasteEngine.confirmsNoFocus(windowError: .apiDisabled),
@@ -925,6 +938,14 @@ enum SelfTest {
         check(OverlayMetrics.assistantStreamingPanelSize.height
                 == OverlayMetrics.streamingPanelSize.height + OverlayMetrics.continueFooterHeight,
               "streaming assistant panel adds exactly the Continue footer")
+
+        // The copy box's "why" line gets its own room, never squeezing the text.
+        let plain = OverlayMetrics.panelSize(for: "hi")
+        let noted = OverlayMetrics.panelSize(for: "hi", note: "Not typed · Accessibility is off")
+        check(noted.height > plain.height && noted.width > plain.width,
+              "a note line widens and heightens the copy box")
+        check(OverlayMetrics.panelSize(for: "hi", note: nil) == plain,
+              "no note → same box as before")
     }
 
     // MARK: - Training sample format
@@ -1348,6 +1369,15 @@ enum SelfTest {
         check(!MicCapture.needsRebuild(built: mono48, current: nil),
               "unreadable device keeps the unit (start-failure path handles it)")
         check(MicCapture.needsRebuild(built: nil, current: mono48), "unknown built shape rebuilds")
+
+        // A blocked/dead mic hands back pure zeros → "No sound", not a fade.
+        check(AudioRecorder.isDigitalSilence([Float](repeating: 0, count: 8_000)),
+              "all-zero hold reads as no mic signal")
+        let roomTone = (0..<8_000).map { Float(sin(Double($0) * 0.7)) * 3e-4 }
+        check(!AudioRecorder.isDigitalSilence(roomTone),
+              "a quiet room's noise floor is not 'no sound'")
+        check(!AudioRecorder.isDigitalSilence([]),
+              "no canonical samples (native-format path) never claims silence")
 
         // Bounds: TTL first, then the count cap keeps the newest.
         let now = Date()
