@@ -9,7 +9,7 @@ enum ScreenCapture {
     /// Blocks on the `screencapture` subprocess, so call it off the main thread.
     static func fullScreenBase64() -> (mediaType: String, data: String)? {
         let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flowy-shot-\(UUID().uuidString).png")
+            .appendingPathComponent("slive-shot-\(UUID().uuidString).png")
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         // -x: silent (no shutter sound/UI), -t png: PNG, main display to file.
