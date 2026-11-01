@@ -1,6 +1,7 @@
 import AppKit
 import CoreAudio
 import CoreGraphics
+import FluidAudio
 import SliveObjC
 
 /// Built-in check suite, run with `Slive --self-test` (or
@@ -35,6 +36,7 @@ enum SelfTest {
         sampleFormatChecks()
         labelRunChecks()
         stitchChecks()
+        parakeetWindowChecks()
         liveTypingChecks()
         transcriptDiffChecks()
         dictationRoutingChecks()
@@ -494,6 +496,31 @@ enum SelfTest {
         let accents = String(repeating: "e\u{301}", count: 15)  // base + combining mark
         check(PasteEngine.unicodeChunks(accents).allSatisfy { $0.utf16.count <= 20 && $0.count * 2 == $0.utf16.count },
               "a combining mark stays with its letter")
+    }
+
+    private static func parakeetWindowChecks() {
+        print("[Parakeet live window]")
+        func w(_ word: String, _ start: Double, _ end: Double) -> WordTiming {
+            WordTiming(word: word, startTime: start, endTime: end)
+        }
+        let a = [w("we", 0, 0.3), w("ran", 0.4, 0.7), w("it", 0.8, 1.0), w("today", 3.0, 3.4)]
+        let b = [w("We", 0, 0.3), w("ran", 0.4, 0.7), w("it,", 0.8, 1.0), w("today", 3.0, 3.4)]
+        equal(ParakeetLiveSession.settledCount(previous: a, current: b, before: 2.5), 3,
+              "agreeing words before the edge settle (case/punctuation ignored)")
+        equal(ParakeetLiveSession.settledCount(previous: a, current: b, before: 0.9), 2,
+              "a word still near the edge waits")
+        let c = [w("we", 0, 0.3), w("run", 0.4, 0.7), w("it", 0.8, 1.0)]
+        equal(ParakeetLiveSession.settledCount(previous: a, current: c, before: 2.5), 1,
+              "settling stops at the first disagreement")
+        equal(ParakeetLiveSession.settledCount(previous: [], current: b, before: 2.5), 0,
+              "nothing settles on a first pass")
+        equal(ParakeetLiveSession.join("we ran it", "And then we left"), "we ran it and then we left",
+              "a mid-sentence window's capital is lowered")
+        equal(ParakeetLiveSession.join("We ran it.", "Then we left"), "We ran it. Then we left",
+              "a new sentence keeps its capital")
+        equal(ParakeetLiveSession.join("and then", "I left"), "and then I left", "\"I\" stays capital")
+        equal(ParakeetLiveSession.join("deploy the", "API now"), "deploy the API now", "acronyms stay")
+        equal(ParakeetLiveSession.join("", "Hello"), "Hello", "no settled text yet")
     }
 
     private static func vocabularyCorrectorChecks() {

@@ -87,4 +87,12 @@ final class ParakeetEngine: @unchecked Sendable {
         let result = try await manager.transcribe(samples, decoderState: &state)
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// Transcribe and also return each word's timing (seconds from the start
+    /// of `samples`) — the live loop uses them to settle words.
+    func transcribeWords(_ samples: [Float]) async throws -> [WordTiming] {
+        var state = TdtDecoderState.make(decoderLayers: decoderLayers)
+        let result = try await manager.transcribe(samples, decoderState: &state)
+        return buildWordTimings(from: result.tokenTimings ?? [])
+    }
 }

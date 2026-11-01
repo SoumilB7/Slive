@@ -275,7 +275,7 @@ final class TranscriptionModel: ObservableObject {
             }
             liveModel = model
             liveConfirmedText = ""
-            liveConfirmedEndSeconds = 0   // no stitched release: the final pass decodes all
+            liveConfirmedEndSeconds = 0   // no stitched release: the final pass decodes all (~0.2s)
             parakeetLive = session
             Log.live("START model=\(model) (parakeet live loop)")
             return true
