@@ -44,7 +44,8 @@ enum SettingsStoreTests {
         t.equal(s.groundTruthBaseURL, "", "default: no base URL")
         t.equal(s.groundTruthPrompt, "", "default: server's label prompt")
         t.equal(s.consensusPrompt, "", "default: server's consensus prompt")
-        t.equal(s.groundTruthRecipe, .consensus, "default: consensus recipe")
+        t.equal(s.groundTruthRecipe, .consensusFormat, "default: Slive Custom 4 recipe")
+        t.equal(s.autoLabelNew, true, "default: new dictations labeled automatically")
         t.equal(s.localQuantized, true, "default: int8 local models")
         t.equal(s.localMemLimitGB, Settings.localMemDefaultGB(ramGB: MachineProfile.ramGB),
                 "default: memory limit fits this Mac")
@@ -64,7 +65,7 @@ enum SettingsStoreTests {
             "verboseLogging", "reportProblems", "captureEdits", "captureMaxGB", "echoCancellation",
             "inputDeviceUID", "inputDeviceName", "groundTruthProvider", "groundTruthModel",
             "groundTruthBaseURL", "groundTruthPrompt", "consensusPrompt", "groundTruthRecipe",
-            "localQuantized", "localMemLimitGB", "speedTier",
+            "autoLabelNew", "localQuantized", "localMemLimitGB", "speedTier",
         ]
         t.equal(keys, expected, "settings keys unchanged")
         t.equal(s.storedSettings.count + slotKeys.count, expected.count, "no key declared twice")
@@ -95,6 +96,21 @@ enum SettingsStoreTests {
         t.equal(old.localMemLimitGB, Settings.localMemMaxGB(ramGB: MachineProfile.ramGB),
                 "stored memory limit clamps to this Mac")
         t.equal(old.groundTruthProvider, .openai, "unknown provider falls back to the default")
+
+        // Slive Custom 4 became the default: the old default moves once; a
+        // provider pick stays; a later pick of the old recipe sticks.
+        let oldDefault = InMemoryStore(["groundTruthRecipe": "consensus"])
+        t.equal(Settings(store: oldDefault).groundTruthRecipe, .consensusFormat, "stored consensus moves to Custom 4")
+        t.equal(oldDefault.values["groundTruthRecipe"] as? String, "consensusFormat", "…and is written back")
+        let picked = Settings(store: oldDefault)
+        picked.groundTruthRecipe = .consensus
+        t.equal(Settings(store: oldDefault).groundTruthRecipe, .consensus, "the move happens once")
+        t.equal(Settings(store: InMemoryStore(["groundTruthRecipe": "single"])).groundTruthRecipe, .single,
+                "a provider pick isn't moved")
+        let fresh = InMemoryStore()
+        let freshSettings = Settings(store: fresh)
+        freshSettings.groundTruthRecipe = .consensus
+        t.equal(Settings(store: fresh).groundTruthRecipe, .consensus, "a fresh install's own pick sticks")
 
         // Hotkeys: both legacy "cleared" forms read as nil; one form is written.
         let garbage = Data("not json".utf8)

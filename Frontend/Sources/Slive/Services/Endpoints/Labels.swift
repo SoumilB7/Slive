@@ -74,11 +74,14 @@ enum LabelsAPI {
             let base_prompt: String
         }
         let request: Body
+        /// A background label: failures aren't offered as problem reports.
+        var quiet = false
         let path = "/label_consensus"
         let method = "POST"
         var body: (any Encodable)? { request }
         // Two hosted calls in parallel, each retried with backoff on 429/5xx.
         let timeout: TimeInterval = 300
+        var reportsFailures: Bool { !quiet }
 
         private struct Reply: Decodable {
             let text: String?
@@ -109,5 +112,47 @@ enum LabelsAPI {
                 text: text, chosen: reply.chosen ?? "", agreement: reply.agreement ?? 0,
                 candidates: reply.candidates ?? [:], prompt: reply.prompt)
         }
+    }
+
+    /// Slive Custom 4's step 4: format one consensus label (gpt-5.5, then a
+    /// code check of every edit).
+    struct Format: Endpoint {
+        typealias Response = GroundTruthClient.FormatResult
+
+        struct Body: Encodable {
+            let api_key: String
+            let label: String
+            let hotwords: String
+            /// nil (omitted) = no agreement gate.
+            let agreement: Double?
+            let word_count: Int
+        }
+        let request: Body
+        /// A background label: failures aren't offered as problem reports.
+        var quiet = false
+        let path = "/label_format"
+        let method = "POST"
+        var body: (any Encodable)? { request }
+        // One chat call (up to 180 s server-side), retried on 429/5xx.
+        let timeout: TimeInterval = 300
+        var reportsFailures: Bool { !quiet }
+
+        func decode(_ data: Data) throws -> GroundTruthClient.FormatResult { try Self.decodeResult(data) }
+
+        static func decodeResult(_ data: Data) throws -> GroundTruthClient.FormatResult {
+            let result = try JSONDecoder().decode(GroundTruthClient.FormatResult.self, from: data)
+            guard !result.status.isEmpty, !result.formatted.isEmpty else {
+                throw SliveError.server(status: 200, message: "No text returned.")
+            }
+            return result
+        }
+    }
+
+    /// The formatter's system instruction (read-only in the app).
+    struct FormatPrompt: Endpoint {
+        struct Reply: Decodable { let prompt: String }
+        typealias Response = Reply
+        let path = "/label_format/prompt"
+        let timeout: TimeInterval = 15
     }
 }

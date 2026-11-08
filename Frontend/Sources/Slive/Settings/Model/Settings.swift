@@ -257,9 +257,15 @@ final class Settings: ObservableObject, StoredSettingsOwner {
     @Stored("consensusPrompt", default: "") var consensusPrompt: String
     @Stored("groundTruthPrompt", default: "") var groundTruthPrompt: String
 
-    /// How Should-be labels are made: the 3-way consensus (default — the
-    /// measured best) or a single provider/model from the picker.
-    @Stored("groundTruthRecipe", default: .consensus) var groundTruthRecipe: GroundTruthRecipe
+    /// How Should-be labels are made: Slive Custom 4 (default — the 3-way
+    /// consensus, then the formatter), the plain 3-way consensus, or a
+    /// single provider/model from the picker.
+    @Stored("groundTruthRecipe", default: .consensusFormat) var groundTruthRecipe: GroundTruthRecipe {
+        didSet { store.set(true, forKey: Self.customFourMigrationKey) }   // a pick is final
+    }
+
+    /// Label each new dictation with Slive Custom 4 right after it's saved.
+    @Stored("autoLabelNew", default: true) var autoLabelNew: Bool
 
     /// Local provider: load models int8-quantized (≈ half the RAM of bf16,
     /// near-identical output). Default on; applies from the next local ask
@@ -344,8 +350,23 @@ final class Settings: ObservableObject, StoredSettingsOwner {
         // Load every @Stored value now, once, before anything can read them
         // from another thread.
         for setting in storedSettings { setting.load(from: store) }
+        migrateToCustomFour()
         // Apply the gate immediately (didSet doesn't fire from init).
         applyLogGate()
+    }
+
+    /// Set once Slive Custom 4 became the default — or the user picked a
+    /// recipe themselves — so the move below happens at most once.
+    static let customFourMigrationKey = "groundTruthRecipeCustom4"
+
+    /// Slive Custom 4 replaced the plain 3-way check as the default (Nov
+    /// 2026): a stored old default moves to it, once. An unset recipe already
+    /// reads as Custom 4; a provider pick stays.
+    private func migrateToCustomFour() {
+        guard !store.bool(forKey: Self.customFourMigrationKey),
+              GroundTruthRecipe.read(from: store, key: "groundTruthRecipe") == .consensus else { return }
+        groundTruthRecipe = .consensusFormat
+        store.set(true, forKey: Self.customFourMigrationKey)
     }
 
     /// The env var can force verbose logs on regardless of the stored/UI setting.

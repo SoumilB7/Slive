@@ -49,7 +49,18 @@ struct DataTableCard: View {
 
     /// What a row's redo/Get would use, for help text.
     private var labelerName: String {
-        settings.groundTruthRecipe == .consensus ? "Slive Custom" : settings.groundTruthModel
+        switch settings.groundTruthRecipe {
+        case .consensusFormat: return "Slive Custom 4"
+        case .consensus: return "Slive Custom"
+        case .single: return settings.groundTruthModel
+        }
+    }
+
+    /// Under Slive Custom 4, the kept formatted label (lines and all) stands
+    /// in for the plain one; a human edit still wins.
+    private func formattedTruth(_ sample: EditSample) -> String? {
+        guard settings.groundTruthRecipe == .consensusFormat, sample.finalText.isEmpty else { return nil }
+        return sample.keptFormat
     }
 
     private func isWayOff(_ sample: EditSample) -> Bool { TrainingStore.isWayOff(sample) }
@@ -224,7 +235,14 @@ struct DataTableCard: View {
             ProgressView().controlSize(.small)
         } else if let truth = effectiveTruth(sample) {
             HStack(alignment: .top, spacing: 6) {
-                truthTextView(truth, sample: sample)
+                if let formatted = formattedTruth(sample) {
+                    // Plain Text: markdown list lines show as written, one per line.
+                    Text(verbatim: formatted)
+                        .foregroundStyle(SliveTheme.textMid)
+                        .textSelection(.enabled)
+                } else {
+                    truthTextView(truth, sample: sample)
+                }
                 if !sample.finalText.isEmpty {
                     Image(systemName: "person.crop.circle.badge.checkmark")
                         .font(SliveTheme.tagFont)
@@ -288,7 +306,7 @@ struct DataTableCard: View {
     }
 
     private func beginShouldBeEdit(_ sample: EditSample) {
-        shouldBeDraft = effectiveTruth(sample) ?? sample.transcript
+        shouldBeDraft = formattedTruth(sample) ?? effectiveTruth(sample) ?? sample.transcript
         editingSampleID = sample.id
     }
 

@@ -25,6 +25,7 @@ struct GroundTruthCard: View {
     @State private var consensusExpanded = false
     @State private var consensusDraft = ""
     @State private var consensusNote: String?
+    @State private var formatExpanded = false
 
     init(settings: Settings, providers: ProviderStore, run: LabelRun, store: TrainingStore,
          transcription: TranscriptionModel, promptClient: GroundTruthPromptClient,
@@ -42,21 +43,31 @@ struct GroundTruthCard: View {
     /// The consensus recipe's key (OpenAI) — a catalog constant, not a literal.
     private let consensusKey = ProviderCatalog.consensusKeyProvider
 
-    /// The 3-way consensus recipe is selected (the default).
-    private var isConsensus: Bool { settings.groundTruthRecipe == .consensus }
+    /// A 3-way consensus recipe is selected (Custom 4 is the default).
+    private var isConsensus: Bool { settings.groundTruthRecipe.isConsensus }
+    private var formats: Bool { settings.groundTruthRecipe == .consensusFormat }
 
-    /// The picker's selection: the consensus recipe, or one provider.
+    /// The picker's selection: a consensus recipe, or one provider.
     private var sourceBinding: Binding<GroundTruthSource> {
         Binding(
-            get: { isConsensus ? .consensus : .provider(settings.groundTruthProvider) },
+            get: {
+                switch settings.groundTruthRecipe {
+                case .consensusFormat: return .consensusFormat
+                case .consensus: return .consensus
+                case .single: return .provider(settings.groundTruthProvider)
+                }
+            },
             set: { source in
                 switch source {
+                case .consensusFormat:
+                    settings.groundTruthRecipe = .consensusFormat
                 case .consensus:
                     settings.groundTruthRecipe = .consensus
                 case .provider(let p):
                     settings.groundTruthRecipe = .single
                     if p != settings.groundTruthProvider { settings.groundTruthProvider = p }
                 }
+                run.refreshScope()   // the one-click scope and price follow the recipe
             })
     }
 
@@ -80,7 +91,9 @@ struct GroundTruthCard: View {
                   : settings.groundTruthProvider.isLocal
                   ? "Manage models" : "Manage keys")
         }) {
-            Text(isConsensus
+            Text(formats
+                 ? "gpt-transcribe labels; 2 others check; gpt-5.5 formats."
+                 : isConsensus
                  ? "gpt-transcribe labels; 2 others check."
                  : settings.groundTruthProvider == .whisper
                  ? "On this Mac."
@@ -89,7 +102,9 @@ struct GroundTruthCard: View {
 
             HStack(spacing: 10) {
                 Picker("", selection: sourceBinding) {
-                    Text(GroundTruthSource.consensus.title).tag(GroundTruthSource.consensus)
+                    ForEach(GroundTruthSource.recipes) { recipe in
+                        Text(recipe.title).tag(recipe)
+                    }
                     Divider()
                     ForEach(GroundTruthSource.singleProviders) { p in
                         Text(p.displayName).tag(GroundTruthSource.provider(p))
@@ -112,8 +127,16 @@ struct GroundTruthCard: View {
             if isConsensus {
                 ConsensusControls(run: run, providers: providers, store: store,
                                   openModels: openModels, onJump: onJump)
+                if formats {
+                    ToggleRow(title: "Label new dictations automatically",
+                              caption: "\(LabelEstimate.centsText(LabelEstimate.autoLabelDollarsPerDictation)) per dictation",
+                              isOn: $settings.autoLabelNew)
+                }
                 ConsensusPromptEditor(settings: settings, run: run, expanded: $consensusExpanded,
                                       draft: $consensusDraft, note: $consensusNote)
+                if formats {
+                    FormatInstructionView(expanded: $formatExpanded)
+                }
             } else {
                 SingleProviderControls(settings: settings, providers: providers, run: run,
                                        store: store, transcription: transcription, onJump: onJump)

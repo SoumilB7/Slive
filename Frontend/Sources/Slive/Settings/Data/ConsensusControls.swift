@@ -156,3 +156,58 @@ struct ConsensusPromptEditor: View {
         }
     }
 }
+
+/// Slive Custom 4's format instruction, read-only — the backend's own copy
+/// (label_format.py), fetched on first open.
+struct FormatInstructionView: View {
+    @Binding var expanded: Bool
+    @State private var text: String?
+    @State private var failed = false
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            if expanded && text == nil { load() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(SliveTheme.badgeFont)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                Text("Format instruction")
+                    .font(SliveTheme.font(11, .semibold))
+                Text("gpt-5.5")
+                    .font(SliveTheme.mono(10))
+                    .foregroundStyle(SliveTheme.textTertiary)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(SliveTheme.textSecondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if expanded {
+            ScrollView {
+                Text(text ?? (failed ? "Couldn't load." : "Loading…"))
+                    .font(SliveTheme.mono(10.5))
+                    .foregroundStyle(SliveTheme.textMid)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxHeight: 220)
+            .innerWell()
+            Text("+ 5 examples and your Vocabulary words")
+                .sliveCaption()
+        }
+    }
+
+    private func load() {
+        failed = false
+        Task { @MainActor in
+            if let prompt = try? await GroundTruthClient().formatPrompt() {
+                text = prompt
+            } else {
+                failed = true
+            }
+        }
+    }
+}

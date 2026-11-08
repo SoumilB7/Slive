@@ -69,6 +69,70 @@ enum LabelRunTests {
                 && !GroundTruthSource.singleProviders.contains(.anthropic),
               "consensus is a ground-truth recipe, never an assistant provider")
         t.equal(GroundTruthSource.consensus.title, "Slive Custom : 3 way check", "recipe picker title")
+        t.equal(GroundTruthSource.recipes.map(\.title),
+                ["Slive Custom 4 : 3 way check + format", "Slive Custom : 3 way check"],
+                "Custom 4 is listed first, the 3-way check right after")
+        t.check(GroundTruthRecipe.consensusFormat.isConsensus && GroundTruthRecipe.consensus.isConsensus
+                && !GroundTruthRecipe.single.isConsensus, "both Slive Custom recipes label by consensus")
+
+        // Slive Custom 4's scope: missing consensus OR missing format step.
+        func formattedRow(_ id: String, status: String?) -> EditSample {
+            var s = sample(id, model: "consensus · gpt-transcribe", agreement: 0.9)
+            s.llmFormatStatus = status
+            return s
+        }
+        t.check(LabelScope.needsFormat(sample("m", label: nil), hasAudio: true)
+                && LabelScope.needsFormat(sample("n", model: "gpt-audio"), hasAudio: true),
+                "Custom 4: rows without a consensus label are in scope")
+        t.check(LabelScope.needsFormat(formattedRow("o", status: nil), hasAudio: true),
+                "Custom 4: a consensus row without the format step is in scope")
+        t.check(!LabelScope.needsFormat(formattedRow("p", status: "formatted"), hasAudio: true)
+                && !LabelScope.needsFormat(formattedRow("q", status: "rejected:list-under-3-items"), hasAudio: true)
+                && !LabelScope.needsFormat(formattedRow("r", status: "skipped"), hasAudio: true),
+                "Custom 4: a formatted, rejected or skipped row is done")
+        t.check(!LabelScope.needsFormat(sample("s", human: "fix"), hasAudio: true)
+                && !LabelScope.needsFormat(sample("u", label: nil), hasAudio: false),
+                "Custom 4: human labels and clips without audio are out of scope")
+        t.check(LabelScope.inScope(formattedRow("v", status: nil), recipe: .consensusFormat, hasAudio: true)
+                && !LabelScope.inScope(formattedRow("w", status: nil), recipe: .consensus, hasAudio: true),
+                "the scope follows the recipe")
+        var lowAgreement = formattedRow("x", status: nil)
+        lowAgreement.llmTranscript = "ship the build to staging"
+        lowAgreement.llmAgreement = 0.6
+        var shortLabel = formattedRow("y", status: nil)
+        shortLabel.llmTranscript = "Ship it."
+        var formatsLabel = formattedRow("z", status: nil)
+        formatsLabel.llmTranscript = "ship the build to staging"
+        t.check(LabelScope.formatWouldSkip(lowAgreement) && LabelScope.formatWouldSkip(shortLabel)
+                && !LabelScope.formatWouldSkip(formatsLabel),
+                "the estimate skips what the format step skips (agreement < 0.8, < 4 words)")
+
+        // Custom 4's price: format-only rows pay only the format call.
+        t.check(abs(LabelEstimate.formatDollars(calls: 100) - 1.5) < 1e-9, "a format call is ~$0.015")
+        let formatOnly = LabelRun.Scope(ids: ["a", "b"], transcribeCount: 0, audioSeconds: 0, formatCalls: 2)
+        t.check(abs(formatOnly.dollars - 0.03) < 1e-9, "a format-only row costs only the format call")
+        let both = LabelRun.Scope(ids: ["a"], transcribeCount: 1, audioSeconds: 600, formatCalls: 1)
+        t.check(abs(both.dollars - (0.105 + 0.015)) < 1e-9, "a new row costs the consensus plus the format call")
+        t.equal(LabelEstimate.centsText(LabelEstimate.autoLabelDollarsPerDictation), "~$0.025",
+                "per-dictation caption")
+
+        // The format reply.
+        let formatReply = #"{"formatted":"Ship it, then test it.","status":"formatted","model":"gpt-5.5"}"#
+        if let result = try? LabelsAPI.Format.decodeResult(Data(formatReply.utf8)) {
+            t.equal(result, GroundTruthClient.FormatResult(formatted: "Ship it, then test it.",
+                                                           status: "formatted", model: "gpt-5.5"),
+                    "format reply decodes")
+        } else {
+            t.check(false, "format reply decodes", "decode threw")
+        }
+        let formatBody = LabelsAPI.Format.Body(api_key: "k", label: "l", hotwords: "h", agreement: nil, word_count: 1)
+        if let data = try? JSONEncoder().encode(formatBody) {
+            t.check(!String(decoding: data, as: UTF8.self).contains("agreement"),
+                    "no agreement is omitted (the backend's gate then passes)")
+        }
+        t.check(!LabelsAPI.Format(request: formatBody, quiet: true).reportsFailures
+                && LabelsAPI.Format(request: formatBody).reportsFailures,
+                "a background format call offers no problem report")
 
         // Response mapping: key problems stop the run, a bad clip doesn't.
         let fatal = #"{"error":"OpenAI rejected the key (401)","fatal":"auth"}"#

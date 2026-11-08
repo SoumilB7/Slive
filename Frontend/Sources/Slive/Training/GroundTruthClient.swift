@@ -130,8 +130,10 @@ struct GroundTruthClient {
         do { return try LabelsAPI.Consensus.decodeResult(data) } catch { throw SliveError.from(error) }
     }
 
+    /// `quiet`: no problem report on failure (background labels).
     func consensus(audioURL: URL, apiKey: String, typed: String,
-                   hotwords: String, context: String, base: String) async throws -> ConsensusResult {
+                   hotwords: String, context: String, base: String,
+                   quiet: Bool = false) async throws -> ConsensusResult {
         guard !apiKey.isEmpty else {
             throw SliveError.missingKey(Self.missingOpenAIKeyMessage)
         }
@@ -142,7 +144,36 @@ struct GroundTruthClient {
             base_prompt: base)
         // The status counts now (it used to be ignored): a key problem is a
         // 401 whose `fatal` flag stops the run; a 422 says what was wrong.
-        return try await LocalServer.send(LabelsAPI.Consensus(request: body))
+        return try await LocalServer.send(LabelsAPI.Consensus(request: body, quiet: quiet))
+    }
+
+    // MARK: - Slive Custom 4's format step (POST /label_format)
+
+    /// The formatter's verdict on one consensus label.
+    struct FormatResult: Decodable, Equatable {
+        /// The formatted text when kept (formatted / unchanged), else the plain label.
+        let formatted: String
+        /// `formatted` | `unchanged` | `rejected:<reason>` | `skipped`
+        let status: String
+        let model: String
+    }
+
+    /// Format one stored consensus label. The backend skips (no API call)
+    /// what the training gate would reject anyway.
+    func format(label: String, apiKey: String, hotwords: String, agreement: Double?,
+                quiet: Bool = false) async throws -> FormatResult {
+        guard !apiKey.isEmpty else {
+            throw SliveError.missingKey(Self.missingOpenAIKeyMessage)
+        }
+        let body = LabelsAPI.Format.Body(
+            api_key: apiKey, label: label, hotwords: hotwords, agreement: agreement,
+            word_count: label.split(whereSeparator: \.isWhitespace).count)
+        return try await LocalServer.send(LabelsAPI.Format(request: body, quiet: quiet))
+    }
+
+    /// The formatter's system instruction, as the backend sends it.
+    func formatPrompt() async throws -> String {
+        try await LocalServer.send(LabelsAPI.FormatPrompt()).prompt
     }
 }
 

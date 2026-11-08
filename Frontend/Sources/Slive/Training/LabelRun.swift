@@ -5,23 +5,35 @@ import Foundation
 
 /// How Should-be labels are made. Persisted in Settings.
 enum GroundTruthRecipe: String {
+    /// Slive Custom 4: the 3-way consensus, then gpt-5.5 formats the label
+    /// and a code check keeps only allowed edits (backend `label_format`).
+    /// The default.
+    case consensusFormat
     /// gpt-transcribe + whisper-1 + what Slive typed; the version they agree
     /// on wins. Measured best on Soumil's blind picks (1.4% WER vs 13.5% for
     /// the old gpt-4o-transcribe label model).
     case consensus
     /// One provider/model from the picker (Gemini, gpt-audio, local, Whisper…).
     case single
+
+    /// Labels by the 3-way consensus (with or without the format step).
+    var isConsensus: Bool { self != .single }
 }
 
-/// One entry in the Data page's ground-truth picker: the consensus recipe,
+/// One entry in the Data page's ground-truth picker: a consensus recipe,
 /// or a single audio-capable provider. Lives here — not in
 /// `AssistantProvider` — so the recipe can never leak into Assistant pickers.
 enum GroundTruthSource: Hashable, Identifiable {
+    case consensusFormat
     case consensus
     case provider(AssistantProvider)
 
+    /// The recipes, in picker order (providers follow a divider).
+    static let recipes: [GroundTruthSource] = [.consensusFormat, .consensus]
+
     var id: String {
         switch self {
+        case .consensusFormat: return "consensusFormat"
         case .consensus: return "consensus"
         case .provider(let p): return p.rawValue
         }
@@ -29,6 +41,7 @@ enum GroundTruthSource: Hashable, Identifiable {
 
     var title: String {
         switch self {
+        case .consensusFormat: return "Slive Custom 4 : 3 way check + format"
         case .consensus: return "Slive Custom : 3 way check"
         case .provider(let p): return p.displayName
         }
@@ -67,6 +80,30 @@ enum LabelScope {
         sample.finalText.isEmpty && isConsensus(sample)
             && (sample.llmAgreement ?? 1) < lowAgreement
     }
+
+    /// Slive Custom 4's scope: has audio, no human label, and either no
+    /// consensus label or no format step yet. A consensus row only needs
+    /// the format call.
+    static func needsFormat(_ sample: EditSample, hasAudio: Bool) -> Bool {
+        hasAudio && sample.finalText.isEmpty
+            && (!isConsensus(sample) || sample.llmFormatStatus == nil)
+    }
+
+    /// What `recipe`'s one-click run would do to this sample.
+    static func inScope(_ sample: EditSample, recipe: GroundTruthRecipe, hasAudio: Bool) -> Bool {
+        recipe == .consensusFormat ? needsFormat(sample, hasAudio: hasAudio)
+                                   : needsConsensus(sample, hasAudio: hasAudio)
+    }
+
+    /// The format step skips labels the training gate rejects (agreement
+    /// < 0.8 or < 4 words) without an API call — mirrors `should_skip` in
+    /// Backend/src/flowy/label_format.py. For the estimate only.
+    static let minFormatWords = 4
+
+    static func formatWouldSkip(_ sample: EditSample) -> Bool {
+        let words = (sample.llmTranscript ?? "").split(whereSeparator: \.isWhitespace).count
+        return (sample.llmAgreement.map { $0 < lowAgreement } ?? false) || words < minFormatWords
+    }
 }
 
 /// Cost and time before you click. Pure.
@@ -78,6 +115,25 @@ enum LabelEstimate {
     static let headerBytes: Int64 = 4_096
     /// Clips in flight at once.
     static let concurrency = 4
+
+    /// One Slive Custom 4 format call: ~1.6k input tokens (the instruction
+    /// and five examples) + ~0.2k output at gpt-5.5's $5 / $30 per 1M ≈
+    /// $0.013 uncached. Measured Nov 9 2026 on 35 clips: $0.0075 a call,
+    /// since ~80% of the input is a cached prefix — this keeps the uncached
+    /// price as the upper bound. A row that already has a consensus label
+    /// pays only this.
+    static let formatDollarsPerCall = 0.015
+    /// Wall time of one format call (one short chat reply).
+    static let formatSecondsPerCall = 4.0
+    /// What one new dictation costs when labeled automatically: the
+    /// consensus on a typical clip plus one format call, rounded up.
+    static let autoLabelDollarsPerDictation = 0.025
+
+    static func formatDollars(calls: Int) -> Double { Double(calls) * formatDollarsPerCall }
+
+    static func formatSeconds(calls: Int, concurrency: Int = concurrency) -> Double {
+        Double(calls) * formatSecondsPerCall / Double(max(1, concurrency))
+    }
 
     /// Seconds of audio in a capture, from its file size alone (a stat, not
     /// a file open — cheap across thousands of clips).
@@ -112,6 +168,11 @@ enum LabelEstimate {
         dollars < 0.01 ? "<$0.01" : String(format: "~$%.2f", dollars)
     }
 
+    /// Sub-cent precision for one clip's price ("~$0.025").
+    static func centsText(_ dollars: Double) -> String {
+        String(format: "~$%.3f", dollars)
+    }
+
     static func durationText(_ seconds: Double) -> String {
         let minutes = Int((seconds / 60).rounded())
         if minutes < 1 { return "<1 min" }
@@ -129,13 +190,22 @@ enum LabelEstimate {
 final class LabelRun: ObservableObject {
     static let shared = LabelRun()
 
-    /// The consensus to-do list and its price, refreshed as samples change.
+    /// The one-click to-do list and its price, refreshed as samples change.
     struct Scope: Equatable {
         var ids: [String] = []
+        /// Rows that need the consensus (transcription) call, and their audio.
+        var transcribeCount = 0
         var audioSeconds: Double = 0
+        /// Format calls that will reach the API (Slive Custom 4 only).
+        var formatCalls = 0
         var count: Int { ids.count }
-        var dollars: Double { LabelEstimate.dollars(audioSeconds: audioSeconds) }
-        var seconds: Double { LabelEstimate.runSeconds(clips: count, audioSeconds: audioSeconds) }
+        var dollars: Double {
+            LabelEstimate.dollars(audioSeconds: audioSeconds) + LabelEstimate.formatDollars(calls: formatCalls)
+        }
+        var seconds: Double {
+            LabelEstimate.runSeconds(clips: transcribeCount, audioSeconds: audioSeconds)
+                + LabelEstimate.formatSeconds(calls: formatCalls)
+        }
     }
 
     @Published private(set) var isRunning = false
@@ -176,6 +246,8 @@ final class LabelRun: ObservableObject {
     /// Audio sizes never change after capture — one stat per clip, ever.
     private var sizeCache: [String: Int64] = [:]
     private var cancellables: Set<AnyCancellable> = []
+    /// New dictations waiting for their automatic label (behind any run).
+    private var autoQueue: [String] = []
 
     private init() {
         store.$samples
@@ -200,17 +272,27 @@ final class LabelRun: ObservableObject {
     // MARK: - Scope
 
     func refreshScope() {
-        var ids: [String] = []
-        var seconds = 0.0
-        for sample in store.samples {
-            // Cheap field checks first; the audio stat only for candidates.
-            guard LabelScope.needsConsensus(sample, hasAudio: true),
-                  let bytes = audioBytes(sample) else { continue }
-            ids.append(sample.id)
-            seconds += LabelEstimate.audioSeconds(fileBytes: bytes)
-        }
-        let next = Scope(ids: ids, audioSeconds: seconds)
+        let next = makeScope(store.samples, recipe: settings.groundTruthRecipe)
         if next != scope { scope = next }
+    }
+
+    /// What `recipe`'s run would do to `samples`, priced.
+    private func makeScope(_ samples: [EditSample], recipe: GroundTruthRecipe) -> Scope {
+        var s = Scope()
+        let formats = recipe == .consensusFormat
+        for sample in samples {
+            // Cheap field checks first; the audio stat only for candidates.
+            guard LabelScope.inScope(sample, recipe: recipe, hasAudio: true),
+                  let bytes = audioBytes(sample) else { continue }
+            s.ids.append(sample.id)
+            let transcribe = !formats || !LabelScope.isConsensus(sample)
+            if transcribe {
+                s.transcribeCount += 1
+                s.audioSeconds += LabelEstimate.audioSeconds(fileBytes: bytes)
+            }
+            if formats && (transcribe || !LabelScope.formatWouldSkip(sample)) { s.formatCalls += 1 }
+        }
+        return s
     }
 
     private func audioBytes(_ sample: EditSample) -> Int64? {
@@ -228,15 +310,50 @@ final class LabelRun: ObservableObject {
     func labelEverything() {
         store.loadSamplesIfNeeded()
         refreshScope()
-        runConsensus(ids: scope.ids, estimate: scope.seconds)
+        runConsensus(ids: scope.ids, estimate: scope.seconds,
+                     format: settings.groundTruthRecipe == .consensusFormat)
     }
 
     func retryFailed() {
-        let present = Set(store.samples.map(\.id))
-        let ids = failedIDs.filter(present.contains)
-        let seconds = ids.compactMap { id in store.samples.first { $0.id == id } }
-            .compactMap(audioBytes).map(LabelEstimate.audioSeconds).reduce(0, +)
-        runConsensus(ids: ids, estimate: LabelEstimate.runSeconds(clips: ids.count, audioSeconds: seconds))
+        let failed = Set(failedIDs)
+        let format = settings.groundTruthRecipe == .consensusFormat
+        // Only what's still missing: a row whose consensus landed before its
+        // format call failed retries the format call alone.
+        let retry = makeScope(store.samples.filter { failed.contains($0.id) },
+                              recipe: format ? .consensusFormat : .consensus)
+        if retry.ids.isEmpty { failedIDs = [] }
+        runConsensus(ids: retry.ids, estimate: retry.seconds, format: format)
+    }
+
+    // MARK: - New dictations
+
+    /// Queue a just-captured dictation for Slive Custom 4 (consensus, then
+    /// format) when that's the recipe and "Label new dictations
+    /// automatically" is on. Runs behind any running label pass, one at a
+    /// time; no key = nothing happens; failures count like a bulk run's
+    /// (retryable) and never interrupt dictation with an alert.
+    func labelNew(id: String) {
+        guard autoLabelsNew else { return }
+        autoQueue.append(id)
+        // Off the dictation's own call stack.
+        Task { @MainActor [weak self] in self?.drainAutoQueue() }
+    }
+
+    private var autoLabelsNew: Bool {
+        settings.autoLabelNew && settings.groundTruthRecipe == .consensusFormat
+            && !providers.apiKey(for: ProviderCatalog.consensusKeyProvider).isEmpty
+    }
+
+    private func drainAutoQueue() {
+        guard !isRunning, !autoQueue.isEmpty else { return }
+        guard autoLabelsNew else { autoQueue = []; return }
+        // A rewrite needs the whole index in memory, not just new rows.
+        store.loadSamplesIfNeeded()
+        let queued = Set(autoQueue)
+        autoQueue = []
+        let todo = makeScope(store.samples.filter { queued.contains($0.id) && !inFlight.contains($0.id) },
+                             recipe: .consensusFormat)
+        runConsensus(ids: todo.ids, estimate: todo.seconds, format: true, auto: true)
     }
 
     /// Cancel cleanly: in-flight requests are dropped, finished labels kept.
@@ -244,24 +361,30 @@ final class LabelRun: ObservableObject {
         task?.cancel()
     }
 
-    private func runConsensus(ids: [String], estimate: Double) {
+    /// The consensus run; with `format`, Slive Custom 4 (consensus where
+    /// missing, then the format call). `auto` is a new dictation's label:
+    /// it keeps the earlier runs' failures (so they stay retryable) and
+    /// never offers problem reports.
+    private func runConsensus(ids: [String], estimate: Double, format: Bool, auto: Bool = false) {
         guard !isRunning, !ids.isEmpty else { return }
         let key = providers.apiKey(for: ProviderCatalog.consensusKeyProvider)
         guard !key.isEmpty else {
+            if auto { return }
             message = GroundTruthClient.missingOpenAIKeyMessage
             needsKeyFix = true
             return
         }
         begin(total: ids.count, consensus: true, estimate: estimate)
-        failedIDs = []
+        if !auto { failedIDs = [] }
         lastFailure = nil
         let hotwords = settings.hotwords
         let context = settings.contextPrompt
         let base = settings.consensusPrompt
+        let options = JobOptions(key: key, hotwords: hotwords, context: context, base: base,
+                                 format: format, quiet: auto)
         task = Task { [weak self] in
             guard let self else { return }
-            let completed = await self.consensusLoop(
-                ids: ids, key: key, hotwords: hotwords, context: context, base: base)
+            let completed = await self.consensusLoop(ids: ids, options: options)
             if completed {
                 let failed = self.failedIDs.count
                 self.message = failed == 0 ? nil
@@ -271,26 +394,46 @@ final class LabelRun: ObservableObject {
         }
     }
 
-    private enum Outcome {
-        case labeled(String, GroundTruthClient.ConsensusResult)
-        case failed(String, Error)
-        case skipped(String)
+    /// What one clip came back with. A consensus label that landed before a
+    /// failed (or cancelled) format call is still kept.
+    private struct Outcome {
+        let id: String
+        var consensus: GroundTruthClient.ConsensusResult?
+        var format: GroundTruthClient.FormatResult?
+        var error: Error?
+        var cancelled = false
     }
 
     private struct Job {
         let id: String
         let url: URL
         let typed: String
+        /// The stored consensus label when only the format call is needed.
+        let label: String?
+        let agreement: Double?
+    }
+
+    private struct JobOptions: Sendable {
+        let key: String
+        let hotwords: String
+        let context: String
+        let base: String
+        let format: Bool
+        /// No problem reports (a new dictation's background label).
+        let quiet: Bool
     }
 
     /// A sliding window of `LabelEstimate.concurrency` clips. A failed clip
     /// is counted and the run moves on; only a key problem stops it.
-    private func consensusLoop(ids: [String], key: String, hotwords: String, context: String,
-                                base: String) async -> Bool {
+    private func consensusLoop(ids: [String], options: JobOptions) async -> Bool {
         let byID = Dictionary(store.samples.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let jobs: [Job] = ids.compactMap { id in
             guard let sample = byID[id], let url = store.audioURL(sample) else { return nil }
-            return Job(id: id, url: url, typed: sample.transcript)
+            // Custom 4 reuses a consensus label: no transcription, no upload.
+            let reuse = options.format && LabelScope.isConsensus(sample)
+            return Job(id: id, url: url, typed: sample.transcript,
+                       label: reuse ? sample.llmTranscript : nil,
+                       agreement: reuse ? sample.llmAgreement : nil)
         }
         total = jobs.count   // rows deleted since the click drop out
         var cursor = 0
@@ -299,18 +442,20 @@ final class LabelRun: ObservableObject {
                 let job = jobs[cursor]
                 cursor += 1
                 inFlight.insert(job.id)
-                group.addTask { await Self.consensusJob(job, key: key, hotwords: hotwords, context: context, base: base) }
+                group.addTask { await Self.consensusJob(job, options) }
             }
             while let outcome = await group.next() {
-                switch outcome {
-                case .labeled(let id, let result):
-                    inFlight.remove(id)
-                    applyConsensus(id: id, result, hotwords: hotwords, coalesced: true)
-                    done += 1
-                case .skipped(let id):
-                    inFlight.remove(id)
-                case .failed(let id, let error):
-                    inFlight.remove(id)
+                inFlight.remove(outcome.id)
+                // Consensus first: a new label clears the old format fields.
+                if let result = outcome.consensus {
+                    applyConsensus(id: outcome.id, result, hotwords: options.hotwords, coalesced: true)
+                }
+                if let result = outcome.format {
+                    store.setFormat(id: outcome.id, formatted: result.formatted, status: result.status,
+                                    model: result.model, coalesced: true)
+                    TranscriptDiffCache.remove(id: outcome.id)
+                }
+                if let error = outcome.error {
                     if let stop = error as? SliveError, stop.stopsRun {
                         // A key problem or a dead backend fails every clip
                         // the same way — stop now, say why.
@@ -319,9 +464,12 @@ final class LabelRun: ObservableObject {
                         group.cancelAll()
                         return false
                     }
-                    failedIDs.append(id)
+                    if !failedIDs.contains(outcome.id) { failedIDs.append(outcome.id) }
                     lastFailure = error.localizedDescription
                     message = "Last failure: \(error.localizedDescription)"
+                } else if !outcome.cancelled {
+                    failedIDs.removeAll { $0 == outcome.id }
+                    done += 1
                 }
                 if Task.isCancelled {
                     message = "Stopped · \(done.formatted()) labeled"
@@ -332,39 +480,60 @@ final class LabelRun: ObservableObject {
                     let job = jobs[cursor]
                     cursor += 1
                     inFlight.insert(job.id)
-                    group.addTask { await Self.consensusJob(job, key: key, hotwords: hotwords, context: context, base: base) }
+                    group.addTask { await Self.consensusJob(job, options) }
                 }
             }
             return true
         }
     }
 
-    /// One clip, off the main actor: validate the audio, ask the backend.
-    private nonisolated static func consensusJob(_ job: Job, key: String, hotwords: String,
-                                                 context: String, base: String) async -> Outcome {
+    /// One clip, off the main actor: validate the audio, ask the backend
+    /// for the consensus (unless the job reuses one), then the format step.
+    private nonisolated static func consensusJob(_ job: Job, _ options: JobOptions) async -> Outcome {
+        var outcome = Outcome(id: job.id)
         do {
-            _ = try validatedAudioSeconds(job.url)
-            let result = try await GroundTruthClient().consensus(
-                audioURL: job.url, apiKey: key, typed: job.typed,
-                hotwords: hotwords, context: context, base: base)
-            return .labeled(job.id, result)
+            var label = job.label
+            var agreement = job.agreement
+            if label == nil {
+                _ = try validatedAudioSeconds(job.url)
+                let result = try await GroundTruthClient().consensus(
+                    audioURL: job.url, apiKey: options.key, typed: job.typed,
+                    hotwords: options.hotwords, context: options.context, base: options.base,
+                    quiet: options.quiet)
+                outcome.consensus = result
+                label = labelText(result, hotwords: options.hotwords)
+                agreement = result.agreement
+            }
+            if options.format, let label {
+                try Task.checkCancellation()
+                outcome.format = try await GroundTruthClient().format(
+                    label: label, apiKey: options.key, hotwords: options.hotwords,
+                    agreement: agreement, quiet: options.quiet)
+            }
         } catch is CancellationError {
-            return .skipped(job.id)
+            outcome.cancelled = true
         } catch let error as URLError where error.code == .cancelled {
-            return .skipped(job.id)
+            outcome.cancelled = true
         } catch {
-            return .failed(job.id, error)
+            outcome.error = error
         }
+        return outcome
+    }
+
+    /// The stored label: the dictation pipeline's corrections only (an LLM
+    /// transcript has no decoder artifacts to clean). The format step reads
+    /// exactly this text.
+    private nonisolated static func labelText(_ result: GroundTruthClient.ConsensusResult,
+                                              hotwords: String) -> String {
+        DictationPipeline.standard(vocabulary: hotwords).correct(result.text)
     }
 
     /// Spelling pass + store. Human labels (`finalText`) are never touched —
     /// training already prefers them.
     private func applyConsensus(id: String, _ result: GroundTruthClient.ConsensusResult,
                                 hotwords: String, coalesced: Bool) {
-        // The dictation pipeline's corrections only: an LLM transcript has
-        // no decoder artifacts to clean.
-        let text = DictationPipeline.standard(vocabulary: hotwords).correct(result.text)
-        store.setLLMTranscript(id: id, text: text, model: LabelScope.modelTag(chosen: result.chosen),
+        store.setLLMTranscript(id: id, text: Self.labelText(result, hotwords: hotwords),
+                               model: LabelScope.modelTag(chosen: result.chosen),
                                agreement: result.agreement, coalesced: coalesced)
         TranscriptDiffCache.remove(id: id)
         agreementSum += result.agreement
@@ -455,12 +624,20 @@ final class LabelRun: ObservableObject {
             guard let self else { return }
             defer { self.inFlight.remove(sample.id) }
             do {
-                if recipe == .consensus {
-                    _ = try Self.validatedAudioSeconds(url)
-                    let result = try await GroundTruthClient().consensus(
-                        audioURL: url, apiKey: key, typed: sample.transcript,
-                        hotwords: hotwords, context: context, base: base)
-                    self.applyConsensus(id: sample.id, result, hotwords: hotwords, coalesced: false)
+                if recipe.isConsensus {
+                    // A row's redo is a full one: fresh consensus, then (Custom 4) the format step.
+                    let job = Job(id: sample.id, url: url, typed: sample.transcript, label: nil, agreement: nil)
+                    let outcome = await Self.consensusJob(job, JobOptions(
+                        key: key, hotwords: hotwords, context: context, base: base,
+                        format: recipe == .consensusFormat, quiet: false))
+                    if let result = outcome.consensus {
+                        self.applyConsensus(id: sample.id, result, hotwords: hotwords, coalesced: false)
+                    }
+                    if let result = outcome.format {
+                        self.store.setFormat(id: sample.id, formatted: result.formatted,
+                                             status: result.status, model: result.model)
+                    }
+                    if let error = outcome.error { throw error }
                 } else {
                     let text = try await self.singleText(url: url, provider: provider, model: model)
                     self.store.setLLMTranscript(id: sample.id, text: text, model: model)
@@ -503,6 +680,7 @@ final class LabelRun: ObservableObject {
         startedAt = nil
         task = nil
         refreshScope()
+        drainAutoQueue()   // new dictations that waited behind this run
     }
 
     /// One single-provider transcription: Whisper runs in-app on the
