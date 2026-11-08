@@ -84,6 +84,45 @@ enum SampleFormatTests {
             t.check(false, "consensus agreement round-trips", "encode/decode threw")
         }
 
+        // Slive Custom 4's format fields: additive like agreement — the app
+        // rewrites the whole index from these fields, so they must survive
+        // a round-trip and stay absent from rows without them.
+        if let data = try? encoder.encode(agreed) {
+            let line = String(decoding: data, as: UTF8.self)
+            t.check(!line.contains("llmFormatted") && !line.contains("llmFormatStatus")
+                    && !line.contains("llmFormatModel"), "nil format fields are omitted from the JSON line")
+        }
+        var formatted = agreed
+        formatted.llmFormatted = "Three things:\n1. Fix it\n2. Test it\n3. Ship it"
+        formatted.llmFormatStatus = "formatted"
+        formatted.llmFormatModel = "gpt-5.5"
+        if let data = try? encoder.encode(formatted),
+           let back = try? decoder.decode(EditSample.self, from: data) {
+            t.check(back.llmFormatted == formatted.llmFormatted && back.llmFormatStatus == "formatted"
+                    && back.llmFormatModel == "gpt-5.5" && back.llmAgreement == 0.75,
+                    "format fields round-trip")
+            t.equal(back.keptFormat, formatted.llmFormatted, "a formatted label is kept")
+        } else {
+            t.check(false, "format fields round-trip", "encode/decode threw")
+        }
+        var rejected = formatted
+        rejected.llmFormatted = "three things fix it test it ship it"
+        rejected.llmFormatStatus = "rejected:list-under-3-items"
+        t.equal(rejected.keptFormat, nil, "a rejected format isn't kept")
+        rejected.llmFormatStatus = "unchanged"
+        t.equal(rejected.keptFormat, rejected.llmFormatted, "an unchanged format is kept")
+        let consensusRow = """
+        {"id":"c","createdAt":"2026-11-01T10:00:00Z","app":null,"transcript":"t","finalText":"",\
+        "edited":false,"confidence":"audio","audioFile":"audio/c.wav","llmTranscript":"T.",\
+        "llmModel":"consensus · gpt-transcribe","llmAgreement":0.9}
+        """
+        if let s = try? decoder.decode(EditSample.self, from: Data(consensusRow.utf8)) {
+            t.check(s.llmAgreement == 0.9 && s.llmFormatted == nil && s.llmFormatStatus == nil
+                    && s.llmFormatModel == nil, "a pre-format consensus row decodes")
+        } else {
+            t.check(false, "a pre-format consensus row decodes", "decode threw")
+        }
+
         // Index parse: a torn/garbled line is counted (so the file gets
         // copied aside before a rewrite drops it), blank lines are not, and
         // an invalid byte costs only its own line.

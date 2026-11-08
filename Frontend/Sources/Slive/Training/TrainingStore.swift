@@ -35,6 +35,20 @@ struct EditSample: Codable, Identifiable {
     /// values mark the rows worth a listen. nil for every other label —
     /// and omitted from the JSON line then, so older rows are unchanged.
     var llmAgreement: Double?
+    /// Slive Custom 4's format step: the formatted label (the plain one
+    /// when it wasn't kept), its status (`formatted` | `unchanged` |
+    /// `rejected:<reason>` | `skipped`) and model. nil = not formatted yet,
+    /// and omitted from the JSON line like `llmAgreement`.
+    var llmFormatted: String?
+    var llmFormatStatus: String?
+    var llmFormatModel: String?
+
+    /// The formatted text to show and train on, when the formatter's output
+    /// was kept (`formatted` or `unchanged`).
+    var keptFormat: String? {
+        guard let llmFormatted, ["formatted", "unchanged"].contains(llmFormatStatus) else { return nil }
+        return llmFormatted
+    }
 }
 
 /// Local, append-only store for captured edit samples + their audio. Everything
@@ -246,7 +260,9 @@ final class TrainingStore: ObservableObject {
     /// Save one dictation as-is: its audio + Slive's transcription. No field
     /// tracking, no final-text comparison — `finalText` stays empty ("audio"
     /// confidence) until a non-AX way to read back edits exists.
-    func addRecording(transcript: String, audioURL: URL) {
+    /// Returns the stored sample's id (nil when the append failed).
+    @discardableResult
+    func addRecording(transcript: String, audioURL: URL) -> String? {
         let id = UUID().uuidString
         let audioFile = ingestAudio(audioURL, id: id)
         add(EditSample(
@@ -255,6 +271,7 @@ final class TrainingStore: ObservableObject {
             transcript: transcript, finalText: "",
             edited: false, confidence: "audio", audioFile: audioFile,
             llmTranscript: nil, llmModel: nil))
+        return samples.last?.id == id ? id : nil
     }
 
     /// Attach a ground-truth transcription to a stored sample and persist.
@@ -265,9 +282,26 @@ final class TrainingStore: ObservableObject {
     func setLLMTranscript(id: String, text: String, model: String,
                           agreement: Double? = nil, coalesced: Bool = false) {
         guard let idx = samples.firstIndex(where: { $0.id == id }) else { return }
+        // A new label makes its old formatting stale.
+        if samples[idx].llmTranscript != text {
+            samples[idx].llmFormatted = nil
+            samples[idx].llmFormatStatus = nil
+            samples[idx].llmFormatModel = nil
+        }
         samples[idx].llmTranscript = text
         samples[idx].llmModel = model
         samples[idx].llmAgreement = agreement
+        if samples[idx].id == latest?.id { latest = samples[idx] }
+        if coalesced { indexWrites.markDirty() } else { rewriteIndex() }
+    }
+
+    /// Store Slive Custom 4's format step for a labeled sample.
+    func setFormat(id: String, formatted: String, status: String, model: String,
+                   coalesced: Bool = false) {
+        guard let idx = samples.firstIndex(where: { $0.id == id }) else { return }
+        samples[idx].llmFormatted = formatted
+        samples[idx].llmFormatStatus = status
+        samples[idx].llmFormatModel = model
         if samples[idx].id == latest?.id { latest = samples[idx] }
         if coalesced { indexWrites.markDirty() } else { rewriteIndex() }
     }
