@@ -110,6 +110,12 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
         set { loads.onModelReady = newValue }
     }
 
+    /// Called on the main actor when a model's load fails.
+    var onModelFailed: ((String) -> Void)? {
+        get { loads.onModelFailed }
+        set { loads.onModelFailed = newValue }
+    }
+
     /// The model a dictation actually runs on: the one the user picked once
     /// it's resident; until then the previous pick (kept resident by
     /// ModelResidency for exactly this). Switching models never blocks

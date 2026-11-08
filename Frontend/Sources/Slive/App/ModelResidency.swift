@@ -6,7 +6,8 @@ import Foundation
 /// self-tested against the incidents in their comments; this class reads
 /// the current values and carries the decisions out on TranscriptionModel.
 @MainActor final class ModelResidency {
-    private let whisper: TranscriptionModel
+    private let whisper: ResidentModels
+    private let settings: Settings
 
     /// The last dictation / continuous model that was READY. Kept resident
     /// while a newly picked model downloads + compiles, so dictation keeps
@@ -14,8 +15,15 @@ import Foundation
     private(set) var servingDictationModel: String?
     private(set) var servingContinuousModel: String?
 
-    init(whisper: TranscriptionModel) {
+    /// Starts the background work a decision needs — a `Task` in the app;
+    /// the self-tests run it themselves, in order.
+    private let spawn: (@escaping @MainActor () async -> Void) -> Void
+
+    init(whisper: ResidentModels, settings: Settings = .shared,
+         spawn: @escaping (@escaping @MainActor () async -> Void) -> Void = { work in Task { @MainActor in await work() } }) {
         self.whisper = whisper
+        self.settings = settings
+        self.spawn = spawn
     }
 
     /// What the user picked, and what's serving now.
@@ -50,7 +58,7 @@ import Foundation
     // MARK: - Running it
 
     private var picks: Picks {
-        let s = Settings.shared
+        let s = settings
         let continuousOn = (s.streamHoldOn && s.streamHotkey != nil)
             || (s.streamToggleOn && s.streamToggleHotkey != nil)
         return Picks(dictation: s.whisperModel, continuous: s.continuousModel,
@@ -76,18 +84,18 @@ import Foundation
         case .standIn(let standIn):
             whisper.select(standIn)
             // Ready or failed, Whisper goes next.
-            Task { [weak self] in
+            spawn { [weak self] in
                 _ = await self?.whisper.awaitReady(standIn)
                 self?.refresh()
             }
-            whisper.applySpeedTier()
+            whisper.applySpeedTier(tierPicked: false)
         case .dictationFirst(let dictation, let continuous, let ensureContinuousDownloaded):
             whisper.select(dictation)
             if let continuous, !Self.continuousWaits(forDictation: whisper.status(for: dictation)) {
                 whisper.select(continuous)
             }
             if ensureContinuousDownloaded { downloadContinuousModelIfNeeded() }
-            whisper.applySpeedTier()   // arm (or disarm) the Feather-tier idle unload
+            whisper.applySpeedTier(tierPicked: false)   // arm (or disarm) the Feather-tier idle unload
         }
     }
 
@@ -106,6 +114,14 @@ import Foundation
         refresh()
     }
 
+    /// A load failed. When it was the dictation pick's, re-plan: the
+    /// continuous model was waiting behind it (`continuousWaits`) and nothing
+    /// else would start it, and a Parakeet stand-in can now serve dictation.
+    func modelFailed(_ model: String) {
+        guard model == settings.whisperModel else { return }
+        refresh()
+    }
+
     /// Continuous mode is on (a shortcut is set) but its model was never
     /// downloaded — fetch it. Turning continuous on IS asking for it. A
     /// failed download is retried only on `retryFailed` (a live-typing
@@ -113,7 +129,7 @@ import Foundation
     /// failure. True when a download is running or was just started.
     @discardableResult
     func downloadContinuousModelIfNeeded(retryFailed: Bool = false) -> Bool {
-        let model = Settings.shared.continuousModel
+        let model = settings.continuousModel
         guard !whisper.isDownloaded(model) else { return false }
         switch Self.fetchesContinuous(status: whisper.status(for: model), retryFailed: retryFailed) {
         case .running: return true
@@ -121,7 +137,8 @@ import Foundation
         case .start: break
         }
         Log.event("continuous model \(model) not downloaded — downloading it")
-        Task { await whisper.download(model) }
+        let whisper = self.whisper
+        spawn { await whisper.download(model, options: .standard) }
         return true
     }
 
@@ -181,10 +198,16 @@ import Foundation
     /// — the continuous model if it's one, else any downloaded Parakeet.
     static func launchStandIn(for dictation: String, continuous: String, _ s: States) -> String? {
         guard ModelCatalog.engine(of: dictation) == .whisper else { return nil }
+        // A candidate whose load failed is passed over for the next one.
         let candidates = [continuous] + ModelCatalog.ids(of: .parakeet)
         return candidates.first {
-            ModelCatalog.engine(of: $0) == .parakeet && s.isDownloaded($0)
+            ModelCatalog.engine(of: $0) == .parakeet && s.isDownloaded($0) && !isFailed(s.status($0))
         }
+    }
+
+    private static func isFailed(_ status: TranscriptionModel.Status) -> Bool {
+        if case .failed = status { return true }
+        return false
     }
 
     /// Who serves once `model` is ready: the pick, or the launch stand-in
@@ -220,3 +243,18 @@ import Foundation
         }
     }
 }
+
+/// What residency drives: `TranscriptionModel` in the app, a simulated
+/// loader in the self-tests (so `refresh` itself runs on every config).
+@MainActor protocol ResidentModels: AnyObject {
+    func isReady(_ model: String) -> Bool
+    func status(for model: String) -> ModelStatus
+    func isDownloaded(_ model: String) -> Bool
+    func retainModels(_ keep: Set<String>)
+    func select(_ model: String)
+    func awaitReady(_ model: String) async -> Bool
+    func applySpeedTier(tierPicked: Bool)
+    func download(_ model: String, options: LoadOptions) async
+}
+
+extension TranscriptionModel: ResidentModels {}

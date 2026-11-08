@@ -49,12 +49,15 @@ extension DictationMode {
     }
 
     /// The app's modes. The assistant is built only where it can run.
+    /// (`screenshot`: the assistant's screen grab — a fake in the self-tests.)
     static func standard(_ context: ModeContext, continuous: ContinuousDictation,
                          assistant: @autoclosure () -> AssistantService,
-                         capabilities: Capabilities) -> ModeRegistry {
+                         capabilities: Capabilities,
+                         screenshot: @escaping @Sendable () -> AssistMode.Screenshot?
+                             = { ScreenCapture.fullScreenBase64() }) -> ModeRegistry {
         let registry = ModeRegistry(capabilities: capabilities, work: context.work)
         registry.register(DictateMode(context))
-        registry.register(AssistMode(context, assistant: assistant()))
+        registry.register(AssistMode(context, assistant: assistant(), screenshot: screenshot))
         registry.register(StreamMode(context, continuous: continuous))
         return registry
     }

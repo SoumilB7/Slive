@@ -11,9 +11,11 @@ struct CaptureOptions: Equatable {
     /// `VoiceProcessingSource` can; it follows the system default route.
     var echoCancellation: Bool = false
 
-    static func fromSettings() -> CaptureOptions {
-        CaptureOptions(deviceUID: Settings.shared.inputDeviceUID,
-                       echoCancellation: Settings.shared.echoCancellation)
+    static func fromSettings() -> CaptureOptions { from(.shared) }
+
+    static func from(_ settings: Settings) -> CaptureOptions {
+        CaptureOptions(deviceUID: settings.inputDeviceUID,
+                       echoCancellation: settings.echoCancellation)
     }
 }
 

@@ -176,7 +176,8 @@ struct AppRecords: DictationRecords {
     /// and under the size cap. Records regardless of where the text landed.
     /// Once saved, it's queued for its automatic label (Slive Custom 4).
     func addTrainingPair(_ text: String, audioURL: URL) {
-        guard capabilities.training, settings.captureEdits, !TrainingStore.shared.isOverLimit else { return }
+        guard Self.savesTraining(capabilities: capabilities, captureEdits: settings.captureEdits,
+                                 overLimit: TrainingStore.shared.isOverLimit) else { return }
         if let id = TrainingStore.shared.addRecording(transcript: text, audioURL: audioURL) {
             LabelRun.shared.labelNew(id: id)
         }
@@ -184,5 +185,12 @@ struct AppRecords: DictationRecords {
 
     func recordPace(_ text: String, seconds: TimeInterval) {
         SpeakingStats.shared.record(text: text, seconds: seconds)
+    }
+
+    /// The training-pair gate: this build trains, saving is on, and there's
+    /// room (the size check runs last, only when the rest allow it).
+    static func savesTraining(capabilities: Capabilities, captureEdits: Bool,
+                              overLimit: @autoclosure () -> Bool) -> Bool {
+        capabilities.training && captureEdits && !overLimit()
     }
 }

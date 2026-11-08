@@ -14,6 +14,7 @@ public enum CoreSuites {
         SpeedTierTests.suite,
         SliveErrorTests.suite,
         VocabularyCorrectorTests.suite,
+        PipelineConfigTests.suite,
         DictationQueueTests.suite,
         TranscriptDiffTests.suite,
         ProblemReportTests.suite,

@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // is actually set — no point holding a second model (RAM + ANE) for a
         // feature that's switched off.
         whisper.onModelReady = { [weak self] model in self?.residency.modelReady(model) }
+        whisper.onModelFailed = { [weak self] model in self?.residency.modelFailed(model) }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
         residency.refresh()
 

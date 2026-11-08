@@ -27,6 +27,8 @@ import Foundation
 ///    (hyphens, dots, digits — "z-docs") or ones with capitals ("OnFinance")
 ///    are exact spellings, casing included.
 ///  - Punctuation around a match and every other byte of the text is kept.
+///    A term's own leading/trailing symbols ("C++", ".NET", "$HOME") already
+///    in the text belong to the match — they used to be typed twice ("C++++").
 ///
 /// Pure and nonisolated: runs on whatever thread produced the text, and the
 /// self-test drives it directly.
@@ -99,7 +101,8 @@ public enum VocabularyCorrector {
                 let span = words[i..<(i + n)]
                 guard spanIsContiguous(span),
                       let (replacement, term) = match(span, terms: terms) else { continue }
-                let range = span.first!.core.lowerBound..<span.last!.core.upperBound
+                let range = withEdgeSymbols(of: replacement, around: span.first!.core.lowerBound..<span.last!.core.upperBound,
+                                            in: text, after: cursor)
                 let original = text[range]
                 // A plain lowercase term never lowercases what the model
                 // capitalised ("Claude", "iOS"). A rewrite at a sentence start
@@ -115,6 +118,19 @@ public enum VocabularyCorrector {
         }
         out += text[cursor...]
         return out
+    }
+
+    /// `core` widened over the form's own leading/trailing symbols when the
+    /// text already has them there (never back past `cursor`).
+    private nonisolated static func withEdgeSymbols(of form: String, around core: Range<String.Index>,
+                                                    in text: String, after cursor: String.Index) -> Range<String.Index> {
+        let isCore: (Character) -> Bool = { $0.isLetter || $0.isNumber }
+        let lead = form.prefix { !isCore($0) }
+        let trail = String(form.reversed().prefix { !isCore($0) }.reversed())
+        var lower = core.lowerBound, upper = core.upperBound
+        if !lead.isEmpty, text[cursor..<lower].hasSuffix(lead) { lower = text.index(lower, offsetBy: -lead.count) }
+        if !trail.isEmpty, text[upper...].hasPrefix(trail) { upper = text.index(upper, offsetBy: trail.count) }
+        return lower..<upper
     }
 
     /// The spelling `span` should take, and the term it matched — if any.

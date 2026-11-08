@@ -46,6 +46,9 @@ final class ModelLoads {
     /// Called whenever a model becomes able to serve (the real copy or an
     /// interim one) — AppDelegate switches over to it.
     var onModelReady: ((String) -> Void)?
+    /// Called when a load fails with nothing serving for its model — what
+    /// was waiting behind it (the continuous model) can go next.
+    var onModelFailed: ((String) -> Void)?
 
     /// The one in-flight load per model. Everything that needs a model
     /// (selection, the hold-start prime, a dictation that arrives early)
@@ -169,6 +172,7 @@ final class ModelLoads {
             board.setStatus(.failed(plan.copy.timedOutStatus), for: model)
             report("speech model", plan.copy.timedOutReport, detail: "model \(model)")
             Log.stt("TIMEOUT loading \(model)")
+            onModelFailed?(model)
         } catch {
             residency.endLoad(model)
             if residency.isResident(model) {
@@ -181,6 +185,7 @@ final class ModelLoads {
             Log.stt("FAILED loading \(model) — \(error)")
             NSLog("Slive: \(plan.copy.engine) load failed — \(error)")
             report("speech model", plan.copy.failedReport, error: error, detail: "model \(model)")
+            onModelFailed?(model)
         }
     }
 

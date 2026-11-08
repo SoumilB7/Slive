@@ -40,9 +40,11 @@ enum AllSuites {
         SettingsUITests.suite,
         OverlayStateTests.suite,
         ModelResidencyTests.suite,
+        ResidencyMatrixTests.suite,
         SessionCoordinatorTests.suite,
         ChatSessionTests.suite,
         DictationModeTests.suite,
+        DictationConfigMatrixTests.suite,
         SelfTestLayoutTests.suite,
         SettingsRenderTests.suite,
     ]
