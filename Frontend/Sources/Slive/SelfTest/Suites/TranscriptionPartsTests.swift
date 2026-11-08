@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import SliveTestKit
 import WhisperKit
@@ -353,6 +354,17 @@ enum TranscriptionPartsTests {
 
         t.check(!whisper.hasFiles("tiny.en"), "nothing on disk → not downloaded")
         t.check(refreshes == 1, "the check re-reads installed fine-tunes")
+
+        // A view's body asks this: an unchanged re-read must not publish,
+        // or the view re-renders forever (Nov 13 freeze).
+        let model = TranscriptionModel.shared
+        model.refreshCustomModels()
+        var fires = 0
+        let watch = model.objectWillChange.sink { _ in fires += 1 }
+        for _ in 0..<3 { _ = model.isDownloaded(ModelCatalog.balanced) }
+        model.refreshCustomModels()
+        watch.cancel()
+        t.equal(fires, 0, "asking whether a model is downloaded never republishes (no render loop)")
 
         // Legacy rule: every model file + config + tokenizer.
         let folder = whisper.modelsRoot.appendingPathComponent("openai_whisper-tiny.en")

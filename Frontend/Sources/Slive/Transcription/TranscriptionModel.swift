@@ -109,8 +109,15 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
         return wanted
     }
 
+    /// Re-reads installed fine-tunes from disk, publishing only when the list
+    /// changed. `isDownloaded` refreshes through `WhisperStorage.hasFiles`,
+    /// and views call that from `body` (BalancedSuggestion): an unconditional
+    /// assignment fired `objectWillChange` on every read, which re-ran `body`
+    /// — an endless render loop that froze a fresh install at 100% CPU the
+    /// moment Settings showed the turbo suggestion (Nov 13, tiny.en Mac).
     func refreshCustomModels() {
-        customModels = CustomWhisperModelRegistry.load()
+        let loaded = CustomWhisperModelRegistry.load()
+        if loaded != customModels { customModels = loaded }
     }
 
     // MARK: - Storage (one basket in the app's data dir)
