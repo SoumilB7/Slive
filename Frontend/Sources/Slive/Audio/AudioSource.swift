@@ -60,7 +60,7 @@ final class AUHALSource: AudioSource {
 
     func start(_ options: CaptureOptions,
                onAudioThreadBuffer: @escaping (AVAudioPCMBuffer) -> Void) -> Bool {
-        guard let device = InputDevices.resolve(uid: options.deviceUID) ?? InputDevices.defaultInputID() else {
+        guard let device = InputDevices.captureDevice(uid: options.deviceUID) else {
             NSLog("Slive: no input device available")
             return false
         }

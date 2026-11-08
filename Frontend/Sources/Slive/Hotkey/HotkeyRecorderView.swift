@@ -125,16 +125,14 @@ struct HotkeyRecorderView: View {
                 let released = maxModifiers
                 maxModifiers = 0
                 guard supportsDoubleTap else {
-                    let label = Hotkey.makeLabel(modifiers: released, keyChar: nil)
-                    commit(Hotkey(modifiers: released, keyCode: nil, label: label))
+                    commit(Self.modifierHotkey(released, taps: 1))
                     return
                 }
                 // Second tap of the same gesture inside the window → ×2.
                 if pendingTapMods == released {
                     commitWork?.cancel(); commitWork = nil
                     pendingTapMods = 0
-                    let label = Hotkey.makeLabel(modifiers: released, keyChar: nil) + " ×2"
-                    commit(Hotkey(modifiers: released, keyCode: nil, label: label, taps: 2))
+                    commit(Self.modifierHotkey(released, taps: 2))
                     return
                 }
                 // First tap: hold the commit briefly — tap again for ×2.
@@ -142,8 +140,7 @@ struct HotkeyRecorderView: View {
                 let work = DispatchWorkItem {
                     pendingTapMods = 0
                     commitWork = nil
-                    let label = Hotkey.makeLabel(modifiers: released, keyChar: nil)
-                    commit(Hotkey(modifiers: released, keyCode: nil, label: label))
+                    commit(Self.modifierHotkey(released, taps: 1))
                 }
                 commitWork = work
                 DispatchQueue.main.asyncAfter(
@@ -151,17 +148,41 @@ struct HotkeyRecorderView: View {
             }
 
         case .keyDown:
-            if event.keyCode == 53 { cancel(); return }   // Esc cancels
-            // Ignore a bare typing key (would hijack that key); keep waiting for a
-            // modifier. Function keys / arrows / Esc are fine bare.
-            if mods == 0 && !Hotkey.isSpecialKey(event.keyCode) { return }
-            let keyChar = Hotkey.keyChar(forKeyCode: event.keyCode,
-                                         characters: event.charactersIgnoringModifiers)
-            let label = Hotkey.makeLabel(modifiers: mods, keyChar: keyChar)
-            commit(Hotkey(modifiers: mods, keyCode: event.keyCode, label: label))
+            switch Self.keyDownOutcome(keyCode: event.keyCode, modifiers: mods,
+                                       characters: event.charactersIgnoringModifiers) {
+            case .cancel: cancel()
+            case .ignore: break
+            case .commit(let hotkey): commit(hotkey)
+            }
 
         default:
             break
         }
+    }
+
+    // MARK: - Pure recording rules (self-tested against the monitor)
+
+    enum KeyOutcome: Equatable {
+        case cancel
+        /// Keep waiting (a bare typing key would hijack that key).
+        case ignore
+        case commit(Hotkey)
+    }
+
+    /// A key pressed while recording, with the (masked) modifiers its event
+    /// carried. Esc cancels; a bare typing key is ignored; function keys,
+    /// arrows and anything with a modifier is recorded.
+    static func keyDownOutcome(keyCode: UInt16, modifiers: UInt64, characters: String?) -> KeyOutcome {
+        if keyCode == 53 { return .cancel }
+        if modifiers == 0 && !Hotkey.isSpecialKey(keyCode) { return .ignore }
+        let keyChar = Hotkey.keyChar(forKeyCode: keyCode, characters: characters)
+        let label = Hotkey.makeLabel(modifiers: modifiers, keyChar: keyChar)
+        return .commit(Hotkey(modifiers: modifiers, keyCode: keyCode, label: label))
+    }
+
+    /// A modifier-only shortcut, once every modifier is released.
+    static func modifierHotkey(_ modifiers: UInt64, taps: Int) -> Hotkey {
+        let label = Hotkey.makeLabel(modifiers: modifiers, keyChar: nil) + (taps >= 2 ? " ×2" : "")
+        return Hotkey(modifiers: modifiers, keyCode: nil, label: label, taps: taps)
     }
 }

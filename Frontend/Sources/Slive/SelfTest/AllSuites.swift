@@ -47,5 +47,9 @@ enum AllSuites {
         DictationConfigMatrixTests.suite,
         SelfTestLayoutTests.suite,
         SettingsRenderTests.suite,
+        ShortcutConfigTests.suite,
+        OverlayPlacementTests.suite,
+        MicrophoneConfigTests.suite,
+        TypingPolicyTableTests.suite,
     ]
 }

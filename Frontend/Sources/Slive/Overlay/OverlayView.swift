@@ -7,8 +7,10 @@ import AppKit
 enum OverlayMetrics {
     /// The pill container (also the shadow-spill room): wide at the bottom,
     /// tall when the pill stands upright on the right (Settings).
-    static var pillSize: CGSize {
-        Settings.shared.pillOnRight ? CGSize(width: 60, height: 110) : CGSize(width: 120, height: 44)
+    static var pillSize: CGSize { pillSize(onRight: Settings.shared.pillOnRight) }
+
+    static func pillSize(onRight: Bool) -> CGSize {
+        onRight ? CGSize(width: 60, height: 110) : CGSize(width: 120, height: 44)
     }
 
     static let fontSize: CGFloat = 14

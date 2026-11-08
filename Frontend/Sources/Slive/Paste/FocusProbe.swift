@@ -133,11 +133,14 @@ enum FocusProbe {
     /// Role-only part of focus resolution, kept pure for regression tests.
     /// Containers are not text merely because they are focused; their
     /// descendants must produce a real text/cell target first.
+    /// A password field that reports "AXSecureTextField" as its ROLE (not
+    /// just its subrole) is text too — as "ambiguous" it skipped the secure
+    /// check and, in a lazy-AX app, failed open and typed.
     static func focusKind(role: String?) -> FocusKind {
         switch role {
         case kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole,
              kAXCellRole, kAXRowRole, kAXTableRole, kAXOutlineRole,
-             kAXListRole, kAXBrowserRole:
+             kAXListRole, kAXBrowserRole, "AXSecureTextField":
             return .text
         case kAXWindowRole, kAXApplicationRole, kAXGroupRole,
              kAXButtonRole, kAXCheckBoxRole, kAXRadioButtonRole,
@@ -153,12 +156,36 @@ enum FocusProbe {
     /// Electron/Chromium may expose only a focused group while its real text
     /// field is absent from the lazy AX tree. Preserve fail-open only for that
     /// known class instead of treating every native focused group as typable.
+    /// Arc and Dia are `company.thebrowser.*` — "arc" never appears in their
+    /// IDs, so they used to get the copy box instead of typing.
     static func isLazyAXBundle(identifier: String?, hasElectronFramework: Bool) -> Bool {
         if hasElectronFramework { return true }
         let id = (identifier ?? "").lowercased()
         return id.contains("chrome") || id.contains("chromium")
             || id.contains("brave") || id.contains("edgemac")
-            || id.contains("arc")
+            || id.contains("arc") || id.hasPrefix("company.thebrowser.")
+            || id.contains("vivaldi") || id.contains("operasoftware")
+    }
+
+    /// What one focused element amounts to, by its role and whether its app's
+    /// AX tree is lazy (pure, self-tested).
+    enum Candidate: Equatable { case element, none, unknown }
+
+    static func candidate(role: String?, lazyAX: () -> Bool) -> Candidate {
+        switch focusKind(role: role) {
+        case .text:
+            return .element
+        case .nonText:
+            // Known controls can use shouldDispatch for the final refusal.
+            // Groups are special: native groups mean no text target, while a
+            // lazy Electron group is genuinely ambiguous and must fail open.
+            if role == (kAXGroupRole as String) {
+                return lazyAX() ? .unknown : .none
+            }
+            return .element
+        case .ambiguous:
+            return lazyAX() ? .unknown : .none
+        }
     }
 
     static func appHasLazyAX(_ app: NSRunningApplication?) -> Bool {
@@ -186,19 +213,10 @@ enum FocusProbe {
     private static func resolveCandidate(_ element: AXUIElement,
                                          frontmost app: NSRunningApplication?) -> Result {
         let role = AXRead.string(element, kAXRoleAttribute as String)
-        switch focusKind(role: role) {
-        case .text:
-            return .element(element)
-        case .nonText:
-            // Known controls can use shouldDispatch for the final refusal.
-            // Groups are special: native groups mean no text target, while a
-            // lazy Electron group is genuinely ambiguous and must fail open.
-            if role == (kAXGroupRole as String) {
-                return appHasLazyAX(app) ? .unknown : .none
-            }
-            return .element(element)
-        case .ambiguous:
-            return appHasLazyAX(app) ? .unknown : .none
+        switch candidate(role: role, lazyAX: { appHasLazyAX(app) }) {
+        case .element: return .element(element)
+        case .none: return .none
+        case .unknown: return .unknown
         }
     }
 

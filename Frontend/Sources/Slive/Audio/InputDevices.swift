@@ -67,14 +67,19 @@ final class InputDevices: ObservableObject {
     }
 
     func refresh() {
-        let all = Self.enumerate()
-        let defaultID = Self.defaultInputID()
-        systemDefault = all.first { $0.id == defaultID }
-        devices = all.sorted { a, b in
+        (devices, systemDefault) = Self.ordered(Self.enumerate(), defaultID: Self.defaultInputID())
+    }
+
+    /// The picker's list: the system default first (when it is an input at
+    /// all), then by name.
+    nonisolated static func ordered(_ all: [Device], defaultID: AudioDeviceID?)
+        -> (devices: [Device], systemDefault: Device?) {
+        let sorted = all.sorted { a, b in
             if a.id == defaultID { return true }
             if b.id == defaultID { return false }
             return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
+        return (sorted, all.first { $0.id == defaultID })
     }
 
     /// The device a saved preference points at right now, or nil when the
@@ -91,9 +96,33 @@ final class InputDevices: ObservableObject {
     /// mic is not connected — logged so the fallback is never silent).
     nonisolated static func resolve(uid: String) -> AudioDeviceID? {
         guard !uid.isEmpty else { return nil }
-        if let match = enumerate().first(where: { $0.uid == uid }) { return match.id }
-        NSLog("Slive: chosen microphone (\(uid)) is not connected — using the system default")
+        if let id = match(uid: uid, among: enumerate()) { return id }
+        reportMissing(uid)
         return nil
+    }
+
+    /// The listed device with this UID (pure, silent; self-tested).
+    nonisolated static func match(uid: String, among devices: [Device]) -> AudioDeviceID? {
+        guard !uid.isEmpty else { return nil }
+        return devices.first { $0.uid == uid }?.id
+    }
+
+    /// The device a recording opens: the pick, else the system default; nil =
+    /// no input at all. Both reads are lazy, as they always were; a pick that
+    /// isn't connected is reported, never silently replaced.
+    nonisolated static func captureDevice(uid: String,
+                                          devices: () -> [Device] = { InputDevices.enumerate() },
+                                          systemDefault: () -> AudioDeviceID? = { InputDevices.defaultInputID() },
+                                          missing: (String) -> Void = { InputDevices.reportMissing($0) })
+        -> AudioDeviceID? {
+        guard !uid.isEmpty else { return systemDefault() }
+        if let id = match(uid: uid, among: devices()) { return id }
+        missing(uid)
+        return systemDefault()
+    }
+
+    nonisolated static func reportMissing(_ uid: String) {
+        NSLog("Slive: chosen microphone (\(uid)) is not connected — using the system default")
     }
 
     nonisolated static func defaultInputID() -> AudioDeviceID? {

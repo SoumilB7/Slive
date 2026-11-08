@@ -27,7 +27,7 @@ enum OverlayState: Equatable {
 
     /// Dictation listen (waveform pill) vs. assistant listen (black-hole
     /// pill) vs. continuous listen (pen-scribble pill).
-    enum ListenKind: Equatable {
+    enum ListenKind: Equatable, CaseIterable {
         case dictation
         case assistant
         case live
@@ -97,7 +97,11 @@ extension OverlayState {
     }
 
     /// The container (and NSPanel) size: the pill unless a box is showing.
-    var panelSize: CGSize { result?.panelSize ?? OverlayMetrics.pillSize }
+    var panelSize: CGSize { panelSize(pillOnRight: Settings.shared.pillOnRight) }
+
+    func panelSize(pillOnRight: Bool) -> CGSize {
+        result?.panelSize ?? OverlayMetrics.pillSize(onRight: pillOnRight)
+    }
 
     /// Click-through everywhere except while a result box is showing (its
     /// copy / ✕ / Continue buttons) and a stuck transcribing pill's ✕; the

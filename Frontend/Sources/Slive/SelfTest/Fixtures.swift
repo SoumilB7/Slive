@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import SliveTestKit
 
 /// Shared hotkey fixtures used by more than one suite.
 enum Fixtures {
@@ -27,5 +28,23 @@ enum Fixtures {
         m.onStart = started
         m.onStop = stopped
         return m
+    }
+}
+
+/// One check for a whole swept dimension (thousands of configs): counts the
+/// cases and lists the first failures instead of printing a line per case.
+struct Sweep {
+    private(set) var count = 0
+    private(set) var failures: [String] = []
+
+    mutating func expect(_ ok: Bool, _ what: @autoclosure () -> String) {
+        count += 1
+        guard !ok else { return }
+        failures.append(failures.count < 8 ? what() : "")
+    }
+
+    func report(_ t: inout Checks, _ name: String) {
+        let shown = failures.filter { !$0.isEmpty }.joined(separator: "; ")
+        t.check(failures.isEmpty, "\(name) (\(count) cases)", "\(failures.count) failed: \(shown)")
     }
 }

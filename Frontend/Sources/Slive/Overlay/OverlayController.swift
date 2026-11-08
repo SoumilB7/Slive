@@ -262,25 +262,40 @@ final class OverlayController {
     }
 
     private func reposition() {
-        let mouse = NSEvent.mouseLocation
-        // Fall back through mouse-screen → main → first available, so a screen
-        // reconfiguration (lid close with an external display) can never leave
-        // us with no frame and the pill stranded at stale off-screen coordinates.
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
-            ?? NSScreen.main
-            ?? NSScreen.screens.first
-        guard let frame = screen?.visibleFrame else { return }
-        let size = panel.frame.size
-        // Text always shows bottom-centre; only the pill itself moves to the
-        // right edge (upright) when the user turned that on.
-        if Settings.shared.pillOnRight && !model.state.showsText {
-            panel.setFrameOrigin(NSPoint(x: frame.maxX - size.width - 2,
-                                         y: frame.midY - size.height / 2))
-            return
+        let geometry = { (s: NSScreen) in ScreenGeometry(frame: s.frame, visibleFrame: s.visibleFrame) }
+        guard let frame = Self.visibleFrame(mouse: NSEvent.mouseLocation,
+                                            screens: NSScreen.screens.map(geometry),
+                                            main: NSScreen.main.map(geometry)) else { return }
+        panel.setFrameOrigin(Self.origin(size: panel.frame.size, in: frame,
+                                         pillOnRight: Settings.shared.pillOnRight,
+                                         showsText: model.state.showsText))
+    }
+
+    // MARK: - Placement (pure, self-tested over screen layouts)
+
+    struct ScreenGeometry: Equatable {
+        let frame: CGRect
+        let visibleFrame: CGRect
+    }
+
+    /// The usable area to place on. Falls back through mouse-screen → main →
+    /// first available, so a screen reconfiguration (lid close with an
+    /// external display) can never leave us with no frame and the pill
+    /// stranded at stale off-screen coordinates.
+    static func visibleFrame(mouse: CGPoint, screens: [ScreenGeometry],
+                             main: ScreenGeometry?) -> CGRect? {
+        let screen = screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? main ?? screens.first
+        return screen?.visibleFrame
+    }
+
+    /// Text always shows bottom-centre; only the pill itself moves to the
+    /// right edge (upright) when the user turned that on.
+    static func origin(size: CGSize, in frame: CGRect, pillOnRight: Bool, showsText: Bool) -> CGPoint {
+        if pillOnRight && !showsText {
+            return CGPoint(x: frame.maxX - size.width - 2, y: frame.midY - size.height / 2)
         }
-        let x = frame.midX - size.width / 2
-        let y = frame.minY + 8                         // lower, near the bottom edge
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        return CGPoint(x: frame.midX - size.width / 2,
+                       y: frame.minY + 8)                 // lower, near the bottom edge
     }
 }
 

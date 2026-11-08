@@ -42,7 +42,16 @@ final class HotkeyMonitor {
     private var toggleSwallowKeycode: UInt16?
     /// Last seen flags state — the down-edge detector for modifier toggles.
     private var previousFlags: UInt64 = 0
-    /// Previous down-edge (modifiers + when) — the double-tap detector.
+    /// The double-tap detector works in taps the way the recorder records
+    /// a ×2: one tap = every modifier held from the first press until all
+    /// are up again (its peak set). Comparing raw flag edges instead made a
+    /// multi-modifier ×2 (⌃⌥ ×2) unmatchable — releasing ⌥ before ⌃ left
+    /// "⌃" as the last edge.
+    private var tapPeak: UInt64 = 0
+    private var tapPeakAt: Date = .distantPast
+    /// This tap completed a double: it can't also start the next one.
+    private var tapConsumed = false
+    /// The previous completed tap (its peak + when it peaked).
     private var lastTapMods: UInt64 = 0
     private var lastTapAt: Date = .distantPast
 
@@ -91,7 +100,21 @@ final class HotkeyMonitor {
         needsConsume = (t + toggles).contains { !$0.hotkey.isModifierOnly }
     }
 
-    init() {
+    /// False only in the self-tests: tables rebuild without ever creating
+    /// an event tap or a permission poll, and events don't mark the tap live.
+    private let armsTap: Bool
+    /// The clock behind double-tap timing (a manual one in the self-tests).
+    private let now: () -> Date
+    /// Whether a physical key is down right now (the release watchdog's
+    /// hardware probe; a scripted keyboard in the self-tests).
+    private let keyProbe: (CGKeyCode) -> Bool
+
+    init(armsTap: Bool = true,
+         now: @escaping () -> Date = Date.init,
+         keyProbe: @escaping (CGKeyCode) -> Bool = { CGEventSource.keyState(.hidSystemState, key: $0) }) {
+        self.armsTap = armsTap
+        self.now = now
+        self.keyProbe = keyProbe
         rebuildTargets()
     }
 
@@ -149,7 +172,7 @@ final class HotkeyMonitor {
     private func hotkeysChanged() {
         rebuildTargets()
         if let a = activeAction { activeAction = nil; engagedKeyCode = nil; onStop?(a) }
-        if needsConsume != installedConsuming { reinstallTap() }
+        if armsTap, needsConsume != installedConsuming { reinstallTap() }
     }
 
     // MARK: - Tap
@@ -252,7 +275,7 @@ final class HotkeyMonitor {
     }
 
     private func markActive() {
-        guard !hasReceivedEvent else { return }
+        guard armsTap, !hasReceivedEvent else { return }   // a test monitor leaves the app's Settings alone
         hasReceivedEvent = true
         DispatchQueue.main.async { Settings.shared.hotkeyActive = true }
     }
@@ -281,7 +304,7 @@ final class HotkeyMonitor {
         //    toggle can never double as a hold. Chord toggles fire once on
         //    the non-autorepeat keyDown (and swallow their keyUp); modifier-
         //    only toggles fire on the exact-match DOWN EDGE of flagsChanged
-        //    (previous flags differed) — releasing the modifier does nothing,
+        //    (a modifier went down) — releasing the modifier does nothing,
         //    the next press toggles again.
         switch type {
         case .keyDown:
@@ -300,33 +323,40 @@ final class HotkeyMonitor {
                 return true        // swallow the toggle chord's key-up too
             }
         case .flagsChanged:
-            if engagedKeyCode == nil, previousFlags != flags, flags != 0,
+            // A down edge = a modifier went down (releasing one of a combo
+            // into a bound set is not a press of it).
+            let pressed = flags & ~previousFlags != 0
+            if pressed, flags | tapPeak != tapPeak {
+                tapPeak |= flags
+                tapPeakAt = now()
+            }
+            if engagedKeyCode == nil, pressed,
                let t = modifierOnlyToggles.first(where: { $0.hotkey.modifiers == flags }) {
-                let now = Date()
                 let doubled = Self.isDoubleTap(previousMods: lastTapMods,
                                                previousAt: lastTapAt,
-                                               mods: flags, now: now)
-                lastTapMods = flags
-                lastTapAt = now
+                                               mods: flags, now: now())
                 previousFlags = flags
                 if t.hotkey.taps <= 1 {
                     onToggle?(t.action)          // single-tap toggle: every down edge
                     return false                 // gesture belongs to the toggle
                 }
                 if doubled {
-                    lastTapAt = .distantPast     // consume the pair — a 3rd tap starts fresh
-                    onToggle?(t.action)          // double-tap toggle: second edge only
+                    tapConsumed = true           // consume the pair — a 3rd tap starts fresh
+                    lastTapAt = .distantPast
+                    onToggle?(t.action)          // double-tap toggle: second tap only
                     return false
                 }
                 // ×2 bind, FIRST tap: fall through — a hold sharing this
                 // gesture owns the edge (its arm dies if the double lands).
             }
-            // Any down edge feeds the double-tap detector, even when no
-            // toggle matches (so tap–tap of a gesture bound elsewhere can't
-            // smear across unrelated flag states).
-            if previousFlags != flags, flags != 0 {
-                lastTapMods = flags
-                lastTapAt = Date()
+            // Every completed tap feeds the detector, even when no toggle
+            // matches (so tap–tap of a gesture bound elsewhere can't smear
+            // across unrelated taps).
+            if flags == 0, tapPeak != 0 {
+                lastTapMods = tapPeak
+                lastTapAt = tapConsumed ? .distantPast : tapPeakAt
+                tapPeak = 0
+                tapConsumed = false
             }
         default:
             break
@@ -449,14 +479,34 @@ final class HotkeyMonitor {
         return true
     }
 
-    private func verifyPhysicalHold() {
+    /// Keys macOS reports as fn+key though fn is never touched (F1–F20, the
+    /// arrows, Home/End, Page Up/Down, Forward Delete, Help): their events —
+    /// and so a shortcut recorded on one — carry the fn flag, but the fn KEY
+    /// is up. Requiring it physically released every such hold in 0.2 s.
+    static let implicitFnKeyCodes: Set<UInt16> = [
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,   // F1–F12
+        105, 107, 113, 106, 64, 79, 80, 90,                       // F13–F20
+        123, 124, 125, 126,                                       // arrows
+        115, 119, 116, 121, 117, 114,                             // Home End PgUp PgDn ⌦ Help
+    ]
+
+    /// Pure chord rule, self-tested: the key itself and every modifier the
+    /// user actually presses must still be down.
+    static func chordPhysicallyHeld(_ hotkey: Hotkey, keyCode: UInt16,
+                                    keyDown: (CGKeyCode) -> Bool) -> Bool {
+        var required = hotkey.modifiers
+        if implicitFnKeyCodes.contains(keyCode) { required &= ~CGEventFlags.maskSecondaryFn.rawValue }
+        return keyDown(CGKeyCode(keyCode)) && physicallyHeld(requiredModifiers: required, keyDown: keyDown)
+    }
+
+    /// One watchdog tick (internal so the self-tests can tick it).
+    func verifyPhysicalHold() {
         guard let action = activeAction else { syncReleaseWatchdog(); return }
-        let probe: (CGKeyCode) -> Bool = { CGEventSource.keyState(.hidSystemState, key: $0) }
+        let probe = keyProbe
         if let engaged = engagedKeyCode {
             // Chord: the key itself and its modifiers must both still be down.
             guard let t = targets.first(where: { $0.action == action }) else { return }
-            if !probe(CGKeyCode(engaged))
-                || !Self.physicallyHeld(requiredModifiers: t.hotkey.modifiers, keyDown: probe) {
+            if !Self.chordPhysicallyHeld(t.hotkey, keyCode: engaged, keyDown: probe) {
                 Log.hotkey("watchdog: chord physically released — unsticking")
                 engagedKeyCode = nil
                 release()
