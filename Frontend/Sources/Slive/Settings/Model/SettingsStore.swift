@@ -44,36 +44,65 @@ protocol StorableSetting {
     func write(to store: KeyValueStore, key: String)
 }
 
+// Scalars read through `object(forKey:)`, so UserDefaults and InMemoryStore
+// agree and a value of the wrong kind (a hand-edited plist, another build)
+// reads as unset — the default — instead of UserDefaults' silent 0 / false /
+// "5". A string that spells the value (`defaults write … key 0.7`) still counts.
+
 extension Bool: StorableSetting {
     static func read(from store: KeyValueStore, key: String) -> Bool? {
-        store.object(forKey: key) == nil ? nil : store.bool(forKey: key)
+        switch store.object(forKey: key) {
+        case let number as NSNumber: return number.boolValue
+        case let text as String:
+            switch text.trimmingCharacters(in: .whitespaces).lowercased() {
+            case "yes", "true": return true
+            case "no", "false": return false
+            case let other: return Double(other).map { $0 != 0 }
+            }
+        default: return nil
+        }
     }
     func write(to store: KeyValueStore, key: String) { store.set(self, forKey: key) }
 }
 
 extension Double: StorableSetting {
+    /// NaN and ±infinity read as unset: the first `Int(value)` would trap.
     static func read(from store: KeyValueStore, key: String) -> Double? {
-        store.object(forKey: key) == nil ? nil : store.double(forKey: key)
+        let value: Double?
+        switch store.object(forKey: key) {
+        case let number as NSNumber: value = number.doubleValue
+        case let text as String: value = Double(text.trimmingCharacters(in: .whitespaces))
+        default: value = nil
+        }
+        return value.flatMap { $0.isFinite ? $0 : nil }
     }
     func write(to store: KeyValueStore, key: String) { store.set(self, forKey: key) }
 }
 
 extension Int: StorableSetting {
     static func read(from store: KeyValueStore, key: String) -> Int? {
-        store.object(forKey: key) == nil ? nil : store.integer(forKey: key)
+        switch store.object(forKey: key) {
+        case let number as NSNumber:
+            let d = number.doubleValue
+            return d.isFinite && abs(d) < 1e15 ? number.intValue : nil
+        case let text as String: return Int(text.trimmingCharacters(in: .whitespaces))
+        default: return nil
+        }
     }
     func write(to store: KeyValueStore, key: String) { store.set(self, forKey: key) }
 }
 
 extension String: StorableSetting {
-    static func read(from store: KeyValueStore, key: String) -> String? { store.string(forKey: key) }
+    static func read(from store: KeyValueStore, key: String) -> String? {
+        store.object(forKey: key) as? String
+    }
     func write(to store: KeyValueStore, key: String) { store.set(self, forKey: key) }
 }
 
 /// String-backed enums persist their raw value; an unknown one reads as unset.
 extension StorableSetting where Self: RawRepresentable, RawValue == String {
     static func read(from store: KeyValueStore, key: String) -> Self? {
-        store.string(forKey: key).flatMap(Self.init(rawValue:))
+        (store.object(forKey: key) as? String).flatMap(Self.init(rawValue:))
     }
     func write(to store: KeyValueStore, key: String) { store.set(rawValue, forKey: key) }
 }
@@ -101,6 +130,24 @@ struct Setting<Value: StorableSetting> {
 
     func read(from store: KeyValueStore) -> Value {
         Value.read(from: store, key: key).map(normalize) ?? defaultValue
+    }
+}
+
+extension Setting where Value == Double {
+    /// A slider's setting: a stored value outside the slider's range (a
+    /// hand-edited plist) reads clamped into it — `Int(1e300)` in a label traps.
+    init(key: String, defaultValue: Double, range: ClosedRange<Double>) {
+        self.init(key: key, defaultValue: defaultValue,
+                  normalize: { min(max($0, range.lowerBound), range.upperBound) })
+    }
+}
+
+extension Setting where Value == String {
+    /// A model pick: a blank stored id names no model, so it reads as the default.
+    init(modelKey key: String, defaultValue: String) {
+        self.init(key: key, defaultValue: defaultValue, normalize: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultValue : $0
+        })
     }
 }
 

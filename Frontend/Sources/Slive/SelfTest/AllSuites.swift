@@ -16,6 +16,7 @@ enum AllSuites {
         LocalServerTests.suite,
         DefaultShortcutTests.suite,
         SettingsStoreTests.suite,
+        SettingsOptionsTests.suite,
         HotkeyActionTests.suite,
         SilenceTrimTests.suite,
         TextHygieneTests.suite,

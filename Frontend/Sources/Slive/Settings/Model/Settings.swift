@@ -164,12 +164,14 @@ final class Settings: ObservableObject, StoredSettingsOwner {
 
     /// How long you must hold the key before recording begins (seconds). Brief
     /// taps under this do nothing. Default 0.2s.
-    @Stored("holdActivationDelay", default: 0) var holdActivationDelay: Double
+    @Stored(Setting(key: "holdActivationDelay", defaultValue: 0, range: Settings.holdDelayRange))
+    var holdActivationDelay: Double
 
     /// Opacity of the floating overlay chrome — the pill, transcribing dots, and
     /// answer box backgrounds. 1 = solid; lower = more see-through. Text stays
     /// fully opaque so answers remain readable. Default 0.92.
-    @Stored("overlayOpacity", default: 0.4) var overlayOpacity: Double
+    @Stored(Setting(key: "overlayOpacity", defaultValue: 0.4, range: Settings.overlayOpacityRange))
+    var overlayOpacity: Double
 
     /// The pill stands upright on the right edge instead of bottom-centre.
     /// Text (results, the copy box, messages) always shows at the bottom.
@@ -179,20 +181,23 @@ final class Settings: ObservableObject, StoredSettingsOwner {
     /// it reloads WhisperKit; the new model downloads once.
     /// Default to the bundled tiny model so the first launch works instantly
     /// and fully offline — the user can switch to a bigger one in Settings.
-    @Stored("whisperModel", default: ModelCatalog.defaultDictation, emits: .dictationModel) var whisperModel: String
+    @Stored(Setting(modelKey: "whisperModel", defaultValue: ModelCatalog.defaultDictation), emits: .dictationModel)
+    var whisperModel: String
 
     /// WhisperKit model used by continuous (live streaming) dictation — fully
     /// independent of `whisperModel`. When set to the same name, the two share one
     /// resident instance; when different, both load. Changing it reloads its model.
     /// Continuous dictation defaults to the same bundled tiny model (so both
     /// sections share one instance until the user changes either one).
-    @Stored("continuousModel", default: ModelCatalog.defaultContinuous, emits: .continuousModel)
+    @Stored(Setting(modelKey: "continuousModel", defaultValue: ModelCatalog.defaultContinuous),
+            emits: .continuousModel)
     var continuousModel: String
 
     /// Characters-per-second the live typist eases the field toward during
     /// continuous dictation. `>= 120` means "Instant" (whole diff flushed at once).
     /// Default 30.
-    @Stored("continuousTypeCPS", default: 80) var continuousTypeCPS: Double
+    @Stored(Setting(key: "continuousTypeCPS", defaultValue: 80, range: Settings.typeCPSRange))
+    var continuousTypeCPS: Double
 
     /// Developer-only: emit verbose diagnostic logs (filter "Slive." in Console /
     /// `log stream`). Off for normal users. Also forced on by `SLIVE_DEBUG=1`.
@@ -214,7 +219,8 @@ final class Settings: ObservableObject, StoredSettingsOwner {
     /// Hard cap on how much captured training data (audio + index) may occupy on
     /// disk, in gigabytes. When usage reaches this, capture stops until you free
     /// space or raise the limit. Default 1 GB.
-    @Stored("captureMaxGB", default: 2.0) var captureMaxGB: Double
+    @Stored(Setting(key: "captureMaxGB", defaultValue: 2.0, range: Settings.captureMaxGBRange))
+    var captureMaxGB: Double
 
     /// Run the mic through the system voice-processing chain (the FaceTime echo
     /// canceller): what the Mac itself is playing over the speakers is
@@ -291,7 +297,17 @@ final class Settings: ObservableObject, StoredSettingsOwner {
     static let localMemLimitSetting = Setting(
         key: "localMemLimitGB",
         defaultValue: localMemDefaultGB(ramGB: MachineProfile.ramGB),
-        normalize: { min($0, localMemMaxGB(ramGB: MachineProfile.ramGB)) })
+        range: localMemMinGB...localMemMaxGB(ramGB: MachineProfile.ramGB))
+
+    // MARK: Slider ranges — what the Settings sliders offer; a stored value
+    // outside one reads clamped into it.
+
+    static let holdDelayRange: ClosedRange<Double> = 0...0.6           // BehaviorCard
+    static let overlayOpacityRange: ClosedRange<Double> = 0.35...1.0   // OverlayCard
+    static let typeCPSRange: ClosedRange<Double> = 12...120            // ContinuousSettingsView
+    static let captureMaxGBRange: ClosedRange<Double> = 0.1...20       // CaptureCard
+    /// LocalInferenceControls' floor; its ceiling is `localMemMaxGB`.
+    static let localMemMinGB: Double = 2
 
     /// Snapshot of the local-inference knobs, safe to read off the main actor —
     /// the HTTP clients build request bodies on background executors.
@@ -337,9 +353,12 @@ final class Settings: ObservableObject, StoredSettingsOwner {
         Mirror(reflecting: self).children.compactMap { $0.value as? AnyStoredSetting }
     }
 
-    init(store: KeyValueStore = UserDefaults.standard) {
+    /// `loginItemEnabled`: the real login-item state; the self-tests pass a
+    /// constant — the SMAppService query costs ~40 ms per Settings.
+    init(store: KeyValueStore = UserDefaults.standard,
+         loginItemEnabled: () -> Bool = { SMAppService.mainApp.status == .enabled }) {
         self.store = store
-        launchAtLogin = (SMAppService.mainApp.status == .enabled)
+        launchAtLogin = loginItemEnabled()
         for slot in ActionSpec.all.flatMap(\.slots) {
             guard let spec = slot.spec else { continue }
             shortcuts[slot] = .some(spec.readShortcut(from: store))

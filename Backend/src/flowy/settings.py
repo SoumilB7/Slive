@@ -31,14 +31,22 @@ def app_support_dir() -> Path:
     return Path.home() / "Library" / "Application Support" / "Slive"
 
 
+def _value(environ: Mapping[str, str], name: str) -> str:
+    """The variable's value; unset, empty and whitespace-only all read as ""
+    (a blank path would otherwise be a folder named "  " in the cwd)."""
+    raw = environ.get(name) or ""
+    return raw if raw.strip() else ""
+
+
 def _dir(environ: Mapping[str, str], name: str, default: Path) -> Path:
-    override = environ.get(name)
+    override = _value(environ, name)
     return Path(override).expanduser() if override else default
 
 
 def _pid(raw: str | None) -> int:
+    """A pid, or 0 (nothing to watch) for anything that isn't one."""
     try:
-        return int(raw or "")
+        return max(int(raw or ""), 0)
     except ValueError:
         return 0
 
@@ -74,7 +82,7 @@ class Settings:
             whisperkit_tools_dir=_dir(
                 env, "SLIVE_WHISPERKIT_TOOLS", support / "tools" / "whisperkittools"
             ),
-            whisperkit_generate_model=env.get("WHISPERKIT_GENERATE_MODEL") or "",
+            whisperkit_generate_model=_value(env, "WHISPERKIT_GENERATE_MODEL"),
             parent_pid=_pid(env.get("SLIVE_PARENT_PID")),
             own_process_group=env.get("SLIVE_PROCESS_GROUP") == "1",
         )

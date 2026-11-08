@@ -68,10 +68,12 @@ struct SlotSpec {
     /// key — and is now always empty data, which (like any undecodable
     /// value) reads as nil. A removed key reads as never set, which only
     /// matters for slots whose default isn't nil, and those always wrote
-    /// empty data.
+    /// empty data. A decodable shortcut with nothing to press (no modifier,
+    /// no key — only a hand edit makes one) is unreadable too: it would leave
+    /// hold-to-dictate unpressable.
     func readShortcut(from store: KeyValueStore) -> Hotkey? {
         guard let data = store.data(forKey: key) else { return defaultHotkey }
-        let decoded = try? JSONDecoder().decode(Hotkey.self, from: data)
+        let decoded = (try? JSONDecoder().decode(Hotkey.self, from: data)).flatMap { $0.isValid ? $0 : nil }
         return required ? (decoded ?? defaultHotkey) : decoded
     }
 

@@ -4,7 +4,7 @@ import Combine
 import Foundation
 
 /// How Should-be labels are made. Persisted in Settings.
-enum GroundTruthRecipe: String {
+enum GroundTruthRecipe: String, CaseIterable {
     /// Slive Custom 4: the 3-way consensus, then gpt-5.5 formats the label
     /// and a code check keeps only allowed edits (backend `label_format`).
     /// The default.
