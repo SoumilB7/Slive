@@ -57,6 +57,13 @@ enum SettingsRenderTests {
         /// times — a sign that holds even when the machine is too busy for
         /// the CPU share to show it.
         static let slices = 190
+        /// Least share of an idle window the main run loop must spend asleep.
+        /// Settled views sleep most of every slice; a loop through SwiftUI's
+        /// update cycle never sleeps. Load-proof: on Nov 15, with the machine
+        /// at load average ~97 from unrelated builds, the CPU share and slice
+        /// count of the @State-flip fixture fell under their limits, so a
+        /// real loop could pass on a busy Mac — this one still catches it.
+        static let minSleepShare = 0.25
         /// One view's first layout, in main-thread CPU seconds.
         static let firstLayoutSeconds = 2.0
         /// No progress on the main thread for this long (wall time) = a hang.
@@ -166,6 +173,8 @@ enum SettingsRenderTests {
         var peakCPU = 0.0
         /// Measured alone (its own run loop), not beside other views.
         var alone = false
+        /// Share of the idle window the main run loop slept (alone runs).
+        var sleepShare = 1.0
         /// SwiftUI's "Publishing changes from within view updates".
         var faults = 0
         /// HANG / LOOP / crash text when its child never finished it.
@@ -177,6 +186,9 @@ enum SettingsRenderTests {
             if publishes > Limits.publishes { v.append("\(publishes) objectWillChange per idle window (\(top))") }
             if cpuShare > Limits.cpuShare { v.append(String(format: "main thread %.0f%% busy while idle", cpuShare * 100)) }
             if alone, ticks > Limits.slices { v.append("main run loop never idle (\(ticks) slices per window)") }
+            if alone, sleepShare < Limits.minSleepShare {
+                v.append(String(format: "main run loop asleep only %.0f%% of an idle window", sleepShare * 100))
+            }
             if first > Limits.firstLayoutSeconds { v.append(String(format: "first layout took %.2f s", first)) }
             if faults > 0 { v.append("\(faults)× \"\(SwiftUIFault.message)\"") }
             return v
@@ -198,6 +210,8 @@ enum SettingsRenderTests {
         var unattributedCPU = 0.0
         /// Most run-loop slices in a chunk's idle window.
         var slices = 0
+        /// Least run-loop sleep share in a chunk's idle window.
+        var sleepShare = 1.0
     }
 
     // MARK: - Parent
@@ -340,6 +354,10 @@ enum SettingsRenderTests {
                      outcomes.indices.filter { !groups[$0].oneAtATime }.map { outcomes[$0].slices }.max() ?? 0,
                      Limits.slices,
                      side["loads"] ?? 0))
+        let aloneSleep = all_.filter(\.alone).map(\.sleepShare).min()
+        let chunkSleep = outcomes.indices.filter { !groups[$0].oneAtATime }.map { outcomes[$0].sleepShare }.min()
+        print(String(format: "  · run-loop asleep while idle: min %.0f%% alone, %.0f%% chunk-wide (limit ≥ %.0f%%)",
+                     (aloneSleep ?? 1) * 100, (chunkSleep ?? 1) * 100, Limits.minSleepShare * 100))
     }
 
     /// The all-pairs set covers every allowed pair of option values, every
@@ -410,9 +428,11 @@ enum SettingsRenderTests {
             }
             left.removeAll { r.cases[$0] != nil }
             outcome.slices = max(outcome.slices, r.slices)
+            outcome.sleepShare = min(outcome.sleepShare, r.sleepShare)
             outcome.unattributedCPU = max(outcome.unattributedCPU, r.unattributedCPU)
             if r.finished {
-                if together, r.unattributedCPU > Limits.cpuShare || r.slices > Limits.slices || r.unattributedFaults > 0 {
+                if together, r.unattributedCPU > Limits.cpuShare || r.slices > Limits.slices
+                    || r.sleepShare < Limits.minSleepShare || r.unattributedFaults > 0 {
                     // Busy (or a fault) that no view accounts for: one at a time.
                     together = false
                     left = cases

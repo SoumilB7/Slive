@@ -23,6 +23,8 @@ enum RenderChild {
         var unattributedCPU = 0.0
         /// Run-loop slices per idle window while every view sat together.
         var slices = 0
+        /// Share of the chunk's idle window the main run loop slept.
+        var sleepShare = 1.0
         /// SwiftUI faults logged while every view settled together.
         var unattributedFaults = 0
     }
@@ -74,10 +76,12 @@ enum RenderChild {
                     first: double(f["first"]), publishes: Int(f["publishes"] ?? "") ?? 0, top: f["top"] ?? "",
                     cpuShare: double(f["cpu"]), relayouts: Int(f["relayouts"] ?? "") ?? 0,
                     ticks: Int(f["ticks"] ?? "") ?? 0, peakPublishes: Int(f["peakpub"] ?? "") ?? 0,
-                    peakCPU: double(f["peakcpu"]), alone: f["alone"] == "1")
+                    peakCPU: double(f["peakcpu"]), alone: f["alone"] == "1",
+                    sleepShare: f["sleep"] == nil ? 1 : double(f["sleep"]))
             case "CHUNK":
                 report.unattributedCPU = double(f["unattributed"])
                 report.slices = Int(f["slices"] ?? "") ?? 0
+                report.sleepShare = f["sleep"] == nil ? 1 : double(f["sleep"])
             case "SIDE": report.side[words[1]] = Int(words.count > 2 ? words[2] : "") ?? 0
             case "HANG", "LOOP":
                 report.death = body
@@ -158,9 +162,9 @@ enum RenderChild {
                 hosts.append(host)
             }
             emit("SETTLE")
-            let (perView, unattributed, slices) = settleAndMeasure(hosts, probe, attribute: true)
+            let (perView, unattributed, slices, sleep) = settleAndMeasure(hosts, probe, attribute: true)
             for (host, m) in zip(hosts, perView) { emit("HOST \(host.index) first=\(fmt(host.first)) \(m)") }
-            emit("CHUNK unattributed=\(fmt(unattributed)) slices=\(slices)")
+            emit("CHUNK unattributed=\(fmt(unattributed)) slices=\(slices) sleep=\(fmt(sleep))")
             for host in hosts { host.tearDown() }
             probe.pump(0.05, hosts: [])
             for world in worlds {
@@ -176,7 +180,7 @@ enum RenderChild {
                 probe.watch(world.observed + [("FixtureCounter", counter.objectWillChange)], view: k)
                 let host = mount(group.cases[k], world, counter, probe, index: k)
                 emit("DONE \(k)")
-                let (perView, _, _) = settleAndMeasure([host], probe, attribute: false)
+                let (perView, _, _, _) = settleAndMeasure([host], probe, attribute: false)
                 emit("HOST \(k) first=\(fmt(host.first)) \(perView[0])")
                 host.tearDown()
                 probe.pump(0.03, hosts: [])
@@ -242,7 +246,7 @@ enum RenderChild {
     /// what's left over is returned as unattributed. Alone, a view's CPU is
     /// the whole thread's.
     static func settleAndMeasure(_ hosts: [RenderHost], _ probe: RenderProbe,
-                                 attribute: Bool) -> (perView: [String], unattributed: Double, slices: Int) {
+                                 attribute: Bool) -> (perView: [String], unattributed: Double, slices: Int, sleep: Double) {
         probe.phase("settle", view: attribute ? -1 : hosts[0].index)
         probe.pump(SettingsRenderTests.Limits.settleSeconds, hosts: hosts)
         probe.phase("idle", view: attribute ? -1 : hosts[0].index)
@@ -255,10 +259,11 @@ enum RenderChild {
             let quiet = pubA.0 <= pubB.0 ? pubA : pubB
             lines.append("publishes=\(quiet.0) top=\(quiet.1.isEmpty ? "-" : quiet.1) cpu=\(fmt(min(cpuA, cpuB))) "
                          + "relayouts=\(min(a.relayouts[i], b.relayouts[i])) ticks=\(min(a.ticks, b.ticks)) "
-                         + "peakpub=\(max(pubA.0, pubB.0)) peakcpu=\(fmt(max(cpuA, cpuB))) alone=\(attribute ? 0 : 1)")
+                         + "peakpub=\(max(pubA.0, pubB.0)) peakcpu=\(fmt(max(cpuA, cpuB))) alone=\(attribute ? 0 : 1) "
+                         + "sleep=\(fmt(max(a.sleepShare, b.sleepShare)))")
         }
         let rest = { (w: RenderProbe.Window) in max(0, w.threadCPU - w.layoutCPU.reduce(0, +)) / w.seconds }
-        return (lines, min(rest(a), rest(b)), min(a.ticks, b.ticks))
+        return (lines, min(rest(a), rest(b)), min(a.ticks, b.ticks), max(a.sleepShare, b.sleepShare))
     }
 
     nonisolated static func fmt(_ x: Double) -> String { String(format: "%.4f", x) }
@@ -315,6 +320,32 @@ final class RenderProbe: @unchecked Sendable {
     /// The most any view published in one phase (the legit ceiling).
     private(set) var peakPhasePublishes = 0
     private var subscriptions: [AnyCancellable] = []
+    /// Main-thread run-loop sleep, measured between its before/after-waiting
+    /// observers (main thread only). A settled view lets the loop sleep most
+    /// of each slice; a loop never does. Unlike CPU share or slice counts this
+    /// holds on a machine too busy to give the loop much CPU: a starved
+    /// thread waits in the scheduler's queue, which isn't run-loop sleep.
+    private var sleepStart: UInt64 = 0
+    private var sleptNanos: UInt64 = 0
+    private var sleepObserver: CFRunLoopObserver?
+
+    @MainActor
+    private func observeSleep() {
+        guard sleepObserver == nil else { return }
+        let activities = CFRunLoopActivity.beforeWaiting.rawValue | CFRunLoopActivity.afterWaiting.rawValue
+        // Last in order, so the stamp is taken right before the thread sleeps.
+        let observer = CFRunLoopObserverCreateWithHandler(nil, activities, true, Int.max) { [self] _, activity in
+            let now = DispatchTime.now().uptimeNanoseconds
+            if activity == .beforeWaiting {
+                sleepStart = now
+            } else if sleepStart > 0 {
+                sleptNanos += now - sleepStart
+                sleepStart = 0
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        sleepObserver = observer
+    }
 
     func startWatchdog() {
         let limit = UInt64(SettingsRenderTests.Limits.hangSeconds * 1e9)
@@ -401,6 +432,8 @@ final class RenderProbe: @unchecked Sendable {
         var ticks: Int
         var relayouts: [Int]
         var layoutCPU: [Double]
+        /// Share of the window the main run loop slept.
+        var sleepShare: Double
         /// Per view: its env's objectWillChange, and the busiest objects.
         var publishes: [Int: (Int, String)]
     }
@@ -409,9 +442,13 @@ final class RenderProbe: @unchecked Sendable {
     @MainActor
     func window(_ hosts: [RenderHost]) -> Window {
         lock.lock(); counts = [:]; lock.unlock()
+        observeSleep()
+        sleptNanos = 0
+        sleepStart = 0
         let cpu0 = Self.threadCPU(), wall0 = Date()
         let p = pump(SettingsRenderTests.Limits.idleSeconds, hosts: hosts)
         let threadCPU = Self.threadCPU() - cpu0, seconds = Date().timeIntervalSince(wall0)
+        let sleepShare = min(1, Double(sleptNanos) / 1e9 / max(seconds, 1e-6))
         lock.lock()
         let snapshot = counts
         lock.unlock()
@@ -421,7 +458,7 @@ final class RenderProbe: @unchecked Sendable {
             publishes[view] = (objects.values.reduce(0, +), top.joined(separator: ","))
         }
         return Window(seconds: seconds, threadCPU: threadCPU, ticks: p.ticks, relayouts: p.relayouts,
-                      layoutCPU: p.layoutCPU, publishes: publishes)
+                      layoutCPU: p.layoutCPU, sleepShare: sleepShare, publishes: publishes)
     }
 
     static func threadCPU() -> Double {
