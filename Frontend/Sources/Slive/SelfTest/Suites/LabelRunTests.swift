@@ -43,6 +43,16 @@ enum LabelRunTests {
                 && !LabelScope.needsALook(sample("k", model: "consensus", human: "ok", agreement: 0.2))
                 && !LabelScope.needsALook(sample("l", model: "gemini-2.5-flash")),
               "low-agreement consensus labels (and only those) need a look")
+        var primed = sample("m", model: "consensus · gpt-transcribe", agreement: 0.81)
+        primed.llmUnconfirmed = ["in", "bedrock", "hive", "netc"]
+        var oneWord = sample("n", model: "consensus · gpt-transcribe", agreement: 0.95)
+        oneWord.llmUnconfirmed = ["claude"]
+        t.check(LabelScope.needsALook(primed) && !LabelScope.needsALook(oneWord),
+              "2+ words only the label's transcriber heard need a look, whatever the agreement")
+        t.equal(LabelScope.lookReason(primed), "Only one transcriber heard: in, bedrock, hive, netc · 81% agreement",
+              "the ear's tooltip names those words")
+        t.equal(LabelScope.lookReason(sample("o", model: "consensus", agreement: 0.7)), "70% agreement",
+              "a plain low-agreement tooltip is unchanged")
 
         // Estimates.
         t.equal(LabelEstimate.audioSeconds(fileBytes: 4_096 + 64_000 * 30), 30,
@@ -162,11 +172,15 @@ enum LabelRunTests {
         let ok = #"{"text":" Ship it. ","chosen":"whisper-1","agreement":0.93,"candidates":{"whisper-1":"Ship it."},"prompt":"p"}"#
         if let result = try? GroundTruthClient.decodeConsensus(Data(ok.utf8)) {
             t.check(result.text == "Ship it." && result.chosen == "whisper-1"
-                    && result.agreement == 0.93 && result.prompt == "p",
+                    && result.agreement == 0.93 && result.prompt == "p" && result.unconfirmed.isEmpty,
                   "consensus reply decodes")
         } else {
             t.check(false, "consensus reply decodes", "decode threw")
         }
+
+        let flagged = #"{"text":"x","chosen":"gpt-transcribe","agreement":0.81,"unconfirmed":["hive","netc"]}"#
+        t.equal((try? GroundTruthClient.decodeConsensus(Data(flagged.utf8)))?.unconfirmed ?? [], ["hive", "netc"],
+              "consensus reply carries the unconfirmed words")
 
         // Write coalescing: a burst of labels is one index rewrite.
         var timers: [@MainActor () -> Void] = []

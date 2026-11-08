@@ -107,12 +107,17 @@ LABEL_QUALITY_REASONS = (
     "label-length-mismatch",
     "label-low-similarity",
     "label-low-agreement",
+    "label-unconfirmed-words",
 )
 
 #: A consensus label whose transcribers agreed less than this is excluded
 #: (Nov 1 2026 challenge: 9 of the 12 clips under it were wrong, carrying a
 #: third of all label errors).
 MIN_LABEL_AGREEMENT = 0.8
+
+#: ...and so is one with this many words only its own transcriber heard
+#: (same value as ``label_consensus.MIN_UNCONFIRMED_WORDS``; a test pins them).
+MIN_UNCONFIRMED_WORDS = 2
 #: Cloud labels need more words than human ones: clips with a 1–3 word label
 #: are mostly mis-fires, and the transcribers got 1 in 3 of their words wrong.
 MIN_CLOUD_LABEL_WORDS = 4
@@ -177,6 +182,8 @@ class StoredSample:
     line_number: int
     #: Consensus labels only: how closely the transcribers agreed (0…1).
     llm_agreement: float | None = None
+    #: Consensus labels only: label words no other transcriber heard.
+    llm_unconfirmed: tuple[str, ...] = ()
     #: Slive Custom 4's step 4: the formatted label, its status
     #: (formatted | unchanged | rejected:<reason> | skipped) and model.
     llm_formatted: str | None = None
@@ -367,6 +374,8 @@ class TrainingStore:
                         reasons.append("label-too-short")
                     if sample.llm_agreement is not None and sample.llm_agreement < MIN_LABEL_AGREEMENT:
                         reasons.append("label-low-agreement")
+                    if len(sample.llm_unconfirmed) >= MIN_UNCONFIRMED_WORDS:
+                        reasons.append("label-unconfirmed-words")
                     reasons.extend(label_quality_issues(label, sample.transcript))
 
                 audio_path, path_error = self._resolve_audio(sample.audio_file)
@@ -485,6 +494,7 @@ def _parse_sample(payload: Any, line_number: int) -> StoredSample:
         llm_model=_optional_string(payload, "llmModel"),
         line_number=line_number,
         llm_agreement=_optional_float(payload, "llmAgreement"),
+        llm_unconfirmed=tuple(w for w in payload.get("llmUnconfirmed") or () if isinstance(w, str)),
         llm_formatted=(_optional_string(payload, "llmFormatted") or "").strip() or None,
         llm_format_status=_optional_string(payload, "llmFormatStatus"),
         llm_format_model=_optional_string(payload, "llmFormatModel"),

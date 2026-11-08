@@ -157,6 +157,32 @@ def choose(candidates: dict[str, str]) -> tuple[str, str, float]:
     return candidates[label_from].strip(), label_from, round(max(0.0, 1.0 - mean), 3)
 
 
+#: A label with at least this many words no other voter heard needs a
+#: listen and stays out of training. Nov 9 2026: gpt-transcribe, primed by
+#: the Custom word "Bedrock", turned "and then fine tune and let's see" into
+#: "in Bedrock, Hive, and NetC" at 81% agreement — over the 0.8 bar, so
+#: only the words themselves gave it away. One lone word is usually a
+#: Custom-word spelling the others can't know ("Claude" vs "cloud").
+MIN_UNCONFIRMED_WORDS = 2
+
+
+def unconfirmed_words(candidates: dict[str, str], chosen: str) -> list[str]:
+    """Words of the label (``candidates[chosen]``) that none of the other
+    candidates contain, in label order, each once — what only the label's
+    transcriber heard. Empty when there is nothing to compare against."""
+    others = [normalize_words(t) for n, t in candidates.items() if n != chosen]
+    if chosen not in candidates or not others:
+        return []
+    heard = set().union(*others)
+    seen: set[str] = set()
+    solo: list[str] = []
+    for word in normalize_words(candidates[chosen]):
+        if word not in heard and word not in seen:
+            seen.add(word)
+            solo.append(word)
+    return solo
+
+
 # ---------------------------------------------------------------------------
 # Network
 # ---------------------------------------------------------------------------
@@ -252,7 +278,7 @@ async def label(
     base_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Label one clip by consensus. Returns ``{text, chosen, agreement,
-    candidates, prompt}``; raises ``LabelFatalError`` on a key problem and
+    unconfirmed, candidates, prompt}``; raises ``LabelFatalError`` on a key problem and
     ``ValueError`` when neither hosted transcriber produced text."""
     if not api_key:
         raise LabelFatalError("auth", "No OpenAI key — add it in Models → OpenAI.")
@@ -309,6 +335,7 @@ async def label(
         "text": text,
         "chosen": chosen,
         "agreement": agreement,
+        "unconfirmed": unconfirmed_words(candidates, chosen),
         "candidates": candidates,
         "prompt": sent,
     }

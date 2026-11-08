@@ -61,6 +61,10 @@ enum LabelScope {
     static let consensusTag = "consensus"
     /// Below this the transcribers disagreed enough that a human should listen.
     static let lowAgreement = 0.8
+    /// ...or when this many label words were heard by its transcriber alone
+    /// (backend `MIN_UNCONFIRMED_WORDS`; Nov 9: a Custom word primed
+    /// "in Bedrock, Hive, and NetC" at 81% agreement).
+    static let minUnconfirmedWords = 2
 
     static func modelTag(chosen: String) -> String {
         chosen.isEmpty ? consensusTag : "\(consensusTag) · \(chosen)"
@@ -78,7 +82,18 @@ enum LabelScope {
 
     static func needsALook(_ sample: EditSample) -> Bool {
         sample.finalText.isEmpty && isConsensus(sample)
-            && (sample.llmAgreement ?? 1) < lowAgreement
+            && ((sample.llmAgreement ?? 1) < lowAgreement || hasUnconfirmedWords(sample))
+    }
+
+    static func hasUnconfirmedWords(_ sample: EditSample) -> Bool {
+        (sample.llmUnconfirmed?.count ?? 0) >= minUnconfirmedWords
+    }
+
+    /// The ear icon's tooltip: what the transcribers disagreed on.
+    static func lookReason(_ sample: EditSample) -> String {
+        let agreement = "\(Int(((sample.llmAgreement ?? 0) * 100).rounded()))% agreement"
+        guard hasUnconfirmedWords(sample), let words = sample.llmUnconfirmed else { return agreement }
+        return "Only one transcriber heard: " + words.joined(separator: ", ") + " · " + agreement
     }
 
     /// Slive Custom 4's scope: has audio, no human label, and either no
@@ -534,12 +549,15 @@ final class LabelRun: ObservableObject {
                                 hotwords: String, coalesced: Bool) {
         store.setLLMTranscript(id: id, text: Self.labelText(result, hotwords: hotwords),
                                model: LabelScope.modelTag(chosen: result.chosen),
-                               agreement: result.agreement, coalesced: coalesced)
+                               agreement: result.agreement,
+                               unconfirmed: result.unconfirmed.isEmpty ? nil : result.unconfirmed,
+                               coalesced: coalesced)
         TranscriptDiffCache.remove(id: id)
         agreementSum += result.agreement
         agreementCount += 1
         agreementMean = agreementSum / Double(agreementCount)
-        if result.agreement < LabelScope.lowAgreement { lowAgreementCount += 1 }
+        if result.agreement < LabelScope.lowAgreement
+            || result.unconfirmed.count >= LabelScope.minUnconfirmedWords { lowAgreementCount += 1 }
         lastPrompt = result.prompt
         lastPromptMeta = "Slive Custom · \(result.chosen)"
     }

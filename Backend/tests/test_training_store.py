@@ -292,3 +292,22 @@ def test_gate_drops_low_agreement_and_short_cloud_labels(tmp_path: Path) -> None
     assert "label-low-agreement" in reasons["doubted"]
     assert "label-too-short" in reasons["short"]
     assert "trusted" not in reasons and "human" not in reasons   # 3-word human labels still train
+
+
+def test_gate_drops_labels_with_unconfirmed_words(tmp_path: Path) -> None:
+    root = tmp_path / "training"
+    spoken = "please check the helm charts in the staging cluster"
+    for seconds, name in enumerate(("primed", "one_word"), start=1):
+        _write_wav(root / "audio" / f"{name}.wav", seconds=float(seconds))
+    _write_rows(root, [
+        _row("primed", transcript=spoken, llmTranscript=spoken, llmModel="consensus · gpt-transcribe",
+             llmAgreement=0.9, llmUnconfirmed=["bedrock", "hive"]),
+        _row("one_word", transcript=spoken, llmTranscript=spoken, llmModel="consensus · gpt-transcribe",
+             llmAgreement=0.9, llmUnconfirmed=["claude"]),
+    ])
+
+    report = TrainingStore(root).inspect(label_policy=LabelPolicy.BEST_AVAILABLE)
+
+    reasons = {item.id: item.reasons for item in report.rejected_samples}
+    assert "label-unconfirmed-words" in reasons["primed"]
+    assert "one_word" not in reasons

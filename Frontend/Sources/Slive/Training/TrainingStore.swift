@@ -35,6 +35,10 @@ struct EditSample: Codable, Identifiable {
     /// values mark the rows worth a listen. nil for every other label —
     /// and omitted from the JSON line then, so older rows are unchanged.
     var llmAgreement: Double?
+    /// For consensus labels: words only the label's transcriber heard —
+    /// two or more mark the row for a listen and keep it out of training.
+    /// nil (omitted) for every other label and for rows labeled before Nov 9.
+    var llmUnconfirmed: [String]?
     /// Slive Custom 4's format step: the formatted label (the plain one
     /// when it wasn't kept), its status (`formatted` | `unchanged` |
     /// `rejected:<reason>` | `skipped`) and model. nil = not formatted yet,
@@ -280,7 +284,8 @@ final class TrainingStore: ObservableObject {
     /// rewrite the whole index, so the write folds into one flush at most
     /// `IndexWriteCoalescer.interval` later (and at the run's end).
     func setLLMTranscript(id: String, text: String, model: String,
-                          agreement: Double? = nil, coalesced: Bool = false) {
+                          agreement: Double? = nil, unconfirmed: [String]? = nil,
+                          coalesced: Bool = false) {
         guard let idx = samples.firstIndex(where: { $0.id == id }) else { return }
         // A new label makes its old formatting stale.
         if samples[idx].llmTranscript != text {
@@ -291,6 +296,7 @@ final class TrainingStore: ObservableObject {
         samples[idx].llmTranscript = text
         samples[idx].llmModel = model
         samples[idx].llmAgreement = agreement
+        samples[idx].llmUnconfirmed = unconfirmed
         if samples[idx].id == latest?.id { latest = samples[idx] }
         if coalesced { indexWrites.markDirty() } else { rewriteIndex() }
     }

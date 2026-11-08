@@ -268,7 +268,7 @@ struct DataTableCard: View {
                     Image(systemName: "ear.fill")
                         .font(SliveTheme.tagFont)
                         .foregroundStyle(SliveTheme.warn)
-                        .help("\(Int(((sample.llmAgreement ?? 0) * 100).rounded()))% agreement")
+                        .help(LabelScope.lookReason(sample))
                 }
                 if sample.finalText.isEmpty, sample.llmTranscript != nil {
                     // Redo the model label. A human edit, once present, remains

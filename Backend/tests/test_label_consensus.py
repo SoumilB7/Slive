@@ -116,6 +116,34 @@ def test_a_lone_label_has_no_agreement() -> None:
     assert (chosen, agreement) == ("whisper-1", 0.0)
 
 
+def test_unconfirmed_words_catch_a_primed_ending() -> None:
+    # Nov 9 2026: "Bedrock" was a Custom word; 81% agreement hid the rest.
+    typed = ("Hey can we run this 4 step on the existing ones and can you give me if it's okay "
+             "then we can run on other examples and get them populated and then fine tune and let's see.")
+    candidates = {
+        "gpt-transcribe": typed.replace("and then fine tune and let's see.", "in Bedrock, Hive, and NetC."),
+        "whisper-1": typed,
+        "typed": typed,
+    }
+    _, chosen, agreement = lc.choose(candidates)
+    assert agreement > 0.8   # the agreement bar alone lets it through
+    assert lc.unconfirmed_words(candidates, chosen) == ["in", "bedrock", "hive", "netc"]
+
+
+def test_unconfirmed_words_ignore_case_punctuation_and_one_voter() -> None:
+    assert lc.unconfirmed_words({"gpt-transcribe": "Okay, open z-docs.", "whisper-1": "okay open z docs"},
+                                "gpt-transcribe") == []
+    # A word either voter heard is confirmed.
+    assert lc.unconfirmed_words({"gpt-transcribe": "Ask Claude", "whisper-1": "ask cloud", "typed": "Ask Claude"},
+                                "gpt-transcribe") == []
+    assert lc.unconfirmed_words({"whisper-1": "Thank you."}, "whisper-1") == []
+
+
+def test_store_gate_uses_the_same_unconfirmed_threshold() -> None:
+    from flowy.training import store
+    assert store.MIN_UNCONFIRMED_WORDS == lc.MIN_UNCONFIRMED_WORDS
+
+
 def test_normalize_words_treats_hyphens_as_spaces() -> None:
     assert lc.normalize_words("Sub-agent’s GPT-6, OK?") == ["sub", "agent's", "gpt", "6", "ok"]
 

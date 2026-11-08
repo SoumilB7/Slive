@@ -119,6 +119,8 @@ struct GroundTruthClient {
         let chosen: String
         /// 0…1 — how closely the candidates agreed.
         let agreement: Double
+        /// Label words neither other voter heard (backend `unconfirmed_words`).
+        let unconfirmed: [String]
         let candidates: [String: String]
         /// The prompt + keywords gpt-transcribe was given.
         let prompt: String?

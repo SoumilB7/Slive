@@ -87,6 +87,7 @@ enum LabelsAPI {
             let text: String?
             let chosen: String?
             let agreement: Double?
+            let unconfirmed: [String]?
             let candidates: [String: String]?
             let prompt: String?
             let error: String?
@@ -110,6 +111,7 @@ enum LabelsAPI {
             }
             return GroundTruthClient.ConsensusResult(
                 text: text, chosen: reply.chosen ?? "", agreement: reply.agreement ?? 0,
+                unconfirmed: reply.unconfirmed ?? [],
                 candidates: reply.candidates ?? [:], prompt: reply.prompt)
         }
     }
