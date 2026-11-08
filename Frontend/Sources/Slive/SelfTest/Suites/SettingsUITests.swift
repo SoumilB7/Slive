@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SliveTestKit
 
@@ -79,19 +80,36 @@ enum SettingsUITests {
 
     private static func permissions(_ t: inout Checks) {
         var tapWorks = false
-        let p = PermissionsModel(hotkeyActive: { tapWorks })
+        var grants = PermissionsModel.Grants(mic: false, inputMonitoring: false, accessibility: false)
+        let p = PermissionsModel(hotkeyActive: { tapWorks }, probe: { grants })
+        p.refresh()
         t.equal(p.grantedCount, 0, "permissions: none granted")
         t.check(p.needsAttention, "permissions: missing ones need attention")
-        p.micGranted = true
-        p.accessibilityGranted = true
+        grants.mic = true
+        grants.accessibility = true
+        p.refresh()
         t.equal(p.grantedCount, 2, "permissions: two of three")
         t.check(p.needsAttention, "permissions: two of three still needs attention")
         tapWorks = true
+        p.refresh()
         t.equal(p.grantedCount, PermissionsModel.required, "permissions: a working tap counts as Input Monitoring")
         t.check(!p.needsAttention, "permissions: all granted, no dot")
         tapWorks = false
-        p.inputMonitoringGranted = true
+        grants.inputMonitoring = true
+        p.refresh()
         t.check(p.inputMonitoringWorks && !p.needsAttention, "permissions: granted Input Monitoring counts")
+
+        // The 1 s poll publishes only what changed, but a tap that starts
+        // working mid-poll is a change too.
+        var fires = 0
+        let watch = p.objectWillChange.sink { _ in fires += 1 }
+        p.refresh()
+        t.equal(fires, 0, "permissions: an unchanged poll publishes nothing")
+        grants.inputMonitoring = false
+        tapWorks = true
+        p.refresh()
+        watch.cancel()
+        t.check(fires > 0 && p.inputMonitoringWorks, "permissions: a tap that starts working is published")
     }
 
     // MARK: - Window state

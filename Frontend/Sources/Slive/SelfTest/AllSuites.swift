@@ -43,5 +43,6 @@ enum AllSuites {
         ChatSessionTests.suite,
         DictationModeTests.suite,
         SelfTestLayoutTests.suite,
+        SettingsRenderTests.suite,
     ]
 }

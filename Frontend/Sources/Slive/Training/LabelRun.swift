@@ -203,7 +203,7 @@ enum LabelEstimate {
 /// Settings. The page only observes.
 @MainActor
 final class LabelRun: ObservableObject {
-    static let shared = LabelRun()
+    static let shared = LabelRun(store: .shared, settings: .shared, providers: .shared)
 
     /// The one-click to-do list and its price, refreshed as samples change.
     struct Scope: Equatable {
@@ -250,9 +250,9 @@ final class LabelRun: ObservableObject {
     /// Static estimate for this run, used until throughput is measurable.
     @Published private(set) var estimatedSeconds: Double = 0
 
-    private let store = TrainingStore.shared
-    private let settings = Settings.shared
-    private let providers = ProviderStore.shared
+    private let store: TrainingStore
+    private let settings: Settings
+    private let providers: ProviderStore
     private var task: Task<Void, Never>?
     private var activity: NSObjectProtocol?
     private var lastFailure: String?
@@ -264,7 +264,11 @@ final class LabelRun: ObservableObject {
     /// New dictations waiting for their automatic label (behind any run).
     private var autoQueue: [String] = []
 
-    private init() {
+    /// The app uses `shared`; the Settings render self-test passes its own.
+    init(store: TrainingStore, settings: Settings, providers: ProviderStore) {
+        self.store = store
+        self.settings = settings
+        self.providers = providers
         store.$samples
             .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshScope() }

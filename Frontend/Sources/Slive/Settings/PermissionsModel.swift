@@ -9,6 +9,9 @@ final class PermissionsModel: ObservableObject {
     @Published var micGranted = false
     @Published var inputMonitoringGranted = false
     @Published var accessibilityGranted = false
+    /// The event tap has delivered a keystroke (polled with the grants, so
+    /// the status updates when it starts working).
+    @Published private(set) var hotkeyWorks = false
 
     /// Input Monitoring, Microphone, Accessibility.
     static let required = 3
@@ -18,13 +21,30 @@ final class PermissionsModel: ObservableObject {
     /// Monitoring works even when IOHIDCheckAccess's cached answer says no.
     private let hotkeyActive: () -> Bool
 
-    init(hotkeyActive: @escaping () -> Bool = { false }) {
+    /// What macOS says right now: microphone, Input Monitoring, Accessibility.
+    struct Grants {
+        var mic: Bool
+        var inputMonitoring: Bool
+        var accessibility: Bool
+
+        static func system() -> Grants {
+            Grants(mic: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+                   inputMonitoring: IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted,
+                   accessibility: AXIsProcessTrusted())
+        }
+    }
+
+    /// Reads the grants (fixed in the Settings render self-test).
+    private let probe: () -> Grants
+
+    init(hotkeyActive: @escaping () -> Bool = { false }, probe: @escaping () -> Grants = Grants.system) {
         self.hotkeyActive = hotkeyActive
+        self.probe = probe
     }
 
     /// Input Monitoring as the user experiences it: granted, or demonstrably
     /// working.
-    var inputMonitoringWorks: Bool { inputMonitoringGranted || hotkeyActive() }
+    var inputMonitoringWorks: Bool { inputMonitoringGranted || hotkeyWorks }
 
     var grantedCount: Int {
         [inputMonitoringWorks, micGranted, accessibilityGranted].filter { $0 }.count
@@ -49,10 +69,15 @@ final class PermissionsModel: ObservableObject {
         timer = nil
     }
 
+    /// Publishes only what changed: an unchanged poll re-rendered the whole
+    /// Settings window every second (the Settings render self-test).
     func refresh() {
-        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        inputMonitoringGranted = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
-        accessibilityGranted = AXIsProcessTrusted()
+        let grants = probe()
+        if micGranted != grants.mic { micGranted = grants.mic }
+        if inputMonitoringGranted != grants.inputMonitoring { inputMonitoringGranted = grants.inputMonitoring }
+        if accessibilityGranted != grants.accessibility { accessibilityGranted = grants.accessibility }
+        let tap = hotkeyActive()
+        if hotkeyWorks != tap { hotkeyWorks = tap }
     }
 
     // MARK: - Requests

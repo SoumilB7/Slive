@@ -14,9 +14,13 @@ final class LocalModelsStore: ObservableObject {
 
     private let credentials: CredentialStore
     private let client = LocalModelsClient()
+    /// Reads the on-disk cache (a fixed list in the Settings render self-test).
+    private let scan: @Sendable () -> [LocalCachedModel]
 
-    init(credentials: CredentialStore) {
+    init(credentials: CredentialStore,
+         scan: @escaping @Sendable () -> [LocalCachedModel] = { LocalCachedModel.scanCache() }) {
         self.credentials = credentials
+        self.scan = scan
     }
 
     /// Repo ids worth offering in a picker: downloads above the size floor
@@ -30,7 +34,8 @@ final class LocalModelsStore: ObservableObject {
         loading = true
         error = nil
         defer { loading = false }
-        models = await Task.detached(priority: .utility) { LocalCachedModel.scanCache() }.value
+        let scan = scan
+        models = await Task.detached(priority: .utility) { scan() }.value
     }
 
     /// Download `repoID` into the standard HF cache via the backend, polling the

@@ -67,7 +67,7 @@ struct AssistantSettingsView: View {
 
     private var shortcutCard: some View {
         SettingsCard("SHORTCUT") {
-            HotkeyRecorderView(target: .assistant, title: "Hold to ask")
+            HotkeyRecorderView(settings: settings, target: .assistant, title: "Hold to ask")
             if settings.assistantHotkey == nil {
                 Label("No shortcut set.", systemImage: "exclamationmark.triangle.fill")
                     .font(SliveTheme.captionFont)

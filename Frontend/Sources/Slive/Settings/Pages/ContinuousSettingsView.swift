@@ -51,14 +51,14 @@ struct ContinuousSettingsView: View {
     private var shortcutCard: some View {
         SettingsCard("KEYS") {
             HStack(alignment: .center, spacing: 12) {
-                HotkeyRecorderView(target: .stream, title: "Hold to type")
+                HotkeyRecorderView(settings: settings, target: .stream, title: "Hold to type")
                     .opacity(settings.streamHoldOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.streamHoldOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
             }
             CardDivider()
             HStack(alignment: .center, spacing: 12) {
-                HotkeyRecorderView(target: .streamToggle, title: "Tap to toggle")
+                HotkeyRecorderView(settings: settings, target: .streamToggle, title: "Tap to toggle")
                     .opacity(settings.streamToggleOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.streamToggleOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)

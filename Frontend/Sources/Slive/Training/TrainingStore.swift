@@ -75,7 +75,7 @@ final class TrainingStore: ObservableObject {
     var count: Int { samples.count }
 
     /// The configured cap in bytes.
-    var maxBytes: Int64 { Int64(max(0, Settings.shared.captureMaxGB) * 1_073_741_824) }
+    var maxBytes: Int64 { Int64(max(0, captureMaxGB()) * 1_073_741_824) }
     /// True once usage has reached the cap — capture pauses here.
     var isOverLimit: Bool { totalBytes >= maxBytes }
     /// 0…1 fraction of the cap in use (for the usage bar).
@@ -90,8 +90,15 @@ final class TrainingStore: ObservableObject {
     /// The append-only sample index (`samples.jsonl`).
     private let index: JSONLFileStore<EditSample>
 
-    private init() {
-        root = AppSupport.trainingDirectory
+    /// The cap setting, read live.
+    private let captureMaxGB: () -> Double
+
+    /// The app uses `shared`. The Settings render self-test points one at a
+    /// temp folder of fixture samples and its own settings.
+    init(root: URL = AppSupport.trainingDirectory,
+         captureMaxGB: @escaping () -> Double = { Settings.shared.captureMaxGB }) {
+        self.root = root
+        self.captureMaxGB = captureMaxGB
         audioDir = root.appendingPathComponent("audio", isDirectory: true)
         indexFile = root.appendingPathComponent("samples.jsonl", isDirectory: false)
         index = JSONLFileStore(url: indexFile, label: "training index")

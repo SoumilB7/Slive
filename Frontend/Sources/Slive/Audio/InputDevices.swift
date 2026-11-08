@@ -59,6 +59,13 @@ final class InputDevices: ObservableObject {
         }
     }
 
+    /// A fixed list with no Core Audio listeners — the Settings render
+    /// self-test's microphones.
+    init(devices: [Device], systemDefault: Device?) {
+        self.devices = devices
+        self.systemDefault = systemDefault
+    }
+
     func refresh() {
         let all = Self.enumerate()
         let defaultID = Self.defaultInputID()

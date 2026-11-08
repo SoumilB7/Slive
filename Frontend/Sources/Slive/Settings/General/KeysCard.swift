@@ -9,7 +9,7 @@ struct KeysCard: View {
             // Hold: press-and-speak. Its switch can turn the hold bind off
             // entirely (toggle-only users).
             HStack(alignment: .center, spacing: 12) {
-                HotkeyRecorderView(target: .dictation, title: "Hold to talk")
+                HotkeyRecorderView(settings: settings, target: .dictation, title: "Hold to talk")
                     .opacity(settings.dictateHoldOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.dictateHoldOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)
@@ -17,7 +17,7 @@ struct KeysCard: View {
             CardDivider()
             // Toggle: tap to start, tap again to stop.
             HStack(alignment: .center, spacing: 12) {
-                HotkeyRecorderView(target: .dictationToggle, title: "Tap to toggle")
+                HotkeyRecorderView(settings: settings, target: .dictationToggle, title: "Tap to toggle")
                     .opacity(settings.dictateToggleOn ? 1 : 0.45)
                 Toggle("", isOn: $settings.dictateToggleOn)
                     .labelsHidden().toggleStyle(.switch).tint(SliveTheme.accent)

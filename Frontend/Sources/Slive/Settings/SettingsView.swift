@@ -21,8 +21,11 @@ struct SettingsView: View {
     @State private var page: SettingsPageID = .general
     @State private var width: CGFloat = SettingsWindowState.initialWidth()
 
-    init(env: SettingsEnv) {
+    /// `page`: where the window opens (General in the app; each page in the
+    /// Settings render self-test).
+    init(env: SettingsEnv, page: SettingsPageID = .general) {
         self.env = env
+        _page = State(initialValue: page)
         _settings = ObservedObject(wrappedValue: env.settings)
         _permissions = ObservedObject(wrappedValue: env.permissions)
         _history = ObservedObject(wrappedValue: env.history)

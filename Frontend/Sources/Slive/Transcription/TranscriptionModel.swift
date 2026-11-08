@@ -40,10 +40,13 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
 
     // MARK: - Parts
 
-    private let modelBasket = ModelBasket.standard
-    private let residency = ResidencyManager(
-        policy: { ResidencyPolicy(Settings.shared.resolvedSpeedTier) },
-        warmUpAudio: { AudioClip.warmUp })
+    private let modelBasket: ModelBasket
+    private let residency: ResidencyManager
+    /// Reads the installed fine-tunes from disk.
+    private let loadCustomModels: () -> [CustomWhisperModel]
+    /// Replaces every engine's storage and loader (the Settings render
+    /// self-test: no real model is ever read, fetched or loaded there).
+    private let engineOverride: ((String) -> (storage: ModelStorage, loader: ModelLoader))?
     private lazy var whisperStorage = WhisperStorage(basket: modelBasket) { [unowned self] refresh in
         if refresh { self.refreshCustomModels() }
         return self.customModels
@@ -62,6 +65,10 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
     }
 
     private func engine(for model: String) -> EngineParts {
+        if let engineOverride {
+            let parts = engineOverride(model)
+            return EngineParts(storage: parts.storage, loader: parts.loader)
+        }
         switch SpeechEngine.of(model).kind {
         case .whisper: return EngineParts(storage: whisperStorage, loader: WhisperLoader(storage: whisperStorage))
         case .parakeet: return EngineParts(storage: parakeetStorage, loader: ParakeetLoader(storage: parakeetStorage))
@@ -70,7 +77,17 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
 
     private func storage(for model: String) -> ModelStorage { engine(for: model).storage }
 
-    private init() {
+    /// The app uses `shared` (every default). The Settings render self-test
+    /// builds its own on a temp basket, with fixture fine-tunes, a fixed
+    /// policy and fake engines.
+    init(basket: ModelBasket = .standard,
+         customModels: @escaping () -> [CustomWhisperModel] = CustomWhisperModelRegistry.load,
+         policy: @escaping () -> ResidencyPolicy = { ResidencyPolicy(Settings.shared.resolvedSpeedTier) },
+         engines: ((String) -> (storage: ModelStorage, loader: ModelLoader))? = nil) {
+        modelBasket = basket
+        loadCustomModels = customModels
+        engineOverride = engines
+        residency = ResidencyManager(policy: policy, warmUpAudio: { AudioClip.warmUp })
         refreshCustomModels()
         residency.onKeepsModelsReasonChange = { [unowned self] in self.featherKeepsModelsReason = $0 }
         residency.isLiveRunning = { [unowned self] in self.live != nil }
@@ -116,7 +133,7 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
     /// — an endless render loop that froze a fresh install at 100% CPU the
     /// moment Settings showed the turbo suggestion (Nov 13, tiny.en Mac).
     func refreshCustomModels() {
-        let loaded = CustomWhisperModelRegistry.load()
+        let loaded = loadCustomModels()
         if loaded != customModels { customModels = loaded }
     }
 

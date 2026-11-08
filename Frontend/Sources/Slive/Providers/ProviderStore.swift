@@ -18,18 +18,21 @@ final class ProviderStore: ObservableObject {
     let local: LocalModelsStore
     let modelLists: ModelListCache
 
-    private let settings = Settings.shared
+    private let settings: Settings
     private var forwarding: Set<AnyCancellable> = []
 
     /// Bumped on any credential change so key pills refresh wherever they live.
     @Published private(set) var keyEdition = 0
 
-    private init() {
-        let credentials = CredentialStore.shared
-        let local = LocalModelsStore(credentials: credentials)
+    /// The app uses `shared`. The Settings render self-test passes in-memory
+    /// settings and secrets and a fixed Hugging Face cache listing.
+    init(settings: Settings = .shared, credentials: CredentialStore = .shared,
+         scanLocalCache: @escaping @Sendable () -> [LocalCachedModel] = { LocalCachedModel.scanCache() }) {
+        let local = LocalModelsStore(credentials: credentials, scan: scanLocalCache)
+        self.settings = settings
         self.credentials = credentials
         self.local = local
-        modelLists = ModelListCache(settings: .shared, credentials: credentials, localModels: local)
+        modelLists = ModelListCache(settings: settings, credentials: credentials, localModels: local)
         // Views observe this facade; re-publish the parts' changes.
         local.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }

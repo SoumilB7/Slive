@@ -7,7 +7,8 @@ import CoreGraphics
 /// NSEvent monitor (the Settings window is focused during recording), so it
 /// needs no special permission and never leaks the keys into the app.
 struct HotkeyRecorderView: View {
-    @ObservedObject private var settings = Settings.shared
+    /// The page's env settings (in memory in the Settings render self-test).
+    @ObservedObject var settings: Settings
     /// Which shortcut this recorder edits.
     var target: BindingSlot = .dictation
     var title: String = "Shortcut"

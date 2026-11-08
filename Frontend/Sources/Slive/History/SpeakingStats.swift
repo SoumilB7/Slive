@@ -26,8 +26,12 @@ final class SpeakingStats: ObservableObject {
         static let count = "wpm.count"
     }
 
-    private init() {
-        let d = UserDefaults.standard
+    /// UserDefaults in the app; in-memory in the Settings render self-test.
+    private let store: KeyValueStore
+
+    init(store: KeyValueStore = UserDefaults.standard) {
+        self.store = store
+        let d = store
         lastWPM = d.double(forKey: Keys.last)
         averageWPM = d.double(forKey: Keys.average)
         bestWPM = d.double(forKey: Keys.best)
@@ -66,7 +70,7 @@ final class SpeakingStats: ObservableObject {
     }
 
     private func persist() {
-        let d = UserDefaults.standard
+        let d = store
         d.set(lastWPM, forKey: Keys.last)
         d.set(averageWPM, forKey: Keys.average)
         d.set(bestWPM, forKey: Keys.best)
