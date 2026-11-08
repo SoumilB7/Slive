@@ -79,45 +79,63 @@ struct BalancedSuggestion: View {
     @ObservedObject var transcription: TranscriptionModel
     @Binding var model: String
     @AppStorage("balancedSuggestionDismissed") private var dismissed = false
+    /// Whether turbo is on disk — checked when the card appears and when
+    /// turbo's status moves, never from `body`: that check reads the disk,
+    /// and anything `body` calls must stay cheap and side-effect free
+    /// (Nov 13: it once republished on every read and froze fresh installs).
+    /// Starts false so the card appears and runs its first check; a turbo
+    /// already on disk hides it before it's drawn.
+    @State private var onDisk = false
     static let balanced = ModelCatalog.balanced
 
     var body: some View {
-        if ["tiny.en", "base.en"].contains(model), !dismissed, !transcription.isDownloaded(Self.balanced) {
-            HStack(spacing: 10) {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(SliveTheme.accent)
-                switch transcription.status(for: Self.balanced) {
-                case .downloading(let p):
-                    Text("Downloading large-v3 turbo")
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(SliveTheme.textSecondary)
-                    ProgressView(value: p).frame(maxWidth: .infinity)
-                    Text("\(Int(p * 100))%")
-                        .font(SliveTheme.mono(12))
-                        .foregroundStyle(SliveTheme.accent)
-                        .fixedSize()
-                case .failed(let e):
-                    Text(e)
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(SliveTheme.warnText)
-                        .lineLimit(2)
-                    Spacer(minLength: 0)
-                    downloadButton("Retry")
-                default:
-                    Text("Whisper – large-v3 turbo is far more accurate · 600 MB")
-                        .font(SliveTheme.captionFont)
-                        .foregroundStyle(SliveTheme.textSecondary)
-                    Spacer(minLength: 0)
-                    downloadButton("Download")
-                    Button("Not now") { dismissed = true }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .fixedSize()
-                }
-            }
-            .padding(10)
-            .innerWell()
+        if ["tiny.en", "base.en"].contains(model), !dismissed, !onDisk {
+            suggestion
+                .onAppear(perform: recheck)
+                .onChange(of: transcription.status(for: Self.balanced)) { _, _ in recheck() }
         }
+    }
+
+    private func recheck() {
+        let disk = transcription.isDownloaded(Self.balanced)
+        if disk != onDisk { onDisk = disk }
+    }
+
+    private var suggestion: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(SliveTheme.accent)
+            switch transcription.status(for: Self.balanced) {
+            case .downloading(let p):
+                Text("Downloading large-v3 turbo")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textSecondary)
+                ProgressView(value: p).frame(maxWidth: .infinity)
+                Text("\(Int(p * 100))%")
+                    .font(SliveTheme.mono(12))
+                    .foregroundStyle(SliveTheme.accent)
+                    .fixedSize()
+            case .failed(let e):
+                Text(e)
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.warnText)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                downloadButton("Retry")
+            default:
+                Text("Whisper – large-v3 turbo is far more accurate · 600 MB")
+                    .font(SliveTheme.captionFont)
+                    .foregroundStyle(SliveTheme.textSecondary)
+                Spacer(minLength: 0)
+                downloadButton("Download")
+                Button("Not now") { dismissed = true }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .fixedSize()
+            }
+        }
+        .padding(10)
+        .innerWell()
     }
 
     private func downloadButton(_ title: String) -> some View {
