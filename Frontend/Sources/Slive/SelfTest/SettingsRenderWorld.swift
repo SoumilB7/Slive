@@ -21,6 +21,125 @@ enum RenderState: String, CaseIterable {
     /// base.en dictation with turbo already on disk (the suggestion hides
     /// itself on its first check).
     case turboOnDisk
+
+    /// The state as a setup.
+    var setup: RenderSetup {
+        var s = RenderSetup()
+        let configured = self == .configured
+        if configured {
+            s.stored = ["wpm.last": 212.0, "wpm.average": 176.0, "wpm.best": 241.0, "wpm.count": 58]
+            s.configure = { settings in
+                settings.whisperModel = WhisperCatalog.large
+                settings.continuousModel = ParakeetModel.ultra.rawValue
+                settings.streamHotkey = Settings.suggestedStreamHotkey
+                settings.streamToggleHotkey = Settings.suggestedStreamToggleHotkey
+                settings.assistantHotkey = Settings.defaultAssistantHotkey
+                settings.groundTruthRecipe = .consensus
+                settings.hotwords = "Slive\nParakeet\nWhisperKit"
+                settings.contextPrompt = "Dictating code reviews."
+                settings.verboseLogging = true
+                settings.inputDeviceUID = RenderWorld.headset.uid
+                settings.inputDeviceName = RenderWorld.headset.name
+                settings.speedTier = SpeedTier.allCases.first?.rawValue ?? 0
+                var config = settings.assistantConfig
+                config.fetchedModels[AssistantProvider.openai.rawValue] = ["gpt-5.5", "gpt-5.5-mini", "gpt-audio"]
+                settings.assistantConfig = config
+            }
+            s.secrets = [CredentialStore.account(for: .openai): "sk-render-fixture",
+                         CredentialStore.account(for: .anthropic): "sk-ant-render-fixture",
+                         CredentialStore.hfAccount: "hf_render_fixture"]
+            s.localCache = RenderSetup.cachedModels
+            s.onDisk.formUnion([WhisperCatalog.large, ParakeetModel.ultra.rawValue])
+            s.fineTune = true
+            s.history = RenderWorld.historyTexts
+            s.promptLog = true
+            s.job = .done
+            s.trainingReady = true
+        }
+        switch self {
+        case .turboOnDisk:
+            s.configure = { settings in
+                settings.whisperModel = WhisperCatalog.base
+                settings.echoCancellation = true
+            }
+            s.onDisk.formUnion([WhisperCatalog.base, WhisperCatalog.turbo])
+        case .downloading:
+            s.statuses = [WhisperCatalog.turbo: .downloading(0.42), ParakeetModel.ultra.rawValue: .downloading(0.08)]
+            s.job = .running
+        case .failed:
+            s.statuses = [WhisperCatalog.turbo: .failed("Download failed: The Internet connection appears to be offline."),
+                          ParakeetModel.ultra.rawValue: .failed("Parakeet load timed out.")]
+            s.job = .error
+        default: break
+        }
+        s.training = configured || self == .downloading ? .standard : .empty
+        switch self {
+        case .fresh, .downloading: s.grants = .init(mic: false, inputMonitoring: false, accessibility: false)
+        case .failed: s.grants = .init(mic: true, inputMonitoring: false, accessibility: false)
+        case .dismissed, .configured, .turboOnDisk: s.grants = .init(mic: true, inputMonitoring: true, accessibility: true)
+        }
+        s.balancedDismissed = self == .dismissed || configured
+        s.liveTypingDismissed = s.balancedDismissed
+        return s
+    }
+}
+
+/// Everything one fake Settings environment is built from: a named state's,
+/// or one all-pairs row's (`RenderOptions`).
+struct RenderSetup {
+    /// Written to the in-memory store before `Settings` loads it, so no
+    /// setter (and none of its side effects) runs.
+    var stored: [String: Any] = [:]
+    /// Applied through Settings' setters once it has loaded (the named states).
+    var configure: ((Settings) -> Void)?
+    /// Built up field by field by the options, then stored as one JSON value.
+    var assistantConfig: AssistantConfig?
+    /// Keychain account → value (in memory).
+    var secrets: [String: String] = [:]
+    /// The Hugging Face cache listing.
+    var localCache: [LocalCachedModel] = []
+    /// Speech models on disk (the bundled tiny always is).
+    var onDisk: Set<String> = [WhisperCatalog.tiny]
+    var statuses: [String: ModelStatus] = [:]
+    /// Models whose load doesn't finish while the view is measured.
+    var slowLoads: Set<String> = []
+    /// The fixture fine-tune is installed.
+    var fineTune = false
+    var training: TrainingData = .empty
+    var history: [String] = []
+    var grants = PermissionsModel.Grants(mic: false, inputMonitoring: false, accessibility: false)
+    /// The event tap has delivered a keystroke (Input Monitoring proven).
+    var hotkeyActive = false
+    var promptLog = false
+    var job: JobScript = .none
+    var trainingReady = false
+    var balancedDismissed = false
+    var liveTypingDismissed = false
+    var devices: [InputDevices.Device] = [RenderWorld.builtIn, RenderWorld.headset]
+    var systemDefault: InputDevices.Device? = RenderWorld.builtIn
+
+    static let cachedModels = [
+        LocalCachedModel(repo_id: "mlx-community/Qwen3-8B-4bit", size_bytes: 4_600_000_000, nb_files: 9),
+        LocalCachedModel(repo_id: "openai/whisper-tokenizer", size_bytes: 2_000_000, nb_files: 3),
+    ]
+}
+
+/// How much captured training data the Data and Training pages show.
+enum TrainingData: Int, CaseIterable {
+    case empty = 0
+    /// Under one table page.
+    case small = 6
+    /// Every row kind the table draws, a few pages.
+    case standard = 46
+    /// Many pages.
+    case large = 260
+}
+
+/// What the server says about the latest fine-tune job.
+enum JobScript: String, CaseIterable {
+    case none, queued, running, done, error
+    /// Every route throws (the local server is down).
+    case serverDown
 }
 
 /// One Settings environment built from fakes: in-memory settings and
@@ -31,7 +150,7 @@ enum RenderState: String, CaseIterable {
 /// `@StateObject`s out of reach; their loops show as CPU and run-loop work.)
 @MainActor
 final class RenderWorld {
-    let state: RenderState
+    let setup: RenderSetup
     let env: SettingsEnv
     let settingsStore: CountingStore
     let secrets: CountingSecrets
@@ -56,65 +175,25 @@ final class RenderWorld {
          ("AudioPreviewPlayer", env.player.objectWillChange)]
     }
 
-    init(_ state: RenderState, capabilities: Capabilities, files: RenderFiles, flappingRegistry: Bool = false) {
-        self.state = state
+    init(_ setup: RenderSetup, capabilities: Capabilities, files: RenderFiles, flappingRegistry: Bool = false) {
+        self.setup = setup
 
         // Settings (in memory).
         settingsStore = CountingStore()
-        let configured = state == .configured
-        if configured {
-            settingsStore.set(212.0, forKey: "wpm.last")
-            settingsStore.set(176.0, forKey: "wpm.average")
-            settingsStore.set(241.0, forKey: "wpm.best")
-            settingsStore.set(58, forKey: "wpm.count")
-        }
+        for (key, value) in setup.stored { settingsStore.set(value, forKey: key) }
         let settings = Settings(store: settingsStore)
-        switch state {
-        case .fresh, .dismissed, .downloading, .failed: break
-        case .configured:
-            settings.whisperModel = WhisperCatalog.large
-            settings.continuousModel = ParakeetModel.ultra.rawValue
-            settings.streamHotkey = Settings.suggestedStreamHotkey
-            settings.streamToggleHotkey = Settings.suggestedStreamToggleHotkey
-            settings.assistantHotkey = Settings.defaultAssistantHotkey
-            settings.groundTruthRecipe = .consensus
-            settings.hotwords = "Slive\nParakeet\nWhisperKit"
-            settings.contextPrompt = "Dictating code reviews."
-            settings.verboseLogging = true
-            settings.inputDeviceUID = RenderWorld.headset.uid
-            settings.inputDeviceName = RenderWorld.headset.name
-            settings.speedTier = SpeedTier.allCases.first?.rawValue ?? 0
-            var config = settings.assistantConfig
-            config.fetchedModels[AssistantProvider.openai.rawValue] = ["gpt-5.5", "gpt-5.5-mini", "gpt-audio"]
-            settings.assistantConfig = config
-        case .turboOnDisk:
-            settings.whisperModel = WhisperCatalog.base
-            settings.echoCancellation = true
-        }
+        setup.configure?(settings)
 
         // Keys (never the Keychain).
         secrets = CountingSecrets()
-        if configured {
-            secrets.values[CredentialStore.account(for: .openai)] = "sk-render-fixture"
-            secrets.values[CredentialStore.account(for: .anthropic)] = "sk-ant-render-fixture"
-            secrets.values[CredentialStore.hfAccount] = "hf_render_fixture"
-        }
+        secrets.values = setup.secrets
         let credentials = CredentialStore(secrets: secrets)
-        let cache: [LocalCachedModel] = configured
-            ? [LocalCachedModel(repo_id: "mlx-community/Qwen3-8B-4bit", size_bytes: 4_600_000_000, nb_files: 9),
-               LocalCachedModel(repo_id: "openai/whisper-tokenizer", size_bytes: 2_000_000, nb_files: 3)]
-            : []
+        let cache = setup.localCache
         let providers = ProviderStore(settings: settings, credentials: credentials, scanLocalCache: { cache })
 
         // Speech: fake engines on a temp basket, fixture fine-tunes.
-        var onDisk: Set<String> = [WhisperCatalog.tiny]   // bundled
-        switch state {
-        case .configured: onDisk.formUnion([WhisperCatalog.large, ParakeetModel.ultra.rawValue])
-        case .turboOnDisk: onDisk.formUnion([WhisperCatalog.base, WhisperCatalog.turbo])
-        default: break
-        }
-        engines = FakeEngines(onDisk: onDisk)
-        let fineTune = configured || flappingRegistry ? files.fineTune : nil
+        engines = FakeEngines(onDisk: setup.onDisk, slowLoads: setup.slowLoads)
+        let fineTune = setup.fineTune || flappingRegistry ? files.fineTune : nil
         customModels = FlappingRegistry(models: fineTune.map { [$0] } ?? [], flaps: flappingRegistry)
         let engines = engines
         let registry = customModels
@@ -125,39 +204,25 @@ final class RenderWorld {
                                       primesOnHold: false, warmsAfterLoad: false) },
             engines: { engines.parts(for: $0) })
         engines.owner = transcription
-        switch state {
-        case .downloading:
-            transcription.setStatus(.downloading(0.42), for: WhisperCatalog.turbo)
-            transcription.setStatus(.downloading(0.08), for: ParakeetModel.ultra.rawValue)
-        case .failed:
-            transcription.setStatus(.failed("Download failed: The Internet connection appears to be offline."),
-                                    for: WhisperCatalog.turbo)
-            transcription.setStatus(.failed("Parakeet load timed out."), for: ParakeetModel.ultra.rawValue)
-        default: break
+        for (model, status) in setup.statuses.sorted(by: { $0.key < $1.key }) {
+            transcription.setStatus(status, for: model)
         }
 
         // Captured samples (a temp folder, never Application Support).
-        let trainingRoot = configured || state == .downloading ? files.samples : files.emptyTraining
-        let trainingStore = TrainingStore(root: trainingRoot, captureMaxGB: { settings.captureMaxGB })
+        let trainingStore = TrainingStore(root: files.training(setup.training), captureMaxGB: { settings.captureMaxGB })
         let labelRun = LabelRun(store: trainingStore, settings: settings, providers: providers)
 
         let history = HistoryStore(fileURL: nil)
-        if configured {
-            for text in RenderWorld.historyTexts { history.add(text) }
-        }
+        for text in setup.history { history.add(text) }
 
-        let grants: PermissionsModel.Grants
-        switch state {
-        case .fresh, .downloading: grants = .init(mic: false, inputMonitoring: false, accessibility: false)
-        case .failed: grants = .init(mic: true, inputMonitoring: false, accessibility: false)
-        case .dismissed, .configured, .turboOnDisk: grants = .init(mic: true, inputMonitoring: true, accessibility: true)
-        }
+        let grants = setup.grants
+        settings.hotkeyActive = setup.hotkeyActive
         let permissions = PermissionsModel(hotkeyActive: { settings.hotkeyActive }, probe: { grants })
 
         let promptLog = AssistantPromptLog()
-        if configured { promptLog.record(prompt: "You are Slive's assistant.", provider: "OpenAI", model: "gpt-5.5") }
+        if setup.promptLog { promptLog.record(prompt: "You are Slive's assistant.", provider: "OpenAI", model: "gpt-5.5") }
 
-        trainingClient = ScriptedTrainingClient(state)
+        trainingClient = ScriptedTrainingClient(job: setup.job, ready: setup.trainingReady)
         promptClient = ScriptedPromptClient()
 
         env = SettingsEnv(
@@ -169,8 +234,7 @@ final class RenderWorld {
             labelRun: labelRun,
             history: history,
             stats: SpeakingStats(store: settingsStore),
-            inputDevices: InputDevices(devices: [RenderWorld.builtIn, RenderWorld.headset],
-                                       systemDefault: RenderWorld.builtIn),
+            inputDevices: InputDevices(devices: setup.devices, systemDefault: setup.systemDefault),
             backend: BackendManager(),
             promptLog: promptLog,
             player: AudioPreviewPlayer(),
@@ -180,14 +244,16 @@ final class RenderWorld {
             relaunch: {})
     }
 
+    /// The suggestion cards' dismissals (`@AppStorage`, the standard defaults).
+    static let dismissalKeys = (balanced: "balancedSuggestionDismissed", liveTyping: "liveTypingSuggestionDismissed")
+
     /// The two suggestions' dismissals live in `@AppStorage` (the standard
     /// defaults). Set them in the argument domain — in memory, searched
     /// first, never written to disk.
     func applyDefaults() {
-        let dismissed = state == .dismissed || state == .configured
         var args = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        args["balancedSuggestionDismissed"] = dismissed
-        args["liveTypingSuggestionDismissed"] = dismissed
+        args[Self.dismissalKeys.balanced] = setup.balancedDismissed
+        args[Self.dismissalKeys.liveTyping] = setup.liveTypingDismissed
         UserDefaults.standard.setVolatileDomain(args, forName: UserDefaults.argumentDomain)
     }
 
@@ -198,12 +264,12 @@ final class RenderWorld {
 
     // MARK: - Fixtures
 
-    static let builtIn = InputDevices.Device(id: 91, uid: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone",
-                                             transport: "Built-in", sampleRate: 48_000)
-    static let headset = InputDevices.Device(id: 92, uid: "00-1A-7D-DA-71-13:input", name: "HP H250",
-                                             transport: "Bluetooth", sampleRate: 16_000)
+    nonisolated static let builtIn = InputDevices.Device(id: 91, uid: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone",
+                                                         transport: "Built-in", sampleRate: 48_000)
+    nonisolated static let headset = InputDevices.Device(id: 92, uid: "00-1A-7D-DA-71-13:input", name: "HP H250",
+                                                         transport: "Bluetooth", sampleRate: 16_000)
 
-    static let historyTexts = [
+    nonisolated static let historyTexts = [
         "Ship the settings render check before the release.",
         "Parakeet keeps up when I talk fast, Whisper doesn't.",
         "Remind me to rerun the consensus labels tonight.",
@@ -296,15 +362,15 @@ final class RenderWorld {
 }
 
 /// The files every world in one child reads (never writes): a temp
-/// folder with an empty basket, an empty and a populated training folder,
-/// and a fine-tune. Removed when the child ends.
+/// folder with an empty basket, a training folder per `TrainingData` size
+/// (written when first asked for), and a fine-tune. Removed when the child
+/// ends.
 @MainActor
 final class RenderFiles {
     let root: URL
     let basket: URL
-    let emptyTraining: URL
-    let samples: URL
     let fineTune: CustomWhisperModel?
+    private var trainingRoots: [TrainingData: URL] = [:]
 
     nonisolated static func prefix(_ pid: Int32) -> String { "slive-render-\(pid)-" }
 
@@ -313,13 +379,19 @@ final class RenderFiles {
         root = fm.temporaryDirectory
             .appendingPathComponent(Self.prefix(getpid()) + UUID().uuidString.prefix(8), isDirectory: true)
         basket = root.appendingPathComponent("Models", isDirectory: true)
-        emptyTraining = root.appendingPathComponent("training-empty", isDirectory: true)
-        samples = root.appendingPathComponent("training", isDirectory: true)
-        for dir in [basket, emptyTraining.appendingPathComponent("audio"), samples] {
-            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
-        RenderWorld.writeSamples(to: samples, count: 46)
+        try? fm.createDirectory(at: basket, withIntermediateDirectories: true)
         fineTune = RenderWorld.fineTune(in: root)
+    }
+
+    /// A training folder holding `data.rawValue` samples.
+    func training(_ data: TrainingData) -> URL {
+        if let url = trainingRoots[data] { return url }
+        let url = root.appendingPathComponent("training-\(data.rawValue)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url.appendingPathComponent("audio"),
+                                                 withIntermediateDirectories: true)
+        if data.rawValue > 0 { RenderWorld.writeSamples(to: url, count: data.rawValue) }
+        trainingRoots[data] = url
+        return url
     }
 
     func remove() { try? FileManager.default.removeItem(at: root) }
@@ -383,10 +455,11 @@ final class FlappingRegistry {
 
 /// Speech engines that never touch a real model: "on disk" is a set, a
 /// fetch fails (and is counted), a load hands back a recognizer that
-/// decodes nothing.
+/// decodes nothing (a slow one only after the child has ended).
 @MainActor
 final class FakeEngines {
     var onDisk: Set<String>
+    let slowLoads: Set<String>
     /// Whisper's storage re-reads the fine-tunes on every on-disk check
     /// (`WhisperStorage.hasFiles`); the fake does the same through this.
     weak var owner: TranscriptionModel?
@@ -394,7 +467,10 @@ final class FakeEngines {
     private(set) var loads = 0
     private lazy var storage = Storage(self)
 
-    init(onDisk: Set<String>) { self.onDisk = onDisk }
+    init(onDisk: Set<String>, slowLoads: Set<String> = []) {
+        self.onDisk = onDisk
+        self.slowLoads = slowLoads
+    }
 
     func parts(for model: String) -> (storage: ModelStorage, loader: ModelLoader) {
         (storage, Loader(engines: self))
@@ -421,9 +497,13 @@ final class FakeEngines {
         func plan(_ id: String) -> LoadPlan? {
             guard engines.onDisk.contains(id) else { return nil }
             engines.loads += 1
+            let slow = engines.slowLoads.contains(id)
             return LoadPlan(
                 firstStage: "Loading", detail: "render fixture",
-                load: { _ in SilentRecognizer() }, interim: nil,
+                load: { _ in
+                    if slow { try await Task.sleep(nanoseconds: 600_000_000_000) }
+                    return SilentRecognizer()
+                }, interim: nil,
                 copy: LoadFailureCopy(engine: "fake", timedOutStatus: "", timedOutReport: "", failedReport: ""))
         }
     }
@@ -434,11 +514,15 @@ final class FakeEngines {
     }
 }
 
-/// The Training page's server routes, scripted per state (counted).
+/// The Training page's server routes, scripted (counted).
 final class ScriptedTrainingClient: TrainingJobClient {
-    let state: RenderState
+    let job: JobScript
+    let ready: Bool
     private(set) var calls = 0
-    init(_ state: RenderState) { self.state = state }
+    init(job: JobScript, ready: Bool) {
+        self.job = job
+        self.ready = ready
+    }
 
     private func decode<T: Decodable>(_ json: String) throws -> T {
         try JSONDecoder().decode(T.self, from: Data(json.utf8))
@@ -453,26 +537,31 @@ final class ScriptedTrainingClient: TrainingJobClient {
 
     func readiness() async throws -> TrainingReadiness {
         calls += 1
-        let ready = state == .configured
+        if job == .serverDown { throw SliveError.serverDown(nil) }
         return try decode(#"{"eligible_count": \#(ready ? 64 : 3), "required_samples": 50, "remaining_samples": \#(ready ? 0 : 47), "ready": \#(ready), "eligible_audio_minutes": \#(ready ? 12.5 : 0.4), "required_audio_minutes": 10}"#)
     }
 
     func latest() async throws -> WhisperTrainingJob? {
         calls += 1
-        switch state {
-        case .configured:
+        switch job {
+        case .done:
             return try decode(#"{"id": "job-done", "model_name": "soumil-turbo-ft", "state": "done", "stage": "installed", "message": "Installed", "progress": 1, "eligible_samples": 64, "required_samples": 50, "installed_model_dir": "/tmp/ft", "metrics": [\#(metricsJSON)], "total_updates": 24, "evaluation": {"clips": 12, "base_wer": 0.081, "tuned_wer": 0.052}}"#)
-        case .downloading:
+        case .queued:
+            return try decode(#"{"id": "job-q", "model_name": "soumil-turbo-ft", "state": "queued", "stage": "queued", "message": "Waiting for the trainer", "progress": 0, "eligible_samples": 64, "required_samples": 50, "metrics": [], "total_updates": 0}"#)
+        case .running:
             return try decode(#"{"id": "job-run", "model_name": "soumil-turbo-ft", "state": "running", "stage": "training", "message": "Epoch 2 of 3", "progress": 0.46, "eligible_samples": 64, "required_samples": 50, "metrics": [\#(metricsJSON)], "total_updates": 60, "created_at": "2026-11-14T09:12:00.123456"}"#)
-        case .failed:
+        case .error:
             return try decode(#"{"id": "job-err", "model_name": "soumil-turbo-ft", "state": "error", "stage": "converting", "message": "", "progress": 0.8, "eligible_samples": 64, "required_samples": 50, "error": "Core ML conversion ran out of memory.", "failed_stage": "converting", "resumable": true, "metrics": [\#(metricsJSON)], "total_updates": 24}"#)
-        default:
+        case .serverDown:
+            throw SliveError.serverDown(nil)
+        case .none:
             return nil
         }
     }
 
     func models() async throws -> [WhisperTrainingModel] {
         calls += 1
+        if job == .serverDown { throw SliveError.serverDown(nil) }
         return try decode(#"[{"id": "large-v3-v20240930_626MB", "label": "Whisper – large-v3 turbo", "hf_model": "openai/whisper-large-v3-turbo", "family": "large-v3", "multilingual": true, "detail": "Recommended", "learning_rate": 0.0001, "lora_rank": 16, "kl_weight": 0.3, "lora_ram_gb": 9}, {"id": "small", "label": "Whisper – small", "hf_model": "openai/whisper-small", "family": "small", "multilingual": true, "detail": ""}]"#)
     }
 

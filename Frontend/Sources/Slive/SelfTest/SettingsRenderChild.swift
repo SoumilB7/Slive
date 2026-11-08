@@ -197,8 +197,8 @@ enum RenderChild {
                           _ files: RenderFiles) -> RenderWorld {
         var flapping = false
         if case .fixture(let f) = c.host { flapping = f.flappingRegistry }
-        let world = RenderWorld(group.state, capabilities: group.capabilities, files: files,
-                                flappingRegistry: flapping)
+        let setup = c.row.map { RenderOptions.setup(row: RenderOptions.rows[$0]) } ?? (group.state ?? .fresh).setup
+        let world = RenderWorld(setup, capabilities: group.capabilities, files: files, flappingRegistry: flapping)
         world.applyDefaults()
         world.settingsStore.resetWrites()
         return world

@@ -20,6 +20,12 @@ import SliveTestKit
 /// Keychain, server, model, download, audio, real defaults or Application
 /// Support); a chunk that fails without naming a view is re-run one view at
 /// a time.
+///
+/// Beyond the named states, an all-pairs set over every configuration option
+/// (`RenderOptions`: models, tiers, toggles, shortcuts, keys, permissions,
+/// data, …) draws each value beside each value of every other option — a
+/// loop that needs one setting plus one page shows up without anyone having
+/// guessed that user.
 @MainActor
 enum SettingsRenderTests {
     static let suite = TestSuite(name: "Settings render") { t in
@@ -87,11 +93,15 @@ enum SettingsRenderTests {
     struct Case {
         let host: Host
         let width: CGFloat
+        /// The all-pairs row (`RenderOptions.rows`) this view is drawn in;
+        /// nil = its group's state.
+        var row: Int? = nil
         var label: String {
             let tier = "\(SliveLayout.tier(for: width))"
+            let suffix = row.map { " · row \($0) [\(RenderOptions.describe(RenderOptions.rows[$0]))]" } ?? ""
             switch host {
-            case .page(let id): return "\(id.rawValue) page @ \(tier)"
-            case .shell(let id): return "shell+\(id.rawValue) @ \(tier)"
+            case .page(let id): return "\(id.rawValue) page @ \(tier)\(suffix)"
+            case .shell(let id): return "shell+\(id.rawValue) @ \(tier)\(suffix)"
             case .fixture(let f): return f.rawValue
             }
         }
@@ -99,7 +109,8 @@ enum SettingsRenderTests {
 
     struct Group {
         let name: String
-        let state: RenderState
+        /// nil: each case brings its own all-pairs row.
+        let state: RenderState?
         let capabilities: Capabilities
         let cases: [Case]
         /// Fixtures render one at a time (several are meant to loop).
@@ -111,7 +122,8 @@ enum SettingsRenderTests {
 
     /// Every state × Full, a new and a configured user × Lite; in each,
     /// every page the edition's registry lists, alone and in the shell, at
-    /// every tier. Then the fixtures.
+    /// every tier. Then the all-pairs rows (one view each, by edition), then
+    /// the fixtures.
     nonisolated static let groups: [Group] = {
         func cases(_ caps: Capabilities) -> [Case] {
             let specs = SettingsRegistry.pages(for: caps)
@@ -125,6 +137,13 @@ enum SettingsRenderTests {
         }
         groups += [RenderState.fresh, .configured].map {
             Group(name: "\($0.rawValue) · Lite", state: $0, capabilities: lite, cases: cases(lite), oneAtATime: false)
+        }
+        for (name, caps) in RenderOptions.editions {
+            let rows = RenderOptions.rows.indices.filter { RenderOptions.placement(RenderOptions.rows[$0]).caps == caps }
+            groups.append(Group(name: "all-pairs · \(name)", state: nil, capabilities: caps, cases: rows.map { r in
+                let place = RenderOptions.placement(RenderOptions.rows[r])
+                return Case(host: place.host, width: place.width, row: r)
+            }, oneAtATime: false))
         }
         groups.append(Group(name: "fixtures", state: .fresh, capabilities: full,
                             cases: RenderFixture.allCases.map { Case(host: .fixture($0), width: 640) },
@@ -231,7 +250,7 @@ enum SettingsRenderTests {
             let expected = Set(SettingsRegistry.pages(for: caps).map(\.id.rawValue))
             var drawn: [String: Int] = [:]
             var states = 0
-            for (g, group) in groups.enumerated() where group.capabilities == caps && !group.oneAtATime {
+            for (g, group) in groups.enumerated() where group.capabilities == caps && group.state != nil && !group.oneAtATime {
                 states += 1
                 for (c, m) in outcomes[g].cases where m.died == nil {
                     switch group.cases[c].host {
@@ -277,6 +296,8 @@ enum SettingsRenderTests {
                     problems.joined(separator: " | "))
         }
 
+        checkPairs(&t, outcomes)
+
         // The fixtures prove each detector fires, and stays quiet.
         if let g = groups.firstIndex(where: \.oneAtATime) {
             for (c, fixture) in RenderFixture.allCases.enumerated() {
@@ -319,6 +340,57 @@ enum SettingsRenderTests {
                      outcomes.indices.filter { !groups[$0].oneAtATime }.map { outcomes[$0].slices }.max() ?? 0,
                      Limits.slices,
                      side["loads"] ?? 0))
+    }
+
+    /// The all-pairs set covers every allowed pair of option values, every
+    /// pair was drawn, and every configurable thing the code declares is an
+    /// option (a new `@Stored` setting, assistant field or permission fails
+    /// here until it has values).
+    static func checkPairs(_ t: inout Checks, _ outcomes: [Outcome]) {
+        let options = RenderOptions.all
+        let sizes = options.map(\.values.count)
+        let rows = RenderOptions.rows
+        func name(_ p: (Int, Int, Int, Int)) -> String {
+            "\(options[p.0].name)=\(options[p.0].values[p.1]) × \(options[p.2].name)=\(options[p.2].values[p.3])"
+        }
+
+        let planned = AllPairs.missing(rows, sizes: sizes, allows: RenderOptions.allows)
+        let invalid = rows.indices.filter { !RenderOptions.allows(rows[$0].map(Optional.some)) }
+        t.check(planned.isEmpty && invalid.isEmpty,
+                "render all-pairs: \(rows.count) rows cover every allowed pair of \(options.count) options (\(sizes.reduce(0, +)) values)",
+                "uncovered: \(planned.prefix(5).map(name)) · rows no user can have: \(invalid)")
+
+        // What was actually drawn: rows whose view was measured and lived.
+        var drawn: [[Int]] = []
+        for (g, group) in groups.enumerated() where group.state == nil {
+            for (c, m) in outcomes[g].cases where m.died == nil {
+                if let r = group.cases[c].row { drawn.append(rows[r]) }
+            }
+        }
+        var unseen: [String] = []
+        for (f, option) in options.enumerated() {
+            let seen = Set(drawn.map { $0[f] })
+            unseen += option.values.indices.filter { !seen.contains($0) }.map { "\(option.name)=\(option.values[$0])" }
+        }
+        t.check(unseen.isEmpty, "render all-pairs: every value of every option drawn (\(drawn.count) views)",
+                "never drawn: \(unseen)")
+        let undrawn = AllPairs.missing(drawn, sizes: sizes, allows: RenderOptions.allows)
+        t.check(undrawn.isEmpty, "render all-pairs: every allowed pair drawn",
+                "\(undrawn.count) pairs never drawn, e.g. \(undrawn.prefix(5).map(name))")
+
+        // Completeness against the code's own declarations.
+        let keys = Set(options.flatMap(\.keys))
+        let stored = Settings(store: InMemoryStore()).storedSettings.map(\.key)
+        let settings = stored.filter { !keys.contains($0) }
+        let renamed = RenderOptions.dedicatedKeys.subtracting(stored).sorted()
+        t.check(settings.isEmpty && renamed.isEmpty, "render all-pairs: every @Stored setting is an option",
+                "no option (give it values in RenderOptions): \(settings) · options for settings that no longer exist: \(renamed)")
+        let fields = Mirror(reflecting: AssistantConfig.default).children.compactMap(\.label)
+            .filter { !keys.contains("AssistantConfig.\($0)") }
+        t.check(fields.isEmpty, "render all-pairs: every AssistantConfig field is an option", "no option: \(fields)")
+        let grants = Mirror(reflecting: PermissionsModel.Grants(mic: false, inputMonitoring: false, accessibility: false))
+            .children.compactMap(\.label).filter { !keys.contains("Grants.\($0)") }
+        t.check(grants.isEmpty, "render all-pairs: every permission is an option", "no option: \(grants)")
     }
 
     /// Draws `cases` side by side in one child; when a child dies on a view

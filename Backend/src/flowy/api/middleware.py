@@ -3,20 +3,31 @@ behind ``/health``'s ``busy``."""
 
 from __future__ import annotations
 
+import re
+
 from fastapi.responses import JSONResponse
 
 #: Hostnames the app reaches us by. Anything else is a DNS-rebinding page
 #: (evil.example resolved to 127.0.0.1) and must not drive /local/delete,
 #: /training/start, etc.
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+#: What may follow the name: nothing, or ":" and an ASCII port (RFC 3986).
+_PORT = re.compile(r"(?::[0-9]*)?")
 
 
 def _host_name(host: str) -> str:
-    """The hostname part of a Host header (port and IPv6 brackets dropped)."""
+    """The hostname part of a Host header (port and IPv6 brackets dropped),
+    or "" when anything but an optional numeric port follows the name — so
+    "[::1].evil.example" can't pass as ::1."""
     host = host.strip().lower()
     if host.startswith("["):
-        return host[1:].split("]", 1)[0]
-    return host.rsplit(":", 1)[0] if ":" in host else host
+        name, bracket, rest = host[1:].partition("]")
+        if not bracket:
+            return ""
+    else:
+        name, colon, port = host.partition(":")
+        rest = colon + port
+    return name if _PORT.fullmatch(rest) else ""
 
 
 class LocalOnlyMiddleware:
@@ -30,10 +41,12 @@ class LocalOnlyMiddleware:
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] in ("http", "websocket"):
-            headers = {k.lower(): v for k, v in scope.get("headers", [])}
-            host = headers.get(b"host", b"").decode("latin-1")
-            origin = headers.get(b"origin", b"").decode("latin-1").strip()
-            if _host_name(host) not in _LOCAL_HOSTS or origin:
+            headers = [(k.lower(), v.decode("latin-1")) for k, v in scope.get("headers", [])]
+            hosts = [v for k, v in headers if k == b"host"]
+            # Every Origin counts and only one Host may be sent: a later
+            # duplicate must not shadow the header that should reject.
+            origin = any(v.strip() for k, v in headers if k == b"origin")
+            if len(hosts) != 1 or _host_name(hosts[0]) not in _LOCAL_HOSTS or origin:
                 response = JSONResponse(
                     status_code=403, content={"error": "Forbidden: local app requests only."}
                 )
