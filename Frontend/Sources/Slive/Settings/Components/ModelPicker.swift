@@ -142,7 +142,12 @@ struct BalancedSuggestion: View {
         Button(title) {
             let binding = $model
             Task {
-                if await transcription.fetch(Self.balanced) { binding.wrappedValue = Self.balanced }
+                guard await transcription.fetch(Self.balanced) else { return }
+                // Picked by hand during the download: the pick's own refresh
+                // found it still downloading, and writing the same value
+                // again is silent now — load it here.
+                if binding.wrappedValue == Self.balanced { transcription.select(Self.balanced) }
+                else { binding.wrappedValue = Self.balanced }
             }
         }
         .buttonStyle(.borderedProminent)

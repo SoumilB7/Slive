@@ -77,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // feature that's switched off.
         whisper.onModelReady = { [weak self] model in self?.residency.modelReady(model) }
         whisper.onModelFailed = { [weak self] model in self?.residency.modelFailed(model) }
+        whisper.onDownloadFinished = { [weak self] model, ok in self?.residency.downloadFinished(model, ok: ok) }
         whisper.migrateOldDownloadsIfNeeded()   // consolidate any prior downloads
         residency.refresh()
 

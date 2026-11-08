@@ -270,6 +270,8 @@ enum DictationModeTests {
             t.check(!mode.isCapturing, "✕ stops the stream")
         }
 
+        streamTypeAtCursorOff(&t)
+
         do {
             let h = Harness()
             h.speech.ready = []
@@ -277,6 +279,64 @@ enum DictationModeTests {
             mode.begin()
             t.check(!mode.isCapturing && h.sink.streamsBegun == 0, "no model in memory: nothing streams")
             t.equal(h.presenter.state.resultText, "Loading model. Try again shortly.", "and it says why")
+        }
+    }
+
+    /// Type at cursor off: the stream still transcribes, types nothing, and
+    /// ends in the copy box like a dictation. The setting is read once, at
+    /// session start, so flipping it mid-stream never half-types a session.
+    private static func streamTypeAtCursorOff(_ t: inout Checks) {
+        /// Stream "hello there" live, release (the final pass hears "hello
+        /// world"), wait for the end. `flip` runs right after the start.
+        func stream(autoInsert: Bool, flip: Bool) -> (Harness, OverlayState) {
+            let h = Harness()
+            h.settings.autoInsert = autoInsert
+            let mode = StreamMode(h.ctx, continuous: h.continuous)
+            mode.begin()
+            let pill = h.presenter.state
+            if flip { h.settings.autoInsert.toggle() }
+            h.speech.liveUpdate?("hello there", 0.5)
+            // (Off: a beat for a typist that shouldn't exist to type anyway.)
+            h.settle(autoInsert ? 5 : 0.05) { autoInsert && h.sink.field == "hello there" }
+            mode.end()
+            h.settle { h.trail.all.contains { $0.hasPrefix("history") } }
+            return (h, pill)
+        }
+        let copyBox = OverlayState.result(OverlayResult(text: "hello world", note: nil))
+
+        do {
+            let (h, pill) = stream(autoInsert: false, flip: false)
+            t.equal(pill, .listening(.dictation), "type at cursor off: the stream shows the dictation pill")
+            t.check(h.sink.streamsBegun == 0 && h.sink.replaces == 0 && h.sink.delivered == 0 && h.sink.field.isEmpty,
+                    "type at cursor off: the stream never claims the field, types or backspaces")
+            t.equal(h.presenter.state, copyBox, "type at cursor off: the final text lands in the copy box, no note")
+            t.equal(h.trail.all.filter { !$0.hasPrefix("cue") }, ["history hello world", "pace hello world"],
+                    "type at cursor off: history and pace as any stream (no training pair)")
+        }
+
+        do {
+            let (h, _) = stream(autoInsert: false, flip: true)
+            t.check(h.sink.streamsBegun == 0 && h.sink.replaces == 0 && h.presenter.state == copyBox,
+                    "turned on mid-stream: that session still types nothing and ends in the copy box")
+        }
+
+        do {
+            let (h, pill) = stream(autoInsert: true, flip: true)
+            t.check(pill == .listening(.live) && h.sink.field == "hello world" && h.presenter.state.result == nil,
+                    "turned off mid-stream: that session keeps typing to the end (read at its start)",
+                    "field \(h.sink.field), \(h.presenter.state)")
+        }
+
+        do {
+            let h = Harness()
+            h.settings.autoInsert = false
+            h.sink.verdict = .blocked(note: "Allow Accessibility")
+            let mode = StreamMode(h.ctx, continuous: h.continuous)
+            mode.begin()
+            mode.end()
+            h.settle { h.presenter.state.result != nil }
+            t.equal(h.presenter.state, copyBox,
+                    "type at cursor off with Accessibility off: no note (typing was the user's choice)")
         }
     }
 
@@ -375,9 +435,12 @@ enum DictationModeTests {
         private(set) var delivered = 0
         private(set) var streamsBegun = 0
         private var text = ""
+        private var edits = 0
         init(trail: Trail) { self.trail = trail }
 
         var field: String { lock.lock(); defer { lock.unlock() }; return text }
+        /// Live edits (backspaces and/or inserts) the typist sent.
+        var replaces: Int { lock.lock(); defer { lock.unlock() }; return edits }
 
         func canDeliver() -> Deliverability { verdict }
         func deliver(_ text: String, onDeliveryFailure: @escaping () -> Void) -> Bool {
@@ -392,6 +455,7 @@ enum DictationModeTests {
         }
         func replace(backspaces: Int, insert: String) {
             lock.lock(); defer { lock.unlock() }
+            edits += 1
             text.removeLast(min(backspaces, text.count))
             text += insert
         }

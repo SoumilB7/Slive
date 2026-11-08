@@ -310,6 +310,8 @@ enum TranscriptionPartsTests {
         let folder = dir.appendingPathComponent("m-folder")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         storage.folder = folder
+        var finished: [String] = []
+        downloads.onFinished = { finished.append("\($0) \($1)") }
 
         let results = settle { () -> [Bool] in
             async let a = downloads.fetch("m", into: storage)
@@ -331,6 +333,8 @@ enum TranscriptionPartsTests {
         } else { t.check(false, "failed download → Failed status", "got \(board.status(for: "p"))") }
         t.check(storage.hasFiles("p") && !downloads.isDownloaded("p", in: storage),
                 "an unfinished download's marker beats its partial files")
+        t.equal(finished, ["m true", "p false"],
+                "each download reports its end once: joined callers and an on-disk model add nothing")
     }
 
     // MARK: - Storage completeness (temp dir)

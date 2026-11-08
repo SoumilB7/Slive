@@ -13,6 +13,7 @@ enum ResidencyMatrixTests {
         print("[Residency matrix]")
         simulate(&t)
         regressions(&t)
+        failedDownloads(&t)
         tiersAndMemory(&t)
     }
 
@@ -383,6 +384,75 @@ enum ResidencyMatrixTests {
         t.check(run.host.isReady(WhisperCatalog.turbo) && run.events.contains("failed \(WhisperCatalog.base)"),
                 "a failed dictation load lets the continuous model load", run.events.joined(separator: ", "))
     }
+
+    // MARK: - Failed downloads
+
+    /// The dictation pick's download fails: the first failure changes
+    /// nothing (Re-download is the retry), the second in a row re-plans so
+    /// a downloaded Parakeet stands in — as a failed load does. Every pick
+    /// that has a stand-in candidate, and every interruption of the streak.
+    private static func failedDownloads(_ t: inout Checks) {
+        let standIn = ModelCatalog.defaultContinuous
+        let picks = ModelCatalog.ids(of: .whisper) + [fineTune]
+
+        /// A launch with `pick` downloading (so no stand-in yet), nothing
+        /// serving, and the Parakeet on disk; then `steps`. True when the
+        /// Parakeet ended serving dictation.
+        func standsIn(_ pick: String, _ steps: [Step]) -> Bool {
+            let host = Host()
+            let other = ModelCatalog.ids(of: .whisper).first { $0 != pick }!
+            let s = Settings(store: InMemoryStore(), loginItemEnabled: { false })
+            s.whisperModel = pick
+            s.continuousModel = standIn
+            s.streamHotkey = nil
+            let residency = ModelResidency(whisper: host, settings: s, spawn: { _ in })
+            host.onReady = { [weak residency] in residency?.modelReady($0) }
+            host.place(standIn, .onDisk)
+            host.place(pick, .downloading)
+            residency.refresh()
+            guard !host.events.contains("load \(standIn)") else { return true }   // the premise broke
+            for step in steps {
+                switch step {
+                case .fail:
+                    host.statuses[pick] = .failed("Download failed: offline")
+                    residency.downloadFinished(pick, ok: false)
+                case .succeed:
+                    // Its files landed; the load that follows is still compiling.
+                    host.statuses[pick] = .preparing("Loading")
+                    residency.downloadFinished(pick, ok: true)
+                    host.statuses[pick] = .downloading(0)   // Re-download deletes them again
+                case .otherModelFails:
+                    residency.downloadFinished(standIn, ok: false)
+                case .pickAway:
+                    host.place(other, .downloading)   // so it brings no stand-in of its own
+                    s.whisperModel = other
+                    residency.refresh()
+                    s.whisperModel = pick
+                    host.place(pick, .downloading)
+                    residency.refresh()
+                }
+            }
+            while !host.queue.isEmpty { host.finishNextLoad() }
+            return residency.servingDictationModel == standIn && host.isReady(standIn)
+        }
+
+        let cases: [(steps: [Step], standsIn: Bool, name: String)] = [
+            ([], false, "no failure: nothing stands in behind the running download"),
+            ([.fail], false, "one failed download changes nothing"),
+            ([.fail, .fail], true, "two failed downloads in a row: the Parakeet stands in"),
+            ([.fail, .succeed, .fail], false, "a successful download resets the count"),
+            ([.fail, .pickAway, .fail], false, "picking another model resets the count"),
+            ([.fail, .otherModelFails], false, "another model's failed download doesn't count"),
+            ([.fail, .otherModelFails, .fail], true, "…nor break the pick's streak"),
+            ([.fail, .fail, .fail], true, "a third failure keeps the stand-in"),
+        ]
+        for c in cases {
+            let wrong = picks.filter { standsIn($0, c.steps) != c.standsIn }
+            t.check(wrong.isEmpty, "\(c.name) (\(picks.count) Whisper picks)", "wrong for \(wrong)")
+        }
+    }
+
+    enum Step { case fail, succeed, otherModelFails, pickAway }
 
     // MARK: - Tiers and memory
 

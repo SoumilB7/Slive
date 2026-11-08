@@ -38,10 +38,17 @@ final class InMemoryStore: KeyValueStore {
 
 /// How a value type is read from and written to a store. `read` returns nil
 /// when the key was never set (or holds something unreadable) — the
-/// declaration's default applies then.
-protocol StorableSetting {
+/// declaration's default applies then. Equatable so `@Stored` can drop a
+/// write that changes nothing (see its setter).
+protocol StorableSetting: Equatable {
     static func read(from store: KeyValueStore, key: String) -> Self?
     func write(to store: KeyValueStore, key: String)
+    /// Writing `other` over `self` would change nothing.
+    func isSame(as other: Self) -> Bool
+}
+
+extension StorableSetting {
+    func isSame(as other: Self) -> Bool { self == other }
 }
 
 // Scalars read through `object(forKey:)`, so UserDefaults and InMemoryStore
@@ -77,6 +84,8 @@ extension Double: StorableSetting {
         return value.flatMap { $0.isFinite ? $0 : nil }
     }
     func write(to store: KeyValueStore, key: String) { store.set(self, forKey: key) }
+    /// NaN over NaN is no change either: `==` alone would publish it on every write.
+    func isSame(as other: Double) -> Bool { self == other || (isNaN && other.isNaN) }
 }
 
 extension Int: StorableSetting {
@@ -170,9 +179,13 @@ protocol AnyStoredSetting {
 ///
 ///     @Stored("overlayOpacity", default: 0.4) var overlayOpacity: Double
 ///
-/// Setting it sends `objectWillChange` (SwiftUI), writes the store, then
-/// publishes `emits` synchronously; a `didSet` on the property still runs
-/// after, for side effects. Values are loaded once in `Settings.init`.
+/// Setting a new value sends `objectWillChange` (SwiftUI), writes the store,
+/// then publishes `emits` synchronously; a `didSet` on the property still
+/// runs after, for side effects. Setting the value it already holds does
+/// none of the three (a `didSet` still runs): a view `body` that writes a
+/// setting would otherwise re-run itself forever (the shape of the Nov 13
+/// freeze). Values are loaded
+/// once in `Settings.init`.
 @propertyWrapper
 struct Stored<Value: StorableSetting>: AnyStoredSetting {
     let setting: Setting<Value>
@@ -214,6 +227,8 @@ struct Stored<Value: StorableSetting>: AnyStoredSetting {
         }
         set {
             let stored = owner[keyPath: storageKeyPath]
+            let current = stored.box.value ?? stored.setting.read(from: owner.store)
+            if current.isSame(as: newValue) { return }
             owner.objectWillChange.send()
             stored.box.value = newValue
             newValue.write(to: owner.store, key: stored.setting.key)

@@ -2,6 +2,8 @@ import Foundation
 
 /// Live streaming dictation: words type into the field as you speak
 /// (`ContinuousDictation` runs the stream; this mode starts and ends it).
+/// With Type at cursor off nothing is typed: the stream still transcribes
+/// and its text ends in the copy box, as a dictation's does.
 @MainActor final class StreamMode: DictationMode {
     static let action = HotkeyAction.stream
 
@@ -65,12 +67,17 @@ import Foundation
             return
         }
 
-        ctx.presenter.listening(.live)   // same small waveform pill as normal dictation
+        // Read once: flipping Type at cursor mid-stream changes the next
+        // session, never this one's half-typed text. Off, the pill is the
+        // dictation waveform — the pen's scribble promises words at the
+        // caret, and this session ends like a dictation, in the copy box.
+        let typeAtCursor = ctx.settings.autoInsert
+        ctx.presenter.listening(typeAtCursor ? .live : .dictation)
         ctx.session.liveStarted()   // for the post-release WPM measurement
         let cue = ctx.cue
         DispatchQueue.main.async { cue(.stream) }
 
-        if !continuous.start(model: streamModel) { liveStreamFailed() }
+        if !continuous.start(model: streamModel, typeAtCursor: typeAtCursor) { liveStreamFailed() }
     }
 
     /// The live stream couldn't start (its mic wouldn't open — now, or
@@ -86,7 +93,8 @@ import Foundation
     /// shows the loading dots briefly while that final pass runs. If nothing
     /// could be typed live (no editable field was focused), the transcript is
     /// surfaced in the copy/dismiss result box instead — same as normal
-    /// dictation — so the words are never silently lost.
+    /// dictation — so the words are never silently lost. Type at cursor off:
+    /// always the copy box, without a note (the user chose it).
     func end() {
         guard continuous.isActive else { return }
         // Timestamp the release now (before the final pass) so the measured pace
@@ -112,7 +120,7 @@ import Foundation
             }
             if !outcome.typed && !text.isEmpty {
                 // Copy button clickable.
-                ctx.presenter.result(text, note: ctx.typingBlockedNote(),
+                ctx.presenter.result(text, note: outcome.typingOff ? nil : ctx.typingBlockedNote(),
                                      collapseAfter: OverlayPresenter.resultDisplayDuration)
             } else {
                 ctx.presenter.hideSoon()

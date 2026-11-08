@@ -116,6 +116,12 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
         set { loads.onModelFailed = newValue }
     }
 
+    /// Called on the main actor when a download ends (true: its files landed).
+    var onDownloadFinished: ((_ model: String, _ ok: Bool) -> Void)? {
+        get { downloads.onFinished }
+        set { downloads.onFinished = newValue }
+    }
+
     /// The model a dictation actually runs on: the one the user picked once
     /// it's resident; until then the previous pick (kept resident by
     /// ModelResidency for exactly this). Switching models never blocks

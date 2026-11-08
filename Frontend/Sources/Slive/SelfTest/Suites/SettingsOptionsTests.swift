@@ -29,6 +29,7 @@ enum SettingsOptionsTests {
         for option in options { option.run(&t) }
         freshInstall(&t)
         migrations(&t)
+        sameValueWrites(&t)
     }
 
     // MARK: - The inventory
@@ -199,13 +200,16 @@ enum SettingsOptionsTests {
     // MARK: - Option builders
 
     /// Writes every value through a fresh Settings over one store, then
-    /// checks: the value reads back live and in a new Settings, exactly one
-    /// event (`emits`) and one objectWillChange per write — a same-value
-    /// write included (writes aren't deduplicated; the subscribers are
-    /// idempotent) — and nothing else moved: no other key written, every
-    /// other option still at its default.
+    /// checks: the value reads back live and in a new Settings, a real
+    /// change sends exactly one event (`emits`) and one objectWillChange,
+    /// the value it already holds sends none and writes nothing (`@Stored`
+    /// drops same-value writes: a view body writing one looped forever), and
+    /// nothing else moved: no other key written, every other option still at
+    /// its default. `dedupes: false` is for the shortcut and switch setters,
+    /// which aren't `@Stored` and still publish every write.
     private static func exercise<V: Equatable>(
         _ key: String, values: [V], emits: SettingsChange?, alsoWrites: Set<String> = [],
+        dedupes: Bool = true,
         read: @escaping (Settings) -> V, write: @escaping (Settings, V) -> Void,
         _ t: inout Checks
     ) {
@@ -222,15 +226,20 @@ enum SettingsOptionsTests {
             s.changes.sink { got.append($0) }.store(in: &bag)
             s.objectWillChange.sink { wills += 1 }.store(in: &bag)
 
+            let changes = !dedupes || read(s) != value
             write(s, value)
             let fresh = make(store)
             if read(s) != value || read(fresh) != value {
                 persisted.append("\(value) → live \(read(s)), fresh \(read(fresh))")
             }
-            let one = emits.map { [$0] } ?? []
-            if got != one || wills != 1 { events.append("\(value): \(got), \(wills) will-change") }
+            let one = changes ? emits.map { [$0] } ?? [] : []
+            let will = changes ? 1 : 0
+            if got != one || wills != will { events.append("\(value): \(got), \(wills) will-change") }
+            if !changes, store.values[key] != nil { events.append("\(value): the same value was written") }
             write(s, value)
-            if got != one + one || wills != 2 { events.append("\(value) again: \(got), \(wills) will-change") }
+            if got != (dedupes ? one : one + one) || wills != (dedupes ? will : 2) {
+                events.append("\(value) again: \(got), \(wills) will-change")
+            }
 
             let stray = Set(store.values.keys).subtracting([key]).subtracting(alsoWrites)
             let after = snapshot(fresh)
@@ -238,7 +247,8 @@ enum SettingsOptionsTests {
             if !stray.isEmpty || !moved.isEmpty { leaks.append("\(value): wrote \(stray.sorted()), moved \(moved.sorted())") }
         }
         t.check(persisted.isEmpty, "\(key): \(values.count) values persist and read back", "\(persisted)")
-        t.check(events.isEmpty, "\(key): \(emits.map { "one \($0) event" } ?? "no event") + one will-change per write",
+        let rule = dedupes ? "per real change, none for the same value" : "per write"
+        t.check(events.isEmpty, "\(key): \(emits.map { "one \($0) event" } ?? "no event") + one will-change \(rule)",
                 "\(events)")
         t.check(leaks.isEmpty, "\(key): a write touches only its own key and option", "\(leaks)")
     }
@@ -438,7 +448,7 @@ enum SettingsOptionsTests {
         return Option(key: spec.key, show: { describe($0.shortcut(for: slot)) }) { t in
             let read = { (s: Settings) in s.shortcut(for: slot) }
             let values: [Hotkey?] = shortcutValues + (spec.required ? [] : [nil])
-            exercise(spec.key, values: values, emits: .bindings, read: read,
+            exercise(spec.key, values: values, emits: .bindings, dedupes: false, read: read,
                      write: { $0.setShortcut($1, for: slot) }, &t)
 
             // Every value reaches the monitor's binding list in each edition
@@ -493,7 +503,7 @@ enum SettingsOptionsTests {
         let key = slot.spec!.switchKey!
         return Option(key: key, show: { "\($0.isEnabled(slot))" }) { t in
             let read = { (s: Settings) in s.isEnabled(slot) }
-            exercise(key, values: [false, true, false], emits: .bindings, read: read,
+            exercise(key, values: [false, true, false], emits: .bindings, dedupes: false, read: read,
                      write: { $0.setEnabled($1, for: slot) }, &t)
             let s = make(InMemoryStore())
             s.setEnabled(false, for: slot)
@@ -504,6 +514,40 @@ enum SettingsOptionsTests {
                         (Data([0]), true)],
                   default: true, read: read, &t)
         }
+    }
+
+    // MARK: - Same-value writes
+
+    /// The Nov 13 freeze's shape: a view body writes a setting, the write
+    /// publishes, SwiftUI re-runs the body. With same-value writes silent it
+    /// settles on the second pass (the first one's real change re-renders).
+    private static func sameValueWrites(_ t: inout Checks) {
+        let s = make(InMemoryStore())
+        var dirty = true
+        var renders = 0
+        var events = 0
+        var bag: Set<AnyCancellable> = []
+        s.objectWillChange.sink { dirty = true }.store(in: &bag)
+        s.changes.sink { _ in events += 1 }.store(in: &bag)
+        while dirty, renders < 50 {
+            dirty = false
+            renders += 1
+            s.overlayOpacity = 0.6
+            s.whisperModel = s.whisperModel
+            s.assistantConfig = s.assistantConfig
+            s.groundTruthRecipe = s.groundTruthRecipe
+        }
+        t.check(renders == 2 && events == 0, "a body writing settings settles: one real change, then silence",
+                "\(renders) renders, \(events) events")
+
+        var wills = 0
+        let nan = make(InMemoryStore())
+        nan.objectWillChange.sink { wills += 1 }.store(in: &bag)
+        nan.captureMaxGB = .nan
+        nan.captureMaxGB = .nan
+        t.equal(wills, 1, "NaN over NaN is no change (NaN ≠ NaN must not publish every write)")
+        t.equal(make(InMemoryStore(["captureMaxGB": Double.nan])).captureMaxGB, 2,
+                "…and a stored NaN still reads as the default")
     }
 
     /// A Settings over `store` that skips the login-item query (~40 ms

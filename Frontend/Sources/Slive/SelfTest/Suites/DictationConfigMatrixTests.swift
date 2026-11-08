@@ -508,19 +508,32 @@ enum DictationConfigMatrixTests {
                 out.append(("type at cursor off never asks the field (dictate)", c.autoInsert || sink.delivered == 0))
                 out.append(("type first: the text is typed or boxed before any bookkeeping (dictate)",
                             { () -> Bool in
-                                // (Not typed with a newer session on the overlay: history only, by design.)
-                                guard let delivered = log.firstIndex(where: { $0.hasPrefix("typed ") || $0.hasPrefix("box ") })
+                                // (Not typed with a newer session on the overlay: history only, by design.
+                                // A mode switch's stream boxes the same words later, Type at cursor off.)
+                                guard c.gesture != .switchMode || c.autoInsert,
+                                      let delivered = log.firstIndex(where: { $0.hasPrefix("typed ") || $0.hasPrefix("box ") })
                                 else { return true }
                                 return delivered < (log.firstIndex { $0.hasPrefix("history ") } ?? .max)
                             }()))
             case .stream:
                 out.append(("spoken words are never lost (stream: typed live or boxed, and in history)",
                             !deliverable || (history.count == releases && (fieldTyped || boxes >= 1))))
+                let plainBoxes = states.filter { $0.result.map { $0.answer == nil && $0.text == text && $0.note == nil }
+                    ?? false }.count
+                out.append(("type at cursor off: a stream's words land in the copy box, without a note (stream)",
+                            c.autoInsert || !deliverable || plainBoxes >= 1))
+                out.append(("the stream's pill: the pen when it types at the cursor, the waveform when it can't",
+                            c.gesture == .switchMode
+                                || !states.contains(.listening(c.autoInsert ? .dictation : .live))))
             case .assist:
                 out.append(("spoken questions get an answer (assist)", !deliverable || answers >= 1))
                 out.append(("an assistant answer is never typed", c.gesture == .switchMode
                             || (sink.delivered == 0 && !fieldTyped && sink.streamsBegun == 0)))
             }
+            out.append(("type at cursor off ⇒ zero keystrokes in every mode (nothing typed, no backspace, "
+                            + "the field never asked or claimed)",
+                        c.autoInsert || (typedDictations == 0 && !fieldTyped && sink.replaces == 0
+                                         && sink.delivered == 0 && sink.streamsBegun == 0)))
             out.append(("a refused field never receives text",
                         c.sink.allowsDelivery || (typedDictations == 0 && !fieldTyped)))
             out.append(("training pairs only when this build trains and saving is on, while the WAV exists",

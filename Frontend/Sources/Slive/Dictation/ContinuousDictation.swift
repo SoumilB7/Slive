@@ -33,6 +33,9 @@ final class ContinuousDictation {
         let typed: Bool
         /// ✕ (or quit) landed during the final pass: show nothing, record nothing.
         var cancelled = false
+        /// Type at cursor was off for this session: nothing was typed by the
+        /// user's choice, so the copy box carries no "why" note.
+        var typingOff = false
     }
 
     private var active = false
@@ -41,6 +44,8 @@ final class ContinuousDictation {
     private var model = ""
     /// Whether this session is actually typing into a field (decided at start).
     private var typing = false
+    /// Type at cursor, as it was when this session started.
+    private var typeAtCursor = true
     /// Latest normalized transcript — the fallback text if the final pass fails.
     private var lastTranscript = ""
     /// The text stages, with the user's Vocabulary captured at start: every
@@ -71,7 +76,10 @@ final class ContinuousDictation {
     /// user's pick, or the previous one while the pick is still preparing)
     /// at the configured typing speed. Returns false if `model` isn't loaded
     /// (streaming can't wait on a first-time load — the caller surfaces that).
-    func start(model: String) -> Bool {
+    /// `typeAtCursor` false (the setting, read once at session start): the
+    /// copy-only sink stands in, so no keystroke or backspace is ever sent
+    /// and the field isn't even probed; the text comes back for the copy box.
+    func start(model: String, typeAtCursor: Bool) -> Bool {
         guard whisper.isReady(model) else {
             Log.live("start SKIPPED — model \(model) not ready")
             return false
@@ -82,6 +90,8 @@ final class ContinuousDictation {
         active = true
         lastTranscript = ""
         pipeline = .live(vocabulary: settings.hotwords)
+        self.typeAtCursor = typeAtCursor
+        let sink: LiveTextSink = typeAtCursor ? self.sink : ClipboardSink()
         // Claims the focused field: may we type at all, and which field.
         let handle = sink.beginStream()
         typing = handle.allowed
@@ -115,7 +125,7 @@ final class ContinuousDictation {
         // This session's own copies: a new start() during the final pass below
         // replaces all of these.
         let typist = self.typist, model = self.model, typing = self.typing
-        let session = self.session
+        let session = self.session, typingOff = !self.typeAtCursor
         let lastTranscript = self.lastTranscript, pipeline = self.pipeline
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         let confirmedText = pipeline.clean(whisper.liveConfirmedText)
@@ -178,7 +188,7 @@ final class ContinuousDictation {
         Log.live(String(format: "DONE  final pass %.2fs  len=%d  «%@»",
                         Date().timeIntervalSince(t0), result.count, String(result.suffix(40))))
         return Outcome(text: result.trimmingCharacters(in: .whitespacesAndNewlines),
-                       typed: typed)
+                       typed: typed, typingOff: typingOff)
     }
 
     /// Abort without a final pass or field edits (app quit / dismiss).

@@ -13,6 +13,10 @@ final class ModelDownloads {
     /// The one in-flight download per model: Turn on, Download and the
     /// continuous auto-fetch all join it instead of racing a second copy.
     private var tasks: [String: Task<Bool, Never>] = [:]
+    /// Each download's end, once (not once per joined caller): the model and
+    /// whether its files landed. ModelResidency counts the dictation pick's
+    /// failures.
+    var onFinished: ((_ model: String, _ ok: Bool) -> Void)?
 
     init(basket: ModelBasket, board: ModelStatusBoard, stallSeconds: TimeInterval = defaultStallSeconds) {
         self.basket = basket
@@ -39,6 +43,7 @@ final class ModelDownloads {
         let task = Task { () -> Bool in
             let ok = await self.perform(model, storage)
             self.tasks[model] = nil
+            self.onFinished?(model, ok)
             return ok
         }
         tasks[model] = task

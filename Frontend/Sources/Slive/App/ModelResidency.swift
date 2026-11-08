@@ -77,6 +77,7 @@ import Foundation
     /// continuous's only while its shortcut is set (same name = one shared
     /// instance). Everything else is evicted from RAM/ANE.
     func refresh() {
+        forgetFailedDownloadsOfOldPicks()
         let picks = self.picks
         whisper.retainModels(Self.keep(picks, states))
         // Planned on the states AFTER the eviction, as it always read them.
@@ -120,6 +121,40 @@ import Foundation
     func modelFailed(_ model: String) {
         guard model == settings.whisperModel else { return }
         refresh()
+    }
+
+    /// Back-to-back failed downloads of the dictation pick, in memory (a
+    /// relaunch starts over).
+    private var failedDownloads: (model: String, count: Int)?
+
+    /// Failed downloads of the dictation pick in a row before residency
+    /// re-plans around it. One is often a blip the retry fixes; the second
+    /// says the pick won't arrive soon, so a downloaded Parakeet stands in.
+    static let failedDownloadsBeforeStandIn = 2
+
+    /// A download ended. The dictation pick's failures count up (a success
+    /// or another model's download changes nothing for it); the second in a
+    /// row re-plans as a failed load does. The continuous pick isn't
+    /// counted: a stream already runs on whatever model is loaded, and each
+    /// stream press retries its download.
+    func downloadFinished(_ model: String, ok: Bool) {
+        guard model == settings.whisperModel else { return }
+        if ok {
+            failedDownloads = nil
+            return
+        }
+        let count = failedDownloads?.model == model ? failedDownloads!.count + 1 : 1
+        failedDownloads = (model, count)
+        if count >= Self.failedDownloadsBeforeStandIn {
+            Log.event("\(model) failed to download \(count) times in a row — re-planning residency")
+            refresh()
+        }
+    }
+
+    /// The streak belongs to one pick: another pick (or picking back)
+    /// starts over.
+    private func forgetFailedDownloadsOfOldPicks() {
+        if let failed = failedDownloads, failed.model != settings.whisperModel { failedDownloads = nil }
     }
 
     /// Continuous mode is on (a shortcut is set) but its model was never
