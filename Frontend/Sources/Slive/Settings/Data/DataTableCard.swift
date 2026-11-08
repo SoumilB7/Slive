@@ -133,17 +133,11 @@ struct DataTableCard: View {
         }
     }
 
+    /// « ‹ on the left (newest end), › » on the right (oldest end).
     private var paginationControls: some View {
-        HStack(spacing: 12) {
-            Button {
-                player.stop()
-                preserveScroll {
-                    samplePage = max(0, samplePage - 1)
-                }
-            } label: {
-                Label("Newer", systemImage: "chevron.left")
-            }
-            .disabled(samplePage == 0)
+        HStack(spacing: 6) {
+            pageButton("chevron.left.2", help: "Newest", to: 0)
+            pageButton("chevron.left", help: "Newer", to: samplePage - 1)
 
             Spacer()
             Text(visibleRangeText)
@@ -151,31 +145,56 @@ struct DataTableCard: View {
                 .foregroundStyle(SliveTheme.textSecondary)
             Spacer()
 
-            Button {
-                player.stop()
-                preserveScroll {
-                    samplePage = min(pageCount - 1, samplePage + 1)
-                }
-            } label: {
-                Label("Older", systemImage: "chevron.right")
-                    .labelStyle(.titleAndIcon)
-            }
-            .disabled(samplePage >= pageCount - 1)
+            pageButton("chevron.right", help: "Older", to: samplePage + 1)
+            pageButton("chevron.right.2", help: "Oldest", to: pageCount - 1)
         }
         .font(SliveTheme.font(11, .semibold))
         .buttonStyle(.bordered)
         .controlSize(.small)
     }
 
+    private func pageButton(_ symbol: String, help: String, to page: Int) -> some View {
+        let target = min(max(page, 0), max(pageCount - 1, 0))
+        return Button {
+            player.stop()
+            preserveScroll { samplePage = target }
+        } label: {
+            Image(systemName: symbol)
+                .frame(width: 14)
+        }
+        .disabled(target == samplePage)
+        .help(help)
+    }
+
     /// Text columns cap at ~67 characters so the table stays readable at the
     /// wide tier instead of stretching into prairie-wide lines.
     private let textColumnCap: CGFloat = 420
+    /// Badges and redo/edit beside the CORRECT text, outside its width —
+    /// inside it they'd make that column narrower than TYPED, and the same
+    /// words would wrap at different places.
+    private let marksWidth: CGFloat = 64
+
+    /// TYPED | CORRECT at exactly equal widths (both fully flexible, so the
+    /// stack splits them evenly), up to the cap each. Priority over the
+    /// trailing spacer so they get the room before it does.
+    private func textColumns<A: View, B: View>(_ typed: A, _ correct: B) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            typed
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            correct
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: textColumnCap * 2 + 12, alignment: .leading)
+        .layoutPriority(1)
+    }
 
     private var tableHeaderRow: some View {
         HStack(alignment: .center, spacing: 12) {
             Text("AUDIO").frame(width: 40, alignment: .leading)
-            Text("TYPED").frame(maxWidth: textColumnCap, alignment: .leading)
-            Text("CORRECT").frame(maxWidth: textColumnCap, alignment: .leading)
+            textColumns(Text("TYPED"), Text("CORRECT"))
+            Color.clear.frame(width: marksWidth, height: 1)
             Spacer(minLength: 0)
         }
         .font(SliveTheme.font(10, .bold))
@@ -191,19 +210,18 @@ struct DataTableCard: View {
                 DataAudioButton(sampleID: sample.id, url: store.cachedAudioURL(sample), player: player)
                 .frame(width: 40, alignment: .leading)
 
-                // What Slive output.
-                Text(sample.transcript)
-                    .font(SliveTheme.font(12))
-                    .foregroundStyle(SliveTheme.textMid)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: textColumnCap, alignment: .leading)
+                // What Slive output | what it should have been (corrected
+                // words highlighted) — equal widths, so the two wrap alike.
+                textColumns(
+                    Text(sample.transcript)
+                        .foregroundStyle(SliveTheme.textMid)
+                        .textSelection(.enabled),
+                    shouldBeCell(sample)
+                )
+                .font(SliveTheme.font(12))
 
-                // What it should have been — corrected words highlighted.
-                shouldBeCell(sample)
-                    .font(SliveTheme.font(12))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: textColumnCap, alignment: .leading)
+                shouldBeMarks(sample)
+                    .frame(minWidth: marksWidth, alignment: .leading)
 
                 Spacer(minLength: 8)
 
@@ -226,23 +244,10 @@ struct DataTableCard: View {
         .padding(.vertical, 9)
     }
 
-    /// SHOULD BE cell states: inline human editor → manual correction →
-    /// word-diffed model transcript → spinner → Get/Edit actions → dash.
-    @ViewBuilder private func shouldBeCell(_ sample: EditSample) -> some View {
-        if editingSampleID == sample.id {
-            shouldBeEditor(sample)
-        } else if run.inFlight.contains(sample.id) {
-            ProgressView().controlSize(.small)
-        } else if let truth = effectiveTruth(sample) {
+    /// Badges and actions for a labeled row's CORRECT text (its own column).
+    @ViewBuilder private func shouldBeMarks(_ sample: EditSample) -> some View {
+        if editingSampleID != sample.id, !run.inFlight.contains(sample.id), effectiveTruth(sample) != nil {
             HStack(alignment: .top, spacing: 6) {
-                if let formatted = formattedTruth(sample) {
-                    // Plain Text: markdown list lines show as written, one per line.
-                    Text(verbatim: formatted)
-                        .foregroundStyle(SliveTheme.textMid)
-                        .textSelection(.enabled)
-                } else {
-                    truthTextView(truth, sample: sample)
-                }
                 if !sample.finalText.isEmpty {
                     Image(systemName: "person.crop.circle.badge.checkmark")
                         .font(SliveTheme.tagFont)
@@ -283,6 +288,26 @@ struct DataTableCard: View {
                 }
                 .buttonStyle(.plain)
                 .help("Edit")
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    /// SHOULD BE cell states: inline human editor → manual correction →
+    /// word-diffed model transcript → spinner → Get/Edit actions → dash.
+    @ViewBuilder private func shouldBeCell(_ sample: EditSample) -> some View {
+        if editingSampleID == sample.id {
+            shouldBeEditor(sample)
+        } else if run.inFlight.contains(sample.id) {
+            ProgressView().controlSize(.small)
+        } else if let truth = effectiveTruth(sample) {
+            if let formatted = formattedTruth(sample) {
+                // Plain Text: markdown list lines show as written, one per line.
+                Text(verbatim: formatted)
+                    .foregroundStyle(SliveTheme.textMid)
+                    .textSelection(.enabled)
+            } else {
+                truthTextView(truth, sample: sample)
             }
         } else if store.hasAudio(sample) {
             HStack(spacing: 8) {
