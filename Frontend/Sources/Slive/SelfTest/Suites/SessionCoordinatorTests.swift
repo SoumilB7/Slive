@@ -31,11 +31,11 @@ enum SessionCoordinatorTests {
         var isCapturing: Bool { capturing }
     }
 
-    static let holdDelay: TimeInterval = 0.15
+    nonisolated static let holdDelay: TimeInterval = 0.15
 
-    static func make() -> (SessionCoordinator, FakeFlows, ManualScheduler) {
+    static func make(holdDelay delay: TimeInterval = holdDelay) -> (SessionCoordinator, FakeFlows, ManualScheduler) {
         let clock = ManualScheduler()
-        let session = SessionCoordinator(scheduler: clock, holdDelay: { holdDelay })
+        let session = SessionCoordinator(scheduler: clock, holdDelay: { delay })
         let flows = FakeFlows()
         flows.session = session
         session.handler = flows
@@ -163,6 +163,52 @@ enum SessionCoordinatorTests {
             t.check(s.toggleActive == nil && s.gesture == .arming(.dictate), "and arms its own hold")
             clock.advance(by: holdDelay)
             t.equal(f.log.last, "begin dictate", "the hold then begins")
+        }
+
+        // The shared gesture (a hold on X beside X ×2): a double-tap while
+        // the toggle is live stops it; tap 1's hold is a thrown-away fragment.
+        for delay in [0, 0.3] {
+            let window = Hotkey.doubleTapInterval
+            do {
+                let (s, f, clock) = make(holdDelay: delay)
+                s.toggleTapped(.dictate)
+                clock.advance(by: 3)
+                s.keyDown(.dictate, firstTapOf: .dictate)
+                t.equal(f.log, ["begin dictate", "end dictate"], "delay \(delay): tap 1 hands off the toggle's audio at once")
+                clock.advance(by: window - 0.001)
+                s.keyUp()
+                clock.advance(by: 0.0005)
+                s.toggleTapped(.dictate)
+                clock.advance(by: 1)
+                t.equal(f.log, ["begin dictate", "end dictate", "begin dictate", "abort"],
+                        "delay \(delay): a double-tap stop throws tap 1's fragment away and starts nothing")
+                t.check(s.toggleActive == nil && s.gesture == .idle && !f.capturing, "delay \(delay): all idle after the stop")
+            }
+            do {
+                let (s, f, clock) = make(holdDelay: delay)
+                s.toggleTapped(.stream)
+                clock.advance(by: 3)
+                s.keyDown(.dictate, firstTapOf: .stream)
+                clock.advance(by: window + 0.001)
+                s.keyUp()
+                clock.advance(by: 1)
+                t.equal(f.log, ["begin stream", "end stream", "begin dictate", "end dictate"],
+                        "delay \(delay): held past the window, the press is a real hold")
+            }
+            do {
+                let (s, f, clock) = make(holdDelay: delay)
+                s.toggleTapped(.stream)
+                clock.advance(by: 3)
+                s.keyDown(.dictate)   // another gesture: closes the toggle, as before
+                clock.advance(by: 0.1)
+                s.keyUp()
+                clock.advance(by: 0.2)
+                s.toggleTapped(.stream)
+                clock.advance(by: 1)
+                let hold = delay == 0 ? ["begin dictate", "end dictate"] : []
+                t.equal(f.log, ["begin stream", "end stream"] + hold + ["begin stream"],
+                        "delay \(delay): a different hold's quick tap behaves as before")
+            }
         }
 
         do {

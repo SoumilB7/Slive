@@ -185,7 +185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // its failure are wired by the modes themselves.
         session.handler = app.modes
         let session = self.session
-        app.hotkey.onStart = { [weak session] action in session?.keyDown(action) }
+        app.hotkey.onStart = { [weak session] action, firstTapOf in
+            session?.keyDown(action, firstTapOf: firstTapOf)
+        }
         app.hotkey.onStop = { [weak session] _ in session?.keyUp() }
         model.onDismiss = { [weak self] in self?.dismissOverlay() }
         app.hotkey.onToggle = { [weak session] action in session?.toggleTapped(action) }

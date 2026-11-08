@@ -35,6 +35,15 @@ enum HotkeyModelTests {
         t.equal(Hotkey.keyChar(forKeyCode: 49, characters: nil), "Space", "Space key name")
         t.equal(Hotkey.keyChar(forKeyCode: 0, characters: "a"), "A", "letter key name")
         t.equal(Hotkey.keyChar(forKeyCode: 200, characters: ""), "key200", "unknown key name")
+        t.equal(Hotkey.keyChar(forKeyCode: 115, characters: "\u{F729}"), "Home", "Home reads as Home, not its glyph")
+        t.equal(Hotkey.makeLabel(modifiers: fn, keyCode: 96, characters: nil), "F5", "F5 drops its implicit fn")
+        t.equal(Hotkey.makeLabel(modifiers: ctrl | fn, keyCode: 124, characters: nil), "⌃ →", "⌃ → drops its implicit fn")
+        t.equal(Hotkey.makeLabel(modifiers: fn, keyCode: 44, characters: "/"), "fn /", "a real fn chord keeps fn")
+        t.equal(Hotkey(modifiers: fn, keyCode: 117, label: "fn \u{F728}").displayLabel, "⌦", "stored ⌦ glyph displays as ⌦")
+        t.check(Hotkey.typesText(0) && Hotkey.typesText(49) && !Hotkey.typesText(96) && !Hotkey.typesText(115),
+                "letters and Space type text; F5 and Home don't")
+        t.check(Hotkey.implicitFnKeyCodes.allSatisfy { Hotkey.keyName($0) != nil },
+                "every key that carries fn implicitly has a name")
 
         for flag: CGEventFlags in [.maskCommand, .maskAlternate, .maskControl, .maskShift, .maskSecondaryFn] {
             t.check(Hotkey.modifierMask & flag.rawValue != 0, "mask covers \(flag.rawValue)")

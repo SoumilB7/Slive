@@ -25,7 +25,7 @@ enum Fixtures {
         m.hotkey = Hotkey(modifiers: fn, keyCode: nil, label: "fn")
         m.assistantHotkey = nil
         m.streamHotkey = Hotkey(modifiers: ctrl, keyCode: nil, label: "⌃")
-        m.onStart = started
+        m.onStart = { action, _ in started(action) }
         m.onStop = stopped
         return m
     }

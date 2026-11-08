@@ -51,9 +51,7 @@ struct DownloadProgress: Sendable {
 struct ModelBasket {
     let root: URL
 
-    static let standard = ModelBasket(root: FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Slive/Models", isDirectory: true))
+    static let standard = ModelBasket(root: AppSupport.root.appendingPathComponent("Models", isDirectory: true))
 
     /// The basket, created on first use.
     var url: URL {

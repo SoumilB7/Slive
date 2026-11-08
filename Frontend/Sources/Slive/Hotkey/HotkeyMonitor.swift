@@ -12,8 +12,11 @@ import IOKit.hid
 /// Accessibility); when both are modifier-only, a listen-only tap is enough
 /// (Input Monitoring). Only the EXACT recorded shortcuts are ever acted on.
 final class HotkeyMonitor {
-    /// Fired with the action of the shortcut that just engaged / released.
-    var onStart: ((HotkeyAction) -> Void)?
+    /// Fired with the action of the shortcut that just engaged, and the ×2
+    /// toggle this same press is the first tap of, if any (a hold on X
+    /// beside X ×2 — the receiver tells a double-tap stop from a real hold).
+    var onStart: ((_ action: HotkeyAction, _ firstTapOf: HotkeyAction?) -> Void)?
+    /// Fired with the action of the shortcut that just released.
     var onStop: ((HotkeyAction) -> Void)?
     /// Fired when a TOGGLE bind is tapped (click to start, click to stop —
     /// the session state machine lives with the receiver, not here).
@@ -299,6 +302,8 @@ final class HotkeyMonitor {
 
         let flags = event.flags.rawValue & Hotkey.modifierMask
         let keycode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
+        // The ×2 toggle whose first tap this event is (handed to a hold it starts).
+        var firstTapOf: HotkeyAction?
 
         // 0. Tap-to-toggle binds — checked FIRST so a gesture bound as a
         //    toggle can never double as a hold. Chord toggles fire once on
@@ -348,6 +353,7 @@ final class HotkeyMonitor {
                 }
                 // ×2 bind, FIRST tap: fall through — a hold sharing this
                 // gesture owns the edge (its arm dies if the double lands).
+                firstTapOf = t.action
             }
             // Every completed tap feeds the detector, even when no toggle
             // matches (so tap–tap of a gesture bound elsewhere can't smear
@@ -423,7 +429,7 @@ final class HotkeyMonitor {
                 ?? mods.first { ($0.hotkey.modifiers & flags) == $0.hotkey.modifiers }?.action
             if matched != activeAction {
                 if let a = activeAction { activeAction = nil; onStop?(a) }
-                if let m = matched { activeAction = m; onStart?(m) }
+                if let m = matched { activeAction = m; onStart?(m, firstTapOf) }
                 syncReleaseWatchdog()
             }
         }
@@ -479,16 +485,9 @@ final class HotkeyMonitor {
         return true
     }
 
-    /// Keys macOS reports as fn+key though fn is never touched (F1–F20, the
-    /// arrows, Home/End, Page Up/Down, Forward Delete, Help): their events —
-    /// and so a shortcut recorded on one — carry the fn flag, but the fn KEY
-    /// is up. Requiring it physically released every such hold in 0.2 s.
-    static let implicitFnKeyCodes: Set<UInt16> = [
-        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,   // F1–F12
-        105, 107, 113, 106, 64, 79, 80, 90,                       // F13–F20
-        123, 124, 125, 126,                                       // arrows
-        115, 119, 116, 121, 117, 114,                             // Home End PgUp PgDn ⌦ Help
-    ]
+    /// Keys whose events carry fn though the fn KEY is up (Hotkey's list):
+    /// requiring it physically released every such hold in 0.2 s.
+    static let implicitFnKeyCodes = Hotkey.implicitFnKeyCodes
 
     /// Pure chord rule, self-tested: the key itself and every modifier the
     /// user actually presses must still be down.
@@ -524,7 +523,7 @@ final class HotkeyMonitor {
     private func engage(_ action: HotkeyAction, engagedKey: UInt16) {
         if let a = activeAction, a != action { activeAction = nil; onStop?(a) }
         engagedKeyCode = engagedKey
-        if activeAction != action { activeAction = action; onStart?(action) }
+        if activeAction != action { activeAction = action; onStart?(action, nil) }
         syncReleaseWatchdog()
     }
 

@@ -79,6 +79,9 @@ public struct Hotkey: Codable, Equatable, Sendable {
         return symbols.isEmpty ? keyChar : "\(symbols) \(keyChar)"
     }
 
+    /// The fn flag on its own.
+    public static let fnFlag: UInt64 = CGEventFlags.maskSecondaryFn.rawValue
+
     /// Keys that don't type text, so they're fine to use bare (no modifier):
     /// Esc, the function row, and the arrows.
     public static func isSpecialKey(_ code: UInt16) -> Bool {
@@ -90,23 +93,70 @@ public struct Hotkey: Codable, Equatable, Sendable {
         return special.contains(code)
     }
 
-    /// Human-friendly name for a virtual keycode's non-typographic keys; falls
-    /// back to the given character.
-    public static func keyChar(forKeyCode code: UInt16, characters: String?) -> String {
+    /// Keys macOS reports as fn+key though fn is never touched (F1–F20, the
+    /// arrows, Home/End, Page Up/Down, Forward Delete, Help): their events —
+    /// and so a shortcut recorded on one — carry the fn flag, but the fn KEY
+    /// is up.
+    public static let implicitFnKeyCodes: Set<UInt16> = [
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,   // F1–F12
+        105, 107, 113, 106, 64, 79, 80, 90,                       // F13–F20
+        123, 124, 125, 126,                                       // arrows
+        115, 119, 116, 121, 117, 114,                             // Home End PgUp PgDn ⌦ Help
+    ]
+
+    /// Whether pressing the key (with ⇧ at most) types or edits text — so
+    /// ⇧ + it as a shortcut would take that character away.
+    public static func typesText(_ code: UInt16) -> Bool {
+        !isSpecialKey(code) && !implicitFnKeyCodes.contains(code)
+    }
+
+    /// The fixed name of a key whose character is layout-independent or
+    /// unprintable (the function keys' characters are private-use glyphs).
+    public static func keyName(_ code: UInt16) -> String? {
         switch code {
         case 49:  return "Space"
         case 36:  return "Return"
         case 48:  return "Tab"
         case 51:  return "Delete"
         case 53:  return "Esc"
+        case 76:  return "Enter"
+        case 71:  return "Clear"
         case 122: return "F1";  case 120: return "F2";  case 99:  return "F3"
         case 118: return "F4";  case 96:  return "F5";  case 97:  return "F6"
         case 98:  return "F7";  case 100: return "F8";  case 101: return "F9"
         case 109: return "F10"; case 103: return "F11"; case 111: return "F12"
+        case 105: return "F13"; case 107: return "F14"; case 113: return "F15"
+        case 106: return "F16"; case 64:  return "F17"; case 79:  return "F18"
+        case 80:  return "F19"; case 90:  return "F20"
         case 123: return "←"; case 124: return "→"; case 125: return "↓"; case 126: return "↑"
-        default:
-            let c = (characters ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return c.isEmpty ? "key\(code)" : c.uppercased()
+        case 115: return "Home"; case 119: return "End"
+        case 116: return "Page Up"; case 121: return "Page Down"
+        case 117: return "⌦"; case 114: return "Help"
+        default:  return nil
         }
+    }
+
+    /// Human-friendly name for a virtual keycode: its fixed name, else the
+    /// given character.
+    public static func keyChar(forKeyCode code: UInt16, characters: String?) -> String {
+        if let name = keyName(code) { return name }
+        let c = (characters ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return c.isEmpty ? "key\(code)" : c.uppercased()
+    }
+
+    /// A chord's label as the user pressed it: the fn its key's events
+    /// carry implicitly is not shown ("F5", not "fn F5").
+    public static func makeLabel(modifiers: UInt64, keyCode: UInt16, characters: String?) -> String {
+        let shown = implicitFnKeyCodes.contains(keyCode) ? modifiers & ~fnFlag : modifiers
+        return makeLabel(modifiers: shown, keyChar: keyChar(forKeyCode: keyCode, characters: characters))
+    }
+
+    /// What Settings shows. Rebuilt from the key for named keys, so labels
+    /// stored by older recorders ("fn F5", "fn →", private-use glyphs for
+    /// Home/End) read as the key; others keep the recorded label (a letter's
+    /// character depends on the layout it was recorded with).
+    public var displayLabel: String {
+        guard let keyCode, Self.keyName(keyCode) != nil else { return label }
+        return Self.makeLabel(modifiers: modifiers, keyCode: keyCode, characters: nil)
     }
 }

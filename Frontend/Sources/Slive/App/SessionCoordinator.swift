@@ -58,6 +58,10 @@ import Foundation
     /// When the current continuous session began speaking (post hold-delay), so
     /// its pace can be measured on release.
     private var liveStart: Date?
+    /// A press that closed its own ×2 toggle (a hold on X beside a live X ×2
+    /// toggle), and when: until the double-tap window has passed it may be
+    /// the first tap of a double-tap STOP rather than a new hold.
+    private var stopTap: (toggle: HotkeyAction, at: Date)?
     /// When the hotkey lifted — anchor for the always-on release→typed log.
     /// The flow that logs it clears it.
     var releasedAt: Date?
@@ -104,12 +108,19 @@ import Foundation
 
     // MARK: - Hold-to-talk
 
-    func keyDown(_ action: HotkeyAction) {
+    /// A hold engaged. `firstTapOf`: the ×2 toggle this same press is the
+    /// first tap of (the monitor's shared gesture), if any.
+    func keyDown(_ action: HotkeyAction, firstTapOf doubleTap: HotkeyAction? = nil) {
+        stopTap = nil
         // A held key takes over from a live toggle session: close the toggle
         // (schedules its stop), then flush so the new hold starts clean.
-        if toggleActive != nil {
+        if let live = toggleActive {
             toggleActive = nil
             keyUp()
+            // The live toggle's own double-tap gesture: this press may be the
+            // stop's first tap. The toggle's audio is handed off below either
+            // way; the hold's fate waits for its release.
+            if live == doubleTap { stopTap = (live, now) }
         }
         // A delayed stop may still be pending from the previous release — flush
         // it now (stop + hand off to transcription immediately) so the new hold
@@ -127,6 +138,23 @@ import Foundation
     }
 
     func keyUp() {
+        // The press that closed its own ×2 toggle, let go inside the
+        // double-tap window, was the stop's tap — not a dictation. Its hold
+        // fragment is a false start: never transcribed, never typed. Held
+        // past the window, it is a real hold and ends as usual.
+        if let tap = stopTap {
+            stopTap = nil
+            if now.timeIntervalSince(tap.at) <= Hotkey.doubleTapInterval {
+                stopTap = tap   // kept for the double's second tap
+                if case .arming = gesture {
+                    gestureWork?.cancel()
+                    settle()
+                } else {
+                    abortFalseStartSession()
+                }
+                return
+            }
+        }
         if case .arming = gesture {
             // Released before the hold threshold → do nothing at all.
             gestureWork?.cancel()
@@ -166,6 +194,15 @@ import Foundation
         if case .arming = gesture {
             gestureWork?.cancel()
             settle()
+        }
+        // The second tap of a double-tap that began while this toggle was
+        // live: its first tap already stopped it — only stop, never restart.
+        if let tap = stopTap {
+            stopTap = nil
+            if tap.toggle == action, now.timeIntervalSince(tap.at) <= Hotkey.doubleTapInterval {
+                if isSessionLive { abortFalseStartSession() }   // a fragment of this gesture
+                return
+            }
         }
         // Second tap of the live toggle session → the release.
         if toggleActive == action {

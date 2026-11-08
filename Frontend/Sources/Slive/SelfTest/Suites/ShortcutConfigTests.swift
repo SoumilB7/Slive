@@ -80,8 +80,9 @@ enum ShortcutConfigTests {
             monitor = HotkeyMonitor(armsTap: false, now: { clock.now },
                                     keyProbe: { keys.down.contains($0) })
             let trail = self.trail
-            monitor.onStart = { [weak session] a in
-                trail.log.append("start \(a)"); trail.firesThisEvent += 1; session?.keyDown(a)
+            monitor.onStart = { [weak session] a, firstTapOf in
+                trail.log.append("start \(a)"); trail.firesThisEvent += 1
+                session?.keyDown(a, firstTapOf: firstTapOf)
             }
             monitor.onStop = { [weak session] a in trail.log.append("stop \(a)"); session?.keyUp() }
             monitor.onToggle = { [weak session] a in
@@ -119,19 +120,25 @@ enum ShortcutConfigTests {
             return swallowed
         }
 
-        func pressModifiers(_ mods: UInt64) {
-            for bit in ShortcutConfigTests.modifierOrder where mods & bit != 0 {
+        /// Press modifiers last-first (and so release them first-first).
+        var reversedOrder = false
+        private var pressOrder: [UInt64] {
+            reversedOrder ? ShortcutConfigTests.modifierOrder.reversed() : ShortcutConfigTests.modifierOrder
+        }
+
+        func pressModifiers(_ mods: UInt64, step: TimeInterval = 0.03) {
+            for bit in pressOrder where mods & bit != 0 {
                 keys.down.insert(modKeys[bit]!.code)
                 send(.flagsChanged, key: UInt16(modKeys[bit]!.code), flags: flags)
-                clock.advance(by: 0.03)
+                clock.advance(by: step)
             }
         }
 
-        func releaseModifiers(_ mods: UInt64) {
-            for bit in ShortcutConfigTests.modifierOrder.reversed() where mods & bit != 0 {
+        func releaseModifiers(_ mods: UInt64, step: TimeInterval = 0.03) {
+            for bit in pressOrder.reversed() where mods & bit != 0 {
                 keys.down.remove(modKeys[bit]!.code)
                 send(.flagsChanged, key: UInt16(modKeys[bit]!.code), flags: flags)
-                clock.advance(by: 0.03)
+                clock.advance(by: step)
             }
         }
 
@@ -189,37 +196,55 @@ enum ShortcutConfigTests {
     /// Every shortcut the recorder can produce on a key press: each keycode
     /// with each set of physically held modifiers (the event adds fn for
     /// keys that carry it).
-    static func recordedChords() -> (chords: [Hotkey], cancels: Int, ignored: Int, mismatches: [String]) {
+    static func recordedChords() -> (chords: [Hotkey], cancels: Int, ignored: Int, refused: Int,
+                                     mismatches: [String]) {
         var chords: [Hotkey] = []
-        var cancels = 0, ignored = 0
+        var cancels = 0, ignored = 0, refused = 0
         var mismatches: [String] = []
         for key in UInt16(0)...127 where !modifierKeycodes.contains(key) {
             for physical in modifierSets {
                 let mods = physical | (implicitFn(key) ? fn : 0)
-                switch HotkeyRecorderView.keyDownOutcome(keyCode: key, modifiers: mods, characters: nil) {
+                // Named keys arrive with a private-use glyph as their character.
+                let chars: String? = Hotkey.keyName(key) != nil ? "\u{F729}" : nil
+                let shiftedText = mods == shift && Hotkey.typesText(key)
+                switch HotkeyRecorderView.keyDownOutcome(keyCode: key, modifiers: mods, characters: chars) {
                 case .cancel:
                     cancels += 1
                     if key != 53 { mismatches.append("key\(key) cancels") }
                 case .ignore:
                     ignored += 1
                     if mods != 0 || Hotkey.isSpecialKey(key) { mismatches.append("key\(key)/\(mods) ignored") }
+                case .refuse(let why):
+                    refused += 1
+                    if !shiftedText || why != HotkeyRecorderView.shiftTypesText {
+                        mismatches.append("key\(key)/\(mods) refused: \(why)")
+                    }
                 case .commit(let hk):
-                    if hk.modifiers != mods || hk.keyCode != key || hk.taps != 1
-                        || hk.label.isEmpty || hk.label == "—" || !hk.isValid {
-                        mismatches.append("key\(key)/\(mods) recorded as \(hk)")
+                    // The label reads as the key pressed: no implicit fn, no glyphs.
+                    let shown = implicitFn(key) ? physical & ~fn : physical
+                    let want = Hotkey.makeLabel(modifiers: shown,
+                                                keyChar: Hotkey.keyName(key) ?? "key\(key)")
+                    if hk.modifiers != mods || hk.keyCode != key || hk.taps != 1 || shiftedText
+                        || hk.label != want || hk.displayLabel != want || !hk.isValid
+                        || hk.label.unicodeScalars.contains(where: { (0xE000...0xF8FF).contains($0.value) }) {
+                        mismatches.append("key\(key)/\(mods) recorded as \(hk) (want \(want))")
                     }
                     chords.append(hk)
                 }
             }
         }
-        return (chords, cancels, ignored, mismatches)
+        return (chords, cancels, ignored, refused, mismatches)
     }
 
-    /// Every modifier-only shortcut: each non-empty modifier set, ×1 and
-    /// (toggle slots only) ×2.
+    /// Every modifier-only shortcut the recorder saves: each non-empty
+    /// modifier set, ×1 and (toggle slots only) ×2.
     static func recordedModifierOnly(style: BindingStyle) -> [Hotkey] {
         modifierSets.dropFirst().flatMap { mods in
-            (style == .toggle ? [1, 2] : [1]).map { HotkeyRecorderView.modifierHotkey(mods, taps: $0) }
+            (style == .toggle ? [1, 2] : [1]).compactMap { taps -> Hotkey? in
+                guard case .commit(let hk) = HotkeyRecorderView.modifierOutcome(mods, taps: taps, style: style)
+                else { return nil }
+                return hk
+            }
         }
     }
 
@@ -234,16 +259,50 @@ enum ShortcutConfigTests {
         typingAndWatchdog(&t)
         defaultsEndToEnd(&t)
         pairMatrix(&t)
+        sharedGestureStop(&t)
     }
 
     // MARK: - 1. Everything the recorder saves works alone
 
     static func recorderSweep(_ t: inout Checks) {
         let rec = recordedChords()
-        t.check(rec.mismatches.isEmpty, "recorder: Esc cancels, bare typing keys wait, the rest records as pressed",
+        t.check(rec.mismatches.isEmpty, "recorder: Esc cancels, bare typing keys wait, ⇧ + a typing key is "
+                + "refused, the rest records as pressed and reads as the key",
                 rec.mismatches.prefix(6).joined(separator: "; "))
-        t.check(rec.cancels == 32 && rec.ignored > 0 && !rec.chords.isEmpty,
-                "recorder sweep covers cancel, ignore and record (\(rec.chords.count) chords)")
+        let typingKeys = (UInt16(0)...127).filter { !modifierKeycodes.contains($0) && Hotkey.typesText($0) }
+        t.check(rec.cancels == 32 && rec.ignored > 0 && !rec.chords.isEmpty && rec.refused == typingKeys.count,
+                "recorder sweep covers cancel, ignore, refuse (\(rec.refused)) and record (\(rec.chords.count) chords)")
+        var bareRefused: [String] = []
+        for style in [BindingStyle.hold, .toggle] {
+            for mods in modifierSets.dropFirst() {
+                for taps in style == .toggle ? [1, 2] : [1] {
+                    if case .refuse(let why) = HotkeyRecorderView.modifierOutcome(mods, taps: taps, style: style) {
+                        bareRefused.append("\(style) \(mods): \(why)")
+                    }
+                }
+            }
+        }
+        t.equal(bareRefused, ["hold \(shift): ⇧ alone fires while you type.",
+                              "hold \(cmd): ⌘ alone fires while you type.",
+                              "toggle \(shift): ⇧ alone fires while you type.",
+                              "toggle \(cmd): ⌘ alone fires while you type."],
+                "recorder refuses only a bare ⇧ or ⌘ hold or single-tap toggle (⇧ ×2 / ⌘ ×2 allowed)")
+        // Labels stored by the old recorder read as the key pressed.
+        var junk = Sweep()
+        for key in HotkeyMonitor.implicitFnKeyCodes.sorted() {
+            for physical in modifierSets {
+                let stored = Hotkey(modifiers: physical | fn, keyCode: key,
+                                    label: Hotkey.makeLabel(modifiers: physical | fn, keyChar: "\u{F729}"))
+                let want = Hotkey.makeLabel(modifiers: physical & ~fn, keyChar: Hotkey.keyName(key)!)
+                junk.expect(stored.displayLabel == want, "key\(key)/\(physical): \(stored.displayLabel)")
+            }
+        }
+        junk.expect(Hotkey(modifiers: fn, keyCode: 96, label: "fn F5").displayLabel == "F5", "fn F5")
+        junk.expect(Hotkey(modifiers: fn, keyCode: 124, label: "fn →").displayLabel == "→", "fn →")
+        junk.expect(Hotkey(modifiers: ctrl | fn, keyCode: 115, label: "⌃fn \u{F729}").displayLabel == "⌃ Home", "⌃ Home")
+        junk.expect(Hotkey(modifiers: alt, keyCode: 44, label: "⌥ /").displayLabel == "⌥ /", "a letter keeps its label")
+        junk.expect(Hotkey.fnDefault.displayLabel == "fn 🌐", "modifier-only keeps its label")
+        junk.report(&t, "old stored labels (fn F5, fn →, glyphs) display as the key")
 
         // Chords, on a hold and a toggle slot.
         var hold = Sweep(), toggle = Sweep(), watchdog = Sweep(), unstick = Sweep(), passThrough = Sweep()
@@ -546,9 +605,10 @@ enum ShortcutConfigTests {
     // MARK: - 5. Fresh-install defaults and the suggestions, end to end
 
     /// A coordinator on the rig's clock with a fake flow behind it.
-    static func endToEnd(_ bindings: [HotkeyBinding]) -> (KeyRig, SessionCoordinatorTests.FakeFlows) {
+    static func endToEnd(_ bindings: [HotkeyBinding], holdDelay: TimeInterval = SessionCoordinatorTests.holdDelay)
+        -> (KeyRig, SessionCoordinatorTests.FakeFlows) {
         let clock = ManualScheduler()
-        let session = SessionCoordinator(scheduler: clock, holdDelay: { SessionCoordinatorTests.holdDelay })
+        let session = SessionCoordinator(scheduler: clock, holdDelay: { holdDelay })
         let flows = SessionCoordinatorTests.FakeFlows()
         flows.session = session
         session.handler = flows
@@ -621,7 +681,7 @@ enum ShortcutConfigTests {
     /// ×2, chords sharing modifiers, fn-carrying keys, a fn chord.
     static func pairPool(_ style: BindingStyle) -> [Hotkey] {
         var list = [fn, ctrl, alt, ctrl | fn, alt | cmd].map { HotkeyRecorderView.modifierHotkey($0, taps: 1) }
-        if style == .toggle { list += [fn, ctrl].map { HotkeyRecorderView.modifierHotkey($0, taps: 2) } }
+        if style == .toggle { list += [fn, ctrl, ctrl | fn].map { HotkeyRecorderView.modifierHotkey($0, taps: 2) } }
         list += [
             Hotkey(modifiers: alt, keyCode: 44, label: "⌥ /"),
             Hotkey(modifiers: alt, keyCode: 47, label: "⌥ ."),
@@ -633,84 +693,47 @@ enum ShortcutConfigTests {
         return list
     }
 
-    /// Same gesture to the monitor: a chord's modifiers + key, or a
-    /// modifier set and tap count.
-    static func sameGesture(_ a: Hotkey, _ b: Hotkey) -> Bool {
-        a.modifiers == b.modifiers && a.keyCode == b.keyCode && (a.keyCode != nil || a.taps == b.taps)
-    }
-
-    /// The modifier states a shortcut's gesture walks through, in order —
-    /// each flagsChanged, with whether a modifier went down to reach it.
-    static func walk(_ x: Hotkey) -> [(flags: UInt64, pressed: Bool)] {
-        let mods = physicalModifiers(x)
-        var states: [(flags: UInt64, pressed: Bool)] = []
-        for _ in 0..<(x.isModifierOnly ? max(1, x.taps) : 1) {
-            var held: UInt64 = 0
-            for bit in modifierOrder where mods & bit != 0 { held |= bit; states.append((held, true)) }
-            for bit in modifierOrder.reversed() where mods & bit != 0 { held &= ~bit; states.append((held, false)) }
+    /// Whether `hk` runs cleanly in every order its modifiers can be
+    /// pressed (the pool has at most two, so forward and reversed is all).
+    static func runsCleanlyInAnyOrder(_ hk: Hotkey, _ slot: BindingSlot, _ bindings: [HotkeyBinding],
+                                      reversedTrails: inout [String])
+        -> (ran: Bool, rig: KeyRig, flows: SessionCoordinatorTests.FakeFlows) {
+        let (rig, flows) = endToEnd(bindings)
+        var ran = runsCleanly(hk, slot, rig: rig, flows: flows)
+        if ShortcutConflicts.physicalModifiers(hk).nonzeroBitCount > 1 {
+            let (back, backFlows) = endToEnd(bindings)
+            back.reversedOrder = true
+            ran = runsCleanly(hk, slot, rig: back, flows: backFlows) && ran
+            reversedTrails = back.trail.log + backFlows.log
         }
-        return states
-    }
-
-    /// Why `x` (on `xs`) can't run cleanly while `y` (on `ys`) is also
-    /// bound — nil when it can. The same-gesture rows are the monitor's
-    /// documented precedence; the other two are the reported conflicts.
-    /// Anything else failing is a regression.
-    static func conflict(_ x: Hotkey, _ xs: BindingSlot, with y: Hotkey, _ ys: BindingSlot) -> String? {
-        let yFirst = ys.action.priority < xs.action.priority
-        if sameGesture(x, y) {
-            switch (xs.style, ys.style) {
-            case (.hold, .hold): if yFirst { return "same gesture: the earlier hold wins" }
-            case (.hold, .toggle):
-                if x.keyCode != nil || y.taps <= 1 { return "same gesture: the toggle wins" }
-            case (.toggle, .toggle): if yFirst { return "same gesture: the earlier toggle wins" }
-            case (.toggle, .hold): break
-            }
-        }
-        // Modifier toggles are matched by modifiers alone: ⌃ and ⌃ ×2 on two
-        // toggles is one gesture to the monitor.
-        let sameToggleModifiers = xs.style == .toggle && ys.style == .toggle
-            && x.isModifierOnly && y.isModifierOnly && x.modifiers == y.modifiers
-        if sameToggleModifiers && yFirst { return "same modifiers: the earlier toggle wins" }
-        // Pressing x's modifiers presses y's single-tap toggle on the way.
-        let states = walk(x)
-        if ys.style == .toggle, y.isModifierOnly, y.taps <= 1, !sameGesture(x, y), !sameToggleModifiers,
-           states.contains(where: { $0.pressed && $0.flags == y.modifiers }) {
-            return "a single-tap modifier toggle inside another gesture"
-        }
-        // x's toggle gesture engages y's modifier hold, whose press or
-        // release then ends the toggle's session (SessionCoordinator: "a
-        // held key closes a live toggle at once").
-        if xs.style == .toggle, ys.style == .hold, y.isModifierOnly, y.modifiers != 0 {
-            // A modifier-only toggle's own (last) press never reaches the hold matcher.
-            let trigger = x.isModifierOnly ? states.lastIndex(where: { $0.pressed }) : nil
-            for (i, state) in states.enumerated()
-            where i != trigger && state.flags != 0 && state.flags & y.modifiers == y.modifiers {
-                return "a toggle through a modifier hold"
-            }
-        }
-        return nil
+        return (ran, rig, flows)
     }
 
     static func pairMatrix(_ t: inout Checks) {
         let slots = allSlots
-        var pairs = Sweep(), perEvent = Sweep(), repeatable = Sweep()
-        var broken: [String: Int] = [:]
+        var pairs = Sweep(), perEvent = Sweep(), repeatable = Sweep(), configsOK = Sweep()
+        var recorder = Sweep(), rows = Sweep(), shared = Sweep()
+        var broken: [ShortcutConflict.Rule: Int] = [:]
         var configs = 0
+        // The Settings rows read a real Settings, every slot switched on.
+        let s = Settings(store: InMemoryStore())
         for (i, xs) in slots.enumerated() {
             for ys in slots[(i + 1)...] {
                 for x in pairPool(xs.style) {
                     for y in pairPool(ys.style) {
                         configs += 1
                         let bindings = [binding(xs, x), binding(ys, y)]
+                        var allRan = true
                         for (hk, slot, other, otherSlot) in [(x, xs, y, ys), (y, ys, x, xs)] {
-                            let (rig, flows) = endToEnd(bindings)
-                            let ran = runsCleanly(hk, slot, rig: rig, flows: flows)
-                            let why = conflict(hk, slot, with: other, otherSlot)
+                            var reversed: [String] = []
+                            let (ran, rig, flows) = runsCleanlyInAnyOrder(hk, slot, bindings, reversedTrails: &reversed)
+                            allRan = allRan && ran
+                            let why = ShortcutConflicts.breaks(hk, slot, by: other, otherSlot)
                             if let why { broken[why, default: 0] += 1 }
                             pairs.expect(ran == (why == nil),
                                          "\(slot) \(hk.label) beside \(otherSlot) \(other.label): ran=\(ran) "
-                                         + "predicted \(why ?? "clean") \(flows.log) \(rig.trail.log)")
+                                         + "predicted \(why.map { "\($0)" } ?? "clean") \(flows.log) \(rig.trail.log) "
+                                         + "reversed \(reversed)")
                             perEvent.expect(rig.trail.maxFiresPerEvent <= 1 && !rig.swallowedModifier,
                                             "\(slot) \(hk.label) beside \(other.label): \(rig.trail.log)")
                             if configs % 7 == 0 {
@@ -719,16 +742,151 @@ enum ShortcutConfigTests {
                                 repeatable.expect(again.trail.log == rig.trail.log && againFlows.log == flows.log,
                                                   "\(slot) \(hk.label) beside \(other.label)")
                             }
+                            // The recorder: an exact clash is refused, naming the other.
+                            let exact = ShortcutConflicts.check(binding(slot, hk), against: bindings)
+                                .contains(where: \.isExact)
+                            let refusal = ShortcutConflicts.refusal(for: hk, on: slot, among: [binding(otherSlot, other)])
+                            recorder.expect(refusal == (exact ? "Used by \(otherSlot.displayName)" : nil),
+                                            "\(slot) \(hk.label) beside \(otherSlot) \(other.label): \(refusal ?? "saved")")
+                        }
+                        // The config as a whole: it works iff the checker passes it.
+                        let flagged = !ShortcutConflicts.check(binding(xs, x), against: bindings).isEmpty
+                        configsOK.expect(allRan == !flagged, "\(xs) \(x.label) + \(ys) \(y.label): works=\(allRan)")
+                        // Both rows warn about a stored clash, naming each other; clean rows say nothing.
+                        for slot in slots {
+                            let live = slot == xs || slot == ys
+                            s.setShortcut(slot == xs ? x : slot == ys ? y : nil, for: slot)
+                            s.setEnabled(live, for: slot)
+                        }
+                        if s.shortcut(for: xs) == x && s.shortcut(for: ys) == y {
+                            let full = Capabilities(hasServer: true)
+                            let xw = HotkeyRecorderView.warnings(for: xs, settings: s, capabilities: full)
+                            let yw = HotkeyRecorderView.warnings(for: ys, settings: s, capabilities: full)
+                            let want = flagged ? 1 : 0
+                            rows.expect(xw.count == want && yw.count == want
+                                        && (!flagged || (xw[0].hasSuffix("\(ys.displayName) (\(y.displayLabel))")
+                                                         && yw[0].hasSuffix("\(xs.displayName) (\(x.displayLabel))"))),
+                                        "\(xs) \(x.label) + \(ys) \(y.label): \(xw) / \(yw)")
+                        }
+                        // The advertised pairing: a hold on X beside X ×2.
+                        if x.isModifierOnly, y.isModifierOnly, x.modifiers == y.modifiers,
+                           (xs.style == .hold && y.taps == 2) || (ys.style == .hold && x.taps == 2) {
+                            shared.expect(allRan && !flagged, "\(xs) \(x.label) + \(ys) \(y.label)")
                         }
                     }
                 }
             }
         }
-        pairs.report(&t, "two shortcuts bound (\(configs) configs): each runs, or fails only by a known conflict")
+        pairs.report(&t, "two shortcuts bound (\(configs) configs, every press order): each runs, "
+                     + "or ShortcutConflicts says why not")
+        configsOK.report(&t, "every config the checker passes works end to end; every one that fails is flagged")
         perEvent.report(&t, "two shortcuts bound: one event fires at most one action, modifiers never swallowed")
         repeatable.report(&t, "the same config gives the same events and sessions, in any binding order")
+        recorder.report(&t, "the recorder refuses exactly the exact clashes, saying \"Used by …\"")
+        rows.report(&t, "a stored conflict warns on both rows, naming the other shortcut; clean rows don't")
+        shared.report(&t, "a hold on X beside X ×2 runs both, unflagged (fn hold + fn-fn)")
         // The pool is built to hit every conflict rule, so none is untested.
-        t.check(broken.count == 6, "the matrix exercises all 6 conflict rules: "
-                + broken.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", "))
+        t.check(broken.count == ShortcutConflict.Rule.allCases.count,
+                "the matrix exercises all \(ShortcutConflict.Rule.allCases.count) conflict rules: "
+                + broken.map { "\($0.key) ×\($0.value)" }.sorted().joined(separator: ", "))
+        // The copy, as the user reads it.
+        let dictateHold = binding(.dictation, .fnDefault)
+        t.equal(ShortcutConflicts.refusal(for: Hotkey.fnDefault, on: .streamToggle,
+                                          among: [dictateHold, binding(.streamToggle, nil)]),
+                "Used by Dictation hold", "exact clash copy")
+        let stream = binding(.streamToggle, Hotkey(modifiers: alt, keyCode: 47, label: "⌥ ."))
+        t.equal(ShortcutConflicts.refusal(for: Hotkey(modifiers: alt, keyCode: 47, label: "⌥ ."), on: .assistant,
+                                          among: [stream]), "Used by Live typing toggle", "exact clash copy names the toggle")
+        let soft = ShortcutConflicts.check(binding(.dictationToggle, HotkeyRecorderView.modifierHotkey(ctrl | alt, taps: 1)),
+                                           against: [binding(.assistant, HotkeyRecorderView.modifierHotkey(ctrl, taps: 1))])
+        t.equal(soft.map(\.message), ["Overlaps Assistant (⌃)"], "overlap copy")
+    }
+
+    // MARK: - 7. fn hold + fn-fn toggle: a double-tap during the toggle only stops it
+
+    /// One shared gesture's stop, at a hold delay, with exact tap timings:
+    /// tap 1 down → up after `firstHeld` → tap 2 down at `secondAt` (nil:
+    /// no second tap). Returns the sessions after the toggle was live.
+    static func sharedStop(_ mods: UInt64, hold hs: BindingSlot, toggle ts: BindingSlot, delay: TimeInterval,
+                           firstHeld: TimeInterval, secondAt: TimeInterval?)
+        -> (started: Bool, log: [String], toggleLive: Bool, capturing: Bool) {
+        let bindings = [binding(hs, HotkeyRecorderView.modifierHotkey(mods, taps: 1)),
+                        binding(ts, HotkeyRecorderView.modifierHotkey(mods, taps: 2))]
+        let (rig, flows) = endToEnd(bindings, holdDelay: delay)
+        let session = rig.retained as! SessionCoordinator
+        // Start: a quick double-tap, then talk.
+        rig.pressModifiers(mods, step: 0); rig.clock.advance(by: 0.05)
+        rig.releaseModifiers(mods, step: 0); rig.clock.advance(by: 0.05)
+        rig.pressModifiers(mods, step: 0); rig.clock.advance(by: 0.05)
+        rig.releaseModifiers(mods, step: 0); rig.clock.advance(by: 2)
+        let started = session.toggleActive == ts.action && flows.capturing
+            && flows.log.last == "begin \(ts.action)" && !flows.log.contains("end \(hs.action)")
+        flows.log = []
+        // Stop.
+        rig.pressModifiers(mods, step: 0)
+        if let second = secondAt {
+            rig.clock.advance(by: firstHeld)
+            rig.releaseModifiers(mods, step: 0)
+            rig.clock.advance(by: second - firstHeld)
+            rig.pressModifiers(mods, step: 0); rig.clock.advance(by: 0.05)
+            rig.releaseModifiers(mods, step: 0)
+        } else {
+            rig.clock.advance(by: firstHeld)
+            rig.releaseModifiers(mods, step: 0)
+        }
+        rig.clock.advance(by: 1)
+        return (started, flows.log, session.toggleActive != nil, flows.capturing)
+    }
+
+    static func sharedGestureStop(_ t: inout Checks) {
+        let window = Hotkey.doubleTapInterval
+        let holds = allSlots.filter { $0.style == .hold }
+        let toggles = allSlots.filter { $0.style == .toggle }
+        var stop = Sweep(), slow = Sweep(), realHold = Sweep(), quickTap = Sweep()
+        for delay in [0, 0.3] {
+            for mods in [fn, ctrl, alt | cmd] {
+                for hs in holds {
+                    for ts in toggles {
+                        let H = hs.action, T = ts.action
+                        let name = "\(HotkeyRecorderView.modifierHotkey(mods, taps: 1).label) \(hs)+\(ts) delay \(delay)"
+                        // A double-tap: second tap anywhere inside the window,
+                        // first tap short or held to the window's edge.
+                        for second in [0.1, window - 0.001] {
+                            for held in [0.05, second - 0.01] {
+                                let r = sharedStop(mods, hold: hs, toggle: ts, delay: delay,
+                                                   firstHeld: held, secondAt: second)
+                                let want = ["end \(T)"] + (held >= delay ? ["begin \(H)", "abort"] : [])
+                                stop.expect(r.started && r.log == want && !r.toggleLive && !r.capturing,
+                                            "\(name) second \(second) held \(held): \(r.log)")
+                            }
+                        }
+                        // Just past the window: not a double. Tap 1 still only
+                        // stopped; tap 2 is a plain quick press.
+                        let r = sharedStop(mods, hold: hs, toggle: ts, delay: delay, firstHeld: 0.05,
+                                           secondAt: window + 0.001)
+                        let tap2 = delay == 0 ? ["begin \(H)", "end \(H)"] : []
+                        let want = ["end \(T)"] + (delay == 0 ? ["begin \(H)", "abort"] : []) + tap2
+                        slow.expect(r.started && r.log == want && !r.toggleLive && !r.capturing,
+                                    "\(name): \(r.log)")
+                        // One press released inside the window stops, typing nothing
+                        // of its own; held past it, it is a real hold, as before.
+                        let inside = sharedStop(mods, hold: hs, toggle: ts, delay: delay,
+                                                firstHeld: window - 0.001, secondAt: nil)
+                        quickTap.expect(inside.started && inside.log == ["end \(T)", "begin \(H)", "abort"]
+                                        && !inside.toggleLive && !inside.capturing, "\(name): \(inside.log)")
+                        for held in [window + 0.001, 1.5] {
+                            let past = sharedStop(mods, hold: hs, toggle: ts, delay: delay, firstHeld: held, secondAt: nil)
+                            realHold.expect(past.started && past.log == ["end \(T)", "begin \(H)", "end \(H)"]
+                                            && !past.toggleLive && !past.capturing, "\(name) held \(held): \(past.log)")
+                        }
+                    }
+                }
+            }
+        }
+        stop.report(&t, "a double-tap during its own toggle only stops it: the toggle's audio is handed off, "
+                    + "tap 1's hold fragment is thrown away (hold delay 0 and 0.3, window edges)")
+        slow.report(&t, "a second tap just past the window is a new press, never a restart")
+        quickTap.report(&t, "one quick tap of the shared gesture stops the toggle and types nothing of its own")
+        realHold.report(&t, "a press held past the double-tap window closes the toggle and dictates, as before")
     }
 }

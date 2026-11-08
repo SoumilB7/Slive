@@ -39,6 +39,12 @@ enum RenderChild {
         // lands between the lines of the view that caused it.
         var environment = ProcessInfo.processInfo.environment
         environment["OS_ACTIVITY_DT_MODE"] = "1"
+        // Its own empty Application Support: the child's "wrote nothing"
+        // check then can't be tripped by the running app saving history.
+        let appSupport = FileManager.default.temporaryDirectory
+            .appendingPathComponent("slive-render-\(UUID().uuidString)", isDirectory: true)
+        environment[AppSupport.testRootVariable] = appSupport.path
+        defer { try? FileManager.default.removeItem(at: appSupport) }
         process.environment = environment
         let out = Pipe()
         process.standardOutput = out
@@ -487,7 +493,8 @@ struct DefaultsSnapshot {
 }
 
 /// Modification dates of Slive's Application Support folders, to prove
-/// nothing was created or removed in them.
+/// nothing was created or removed in them. In a render child `AppSupport.root`
+/// is a fresh temp folder of its own, so only the child's writes count.
 struct AppSupportSnapshot {
     private let dates: [String: Date]
 

@@ -39,12 +39,7 @@ private extension CodingUserInfoKey {
 }
 
 enum CustomWhisperModelRegistry {
-    static var root: URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("Slive/Models/Custom", isDirectory: true)
-    }
+    static var root: URL { AppSupport.root.appendingPathComponent("Models/Custom", isDirectory: true) }
 
     static func load() -> [CustomWhisperModel] {
         guard let folders = try? FileManager.default.contentsOfDirectory(
