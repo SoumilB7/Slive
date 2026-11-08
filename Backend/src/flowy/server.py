@@ -12,6 +12,8 @@ Serves 127.0.0.1:50711, to the local app only (loopback Host, no Origin):
     GET  /transcribe_llm/prompt     {"prompt"} — the default instruction
     POST /transcribe_llm            {"text", "prompt"} — ground truth from one model
     POST /label_consensus           {"text", "chosen", "agreement", "candidates", "prompt"}
+    GET  /label_format/prompt       {"prompt"} — the formatter's instruction
+    POST /label_format              {"formatted", "status", "model"} — step 4 of Custom 4
     GET  /local/cache               {"models": [...]} — the Hugging Face cache
     POST /local/download            {"job_id"}; poll GET /local/download/{id}
     POST /local/delete              {"deleted"}

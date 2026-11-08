@@ -38,6 +38,20 @@ class LabelPolicy(StrEnum):
     BEST_AVAILABLE = "best-available"
 
 
+class TargetStyle(StrEnum):
+    """How a cloud label is written as the target.
+
+    ``plain`` is the consensus label as transcribed (the default — training
+    keeps it until formatted targets are proven). ``formatted`` uses
+    ``llmFormatted`` (Slive Custom 4's step 4) on rows whose status is
+    ``formatted`` and the plain label everywhere else. A human ``finalText``
+    wins under either style.
+    """
+
+    PLAIN = "plain"
+    FORMATTED = "formatted"
+
+
 # ---------------------------------------------------------------------------
 # Label-quality gate — a cloud label must still describe the same audio.
 #
@@ -163,6 +177,11 @@ class StoredSample:
     line_number: int
     #: Consensus labels only: how closely the transcribers agreed (0…1).
     llm_agreement: float | None = None
+    #: Slive Custom 4's step 4: the formatted label, its status
+    #: (formatted | unchanged | rejected:<reason> | skipped) and model.
+    llm_formatted: str | None = None
+    llm_format_status: str | None = None
+    llm_format_model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -275,11 +294,14 @@ class TrainingStore:
         min_duration: float = 0.5,
         max_duration: float = 30.0,
         min_label_words: int = 3,
+        target_style: TargetStyle = TargetStyle.PLAIN,
     ) -> StoreReport:
         """Parse the store and return eligible and rejected samples.
 
         A sample only counts as well-populated when its label carries at least
         ``min_label_words`` words — one-word labels are noise, not supervision.
+        Every gate judges the plain label; ``target_style`` only decides how
+        a passing cloud label is written (see ``TargetStyle``).
         Inspection is read-only. It does not normalize, copy, or modify audio.
         """
 
@@ -381,6 +403,9 @@ class TrainingStore:
                 assert label is not None
                 assert label_source is not None
                 assert audio_info is not None
+                if (target_style is TargetStyle.FORMATTED and label_source == "llmTranscript"
+                        and sample.llm_format_status == "formatted" and sample.llm_formatted):
+                    label, label_source = sample.llm_formatted, "llmFormatted"
                 eligible.append(
                     PreparedSample(
                         id=sample.id,
@@ -460,6 +485,9 @@ def _parse_sample(payload: Any, line_number: int) -> StoredSample:
         llm_model=_optional_string(payload, "llmModel"),
         line_number=line_number,
         llm_agreement=_optional_float(payload, "llmAgreement"),
+        llm_formatted=(_optional_string(payload, "llmFormatted") or "").strip() or None,
+        llm_format_status=_optional_string(payload, "llmFormatStatus"),
+        llm_format_model=_optional_string(payload, "llmFormatModel"),
     )
 
 

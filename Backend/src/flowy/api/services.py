@@ -19,6 +19,11 @@ class Labeler(Protocol):
                     base_prompt: str) -> dict[str, Any]: ...
 
 
+class Formatter(Protocol):
+    async def format_label(self, *, api_key: str, label: str, hotwords: list[str] | str,
+                           agreement: float | None, word_count: int | None) -> dict[str, Any]: ...
+
+
 class LocalModels(Protocol):
     def list_cached_models(self) -> list[dict]: ...
     def delete_cached_model(self, repo_id: str) -> bool: ...
@@ -48,6 +53,14 @@ class Services:
     labeler: Labeler
     local_models: LocalModels
     training: Training
+    #: Step 4 of Slive Custom 4 (``flowy.label_format`` unless a test fakes it).
+    formatter: Formatter | None = None
+
+    def __post_init__(self) -> None:
+        if self.formatter is None:
+            from flowy import label_format
+
+            self.formatter = label_format
 
     def busy(self) -> bool:
         """A background job is running (requests in flight are counted by the

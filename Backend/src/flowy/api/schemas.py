@@ -122,6 +122,22 @@ class LabelConsensusRequest(BaseModel):
     _clean_key = field_validator("api_key")(_clean_api_key)
 
 
+class LabelFormatRequest(BaseModel):
+    """One consensus label for step 4 (the formatter). OpenAI key per
+    request, nothing stored."""
+
+    api_key: str = ""
+    label: str
+    #: The user's Custom words: the raw Settings string, or a list.
+    hotwords: list[str] | str = ""
+    #: The consensus agreement; below 0.8 the label is skipped (None = no gate).
+    agreement: float | None = None
+    #: Words in the label; None = counted here.
+    word_count: int | None = None
+
+    _clean_key = field_validator("api_key")(_clean_api_key)
+
+
 class ModelsRequest(BaseModel):
     provider: str
     api_key: str

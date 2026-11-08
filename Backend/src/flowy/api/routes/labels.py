@@ -1,13 +1,14 @@
-"""Ground-truth labels for training clips: one audio-capable model, or the
-3-way consensus."""
+"""Ground-truth labels for training clips: one audio-capable model, the
+3-way consensus, and the consensus label's formatting step."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
 from flowy.api.routes import ServicesDep
-from flowy.api.schemas import LabelConsensusRequest, TranscribeLLMRequest
+from flowy.api.schemas import LabelConsensusRequest, LabelFormatRequest, TranscribeLLMRequest
 from flowy.errors import upstream_errors
+from flowy.label_format import SYSTEM as FORMAT_PROMPT
 from flowy.providers import TRANSCRIBE_PROMPT
 
 router = APIRouter()
@@ -43,3 +44,24 @@ async def label_consensus(req: LabelConsensusRequest, services: ServicesDep):
             context=req.context,
             base_prompt=req.base_prompt,
         )
+
+
+@router.get("/label_format/prompt")
+async def label_format_prompt():
+    """The formatter's system instruction, for the app's read-only view."""
+    return {"prompt": FORMAT_PROMPT}
+
+
+@router.post("/label_format")
+async def label_format(req: LabelFormatRequest, services: ServicesDep):
+    # Same error contract as /label_consensus: a key problem is a 401 with
+    # "fatal" (stop the run), a failed call for this clip a 400.
+    with upstream_errors("Label format failed"):
+        result = await services.formatter.format_label(
+            api_key=req.api_key,
+            label=req.label,
+            hotwords=req.hotwords,
+            agreement=req.agreement,
+            word_count=req.word_count,
+        )
+    return {key: result[key] for key in ("formatted", "status", "model")}
