@@ -39,6 +39,20 @@ enum TranscriptDiffStylingTests {
                   "attributed diff preserves the truth text verbatim")
         }
 
+        // A formatted label (Custom 4) keeps its line breaks and still
+        // marks what differs from what Slive typed.
+        let listed = TranscriptDiff.attributed(
+            output: "buy milk and eggs", truth: "Buy:\n- milk\n- eggs",
+            base: .white, changed: .orange)
+        if let listed {
+            t.check(String(listed.characters) == "Buy:\n- milk\n- eggs",
+                  "formatted label keeps its line breaks verbatim")
+            t.check(listed.runs.contains { $0.foregroundColor == .orange },
+                  "formatted label still highlights differences")
+        } else {
+            t.check(false, "formatted label renders a diff")
+        }
+
         let longWords = Array(repeating: "w", count: TranscriptDiff.maxWords + 1)
             .joined(separator: " ")
         let over = TranscriptDiff.attributed(

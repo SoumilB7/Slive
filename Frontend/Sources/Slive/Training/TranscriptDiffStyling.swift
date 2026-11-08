@@ -18,6 +18,7 @@ extension TranscriptDiff {
         guard out.count <= maxWords, tru.count <= maxWords else { return nil }
         guard !tru.isEmpty else { return nil }
         let (mask, deletions) = diff(output: out, truth: tru)
+        let between = gaps(truth)
         var result = AttributedString()
         for (index, word) in tru.enumerated() {
             var piece = AttributedString(word)
@@ -36,9 +37,28 @@ extension TranscriptDiff {
                 piece.underlineColor = NSColor(changed)
             }
             result += piece
-            if index < tru.count - 1 { result += AttributedString(" ") }
+            if index < tru.count - 1 { result += AttributedString(between[index]) }
         }
         return result
+    }
+
+    /// The whitespace between consecutive words of `text`, verbatim — so a
+    /// formatted label's line breaks (list items, paragraphs) survive the
+    /// diff instead of collapsing to spaces.
+    static func gaps(_ text: String) -> [String] {
+        var gaps = [String]()
+        var gap = ""
+        var seenWord = false
+        for ch in text {
+            if ch.isWhitespace {
+                if seenWord { gap.append(ch) }
+            } else {
+                if seenWord, !gap.isEmpty { gaps.append(gap) }
+                gap = ""
+                seenWord = true
+            }
+        }
+        return gaps
     }
 }
 

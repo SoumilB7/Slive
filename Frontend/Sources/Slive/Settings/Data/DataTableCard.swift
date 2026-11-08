@@ -301,14 +301,9 @@ struct DataTableCard: View {
         } else if run.inFlight.contains(sample.id) {
             ProgressView().controlSize(.small)
         } else if let truth = effectiveTruth(sample) {
-            if let formatted = formattedTruth(sample) {
-                // Plain Text: markdown list lines show as written, one per line.
-                Text(verbatim: formatted)
-                    .foregroundStyle(SliveTheme.textMid)
-                    .textSelection(.enabled)
-            } else {
-                truthTextView(truth, sample: sample)
-            }
+            // The formatted label (Custom 4) when kept, word-diffed against
+            // what Slive typed like any label; its line breaks are kept.
+            truthTextView(formattedTruth(sample) ?? truth, sample: sample)
         } else if store.hasAudio(sample) {
             HStack(spacing: 8) {
                 Button { run.labelOne(sample) } label: {
