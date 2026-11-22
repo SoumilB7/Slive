@@ -13,6 +13,73 @@ enum DictationModeTests {
         dictate(&t)
         assist(&t)
         stream(&t)
+        waitForModel(&t)
+    }
+
+    // MARK: - Waiting for a model
+
+    /// Loads that finish when the test says so.
+    final class LoadingSpeech: DictationSpeech {
+        var ready: Set<String> = []
+        var loading: Set<String> = []
+        func isReady(_ model: String) -> Bool { ready.contains(model) }
+        func canBecomeReady(_ model: String) -> Bool { isReady(model) || loading.contains(model) }
+        func status(for model: String) -> ModelStatus { isReady(model) ? .ready : .preparing("Loading") }
+        func servingModel(wanted: String, fallback: String?) -> String { wanted }
+        func select(_ model: String) {}
+        func primeIfCold(_ model: String) {}
+        func awaitReady(_ model: String) async -> Bool {
+            while loading.contains(model) { try? await Task.sleep(nanoseconds: 5_000_000) }
+            return isReady(model)
+        }
+        func transcribeSamples(_ samples: [Float], model: String) async -> String? { nil }
+        func transcribe(_ url: URL, model: String) async -> String? { nil }
+        func startLiveDictation(model: String, onUpdate: @escaping @MainActor (String, Float) -> Void,
+                                onFailure: (@MainActor () -> Void)?) -> Bool { false }
+        func liveSamplesSnapshot(model: String) -> [Float] { [] }
+        var liveConfirmedText: String { "" }
+        var liveConfirmedEndSeconds: Double { 0 }
+        func stopLiveDictation() {}
+    }
+
+    /// A dictation released before any model was ready decodes on whichever
+    /// gets there first. Nov 26: one waited 80s for Whisper's compile while
+    /// the Parakeet stand-in sat ready, and two later dictations (decoded in
+    /// 0.1s) queued behind it.
+    private static func waitForModel(_ t: inout Checks) {
+        func wait(_ speech: LoadingSpeech, standIn: @escaping @MainActor () -> String?,
+                  after: @escaping @MainActor () -> Void) -> String? {
+            var result: String?
+            Task { @MainActor in
+                result = await speech.awaitServing("whisper", standIn: standIn, poll: 5_000_000)
+            }
+            let flip = Date().addingTimeInterval(0.05)
+            var flipped = false
+            let deadline = Date().addingTimeInterval(5)
+            while result == nil, Date() < deadline {
+                if !flipped, Date() > flip { flipped = true; after() }
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.005))
+            }
+            return result
+        }
+
+        let a = LoadingSpeech(); a.loading = ["whisper", "parakeet"]
+        var serving: String?
+        let got = wait(a, standIn: { serving }) {
+            a.loading.remove("parakeet"); a.ready.insert("parakeet"); serving = "parakeet"
+        }
+        t.equal(got, "parakeet", "a stand-in ready mid-wait takes the waiting dictation")
+
+        let b = LoadingSpeech(); b.loading = ["whisper"]
+        t.equal(wait(b, standIn: { nil }) { b.loading = []; b.ready = ["whisper"] }, "whisper",
+                "with no stand-in it waits for the pick")
+
+        let c = LoadingSpeech(); c.loading = ["whisper"]
+        t.equal(wait(c, standIn: { "parakeet" }) { c.loading = [] }, "whisper",
+                "a failed load stops the wait (the decode says why)")
+
+        let d = LoadingSpeech(); d.ready = ["whisper", "parakeet"]
+        t.equal(wait(d, standIn: { "parakeet" }) {}, "whisper", "the pick wins when both are ready")
     }
 
     // MARK: - Registry

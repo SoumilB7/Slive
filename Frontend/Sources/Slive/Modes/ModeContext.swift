@@ -28,6 +28,7 @@ import Foundation
     let cue: (HotkeyAction) -> Void
     let micAuthorization: () -> AVAuthorizationStatus
 
+    static let passwordFieldMessage = "Password field · Slive won't type here"
     static let micFailedMessage = "Couldn't start the microphone."
 
     /// Where a finished dictation goes: typed at the caret, or — auto-insert
@@ -136,6 +137,29 @@ import Foundation
 }
 
 extension TranscriptionModel: DictationSpeech {}
+
+extension DictationSpeech {
+    /// A dictation is waiting for `model`, but a stand-in may get there
+    /// first: decode on whichever is resident first — `model`, or the one
+    /// `standIn()` names (read each look, since residency promotes it
+    /// mid-wait). `model`'s load keeps running either way. Without this a
+    /// dictation released before the launch stand-in was ready waited out
+    /// the whole Whisper compile (80s), and every later dictation — decoded
+    /// in 0.1s on the stand-in — queued behind it.
+    func awaitServing(_ model: String, standIn: @escaping @MainActor () -> String?,
+                      poll: UInt64 = 200_000_000) async -> String {
+        Task { @MainActor in _ = await self.awaitReady(model) }
+        while !Task.isCancelled {
+            if isReady(model) { return model }
+            if let other = standIn(), other != model, isReady(other) { return other }
+            // `model` won't arrive (load failed, not downloaded): stop
+            // waiting; the decode path says why.
+            if !canBecomeReady(model) { return model }
+            try? await Task.sleep(nanoseconds: poll)
+        }
+        return model
+    }
+}
 
 /// The mic capture a hold records with (`AudioRecorder`).
 protocol Recording: AnyObject {

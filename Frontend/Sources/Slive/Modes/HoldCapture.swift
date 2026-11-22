@@ -41,6 +41,15 @@ struct DecodedRelease {
 
     func begin<R: RecordingRoute>(_ route: R) {
         guard !ctx.recorder.isRecording else { return }
+        // A password field has focus: macOS hides key presses from other apps
+        // there, so the release would never be seen and the pill vanished
+        // after 0.3 s with no word why (Nov 26). Say it up front instead.
+        if route.action == .dictate, ctx.settings.autoInsert, TypingPolicy.secureInputBlocksTyping() {
+            Log.event("hold refused — password field")
+            ctx.session.endToggle()
+            ctx.presenter.notice(ModeContext.passwordFieldMessage)
+            return
+        }
         guard ctx.micAllowed() else { return }
         // A new recording supersedes an in-flight assistant answer and any
         // result box. Released dictations are queued and still type.
@@ -68,6 +77,9 @@ struct DecodedRelease {
         // of idle the compiled graph pages back in on first use — pay that
         // now, in parallel with the hold, not after release.
         ctx.speech.primeIfCold(ctx.settings.whisperModel)
+        // The app we'll type into: make sure its accessibility tree is being
+        // built while the user speaks (a no-op after the first ask).
+        DispatchQueue.main.async { AXWake.wakeIfLazy(NSWorkspace.shared.frontmostApplication, minInterval: 2) }
         // Subtle audio cue that a call activated — distinct per call type.
         // Posted on the NEXT runloop turn: its engine restart (auto-shutdown
         // wake) is a few ms of main-thread work that shouldn't sit between
@@ -169,6 +181,9 @@ struct DecodedRelease {
             let voiced = pipeline.prepare(samples)
             var transcript: String?
             var waitedForModel = false
+            // Starts as the pick (or the stand-in already serving); a wait
+            // below may switch it to a stand-in that got ready first.
+            var whisperModel = whisperModel
             if voiced.count > 16_000 / 3 {
                 // Released while the model is still being prepared (launch,
                 // purged compile cache, macOS update): wait for it, then take
@@ -178,8 +193,10 @@ struct DecodedRelease {
                 if !whisper.isReady(whisperModel) {
                     waitedForModel = true
                     Log.event("dictation waiting for model \(whisperModel)")
-                    _ = await whisper.awaitReady(whisperModel)
-                    Log.event(String(format: "model ready after %.1fs of waiting", Date().timeIntervalSince(tTranscribe)))
+                    whisperModel = await whisper.awaitServing(whisperModel,
+                                                              standIn: { ctx.models.servingDictationModel })
+                    Log.event(String(format: "%@ ready after %.1fs of waiting",
+                                     whisperModel, Date().timeIntervalSince(tTranscribe)))
                 }
                 transcript = await whisper.transcribeSamples(Array(voiced), model: whisperModel)
                 // The first decode on a freshly compiled model gets one retry.
