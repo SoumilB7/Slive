@@ -434,9 +434,15 @@ enum SettingsRenderTests {
                 if together, r.unattributedCPU > Limits.cpuShare || r.slices > Limits.slices
                     || r.sleepShare < Limits.minSleepShare || r.unattributedFaults > 0 {
                     // Busy (or a fault) that no view accounts for: one at a time.
+                    // The verdict then comes from each view measured alone (its
+                    // whole thread, slices, sleep), not from the shared number:
+                    // that one also counts whatever else on the Mac pokes these
+                    // windows (Nov 23: 24–49% on a quiet machine, the same with
+                    // and without the day's changes, every view clean alone).
                     together = false
                     left = cases
                     outcome.cases = [:]
+                    outcome.unattributedCPU = 0
                     continue
                 }
                 break
