@@ -2,6 +2,18 @@
 
 Notable changes to Slive, newest first. Versions follow [semver](https://semver.org).
 
+## [0.2.7] - 2026-11-22
+
+### Fixed
+- Late copy boxes show together; none is replaced.
+- An old copy box never covers a dictation in progress.
+- The mic-lost note always shows.
+- Fn hold works after a missed chord key release.
+- Live typing no longer deletes text the app changed (smart dashes, brackets).
+- History keeps its good entries when one is damaged.
+- Short custom words (IT, US, AM) no longer change ordinary words.
+- Chinese and Thai live typing no longer repeats text.
+
 ## [0.2.6] - 2026-11-22
 
 ### Fixed
@@ -103,6 +115,7 @@ First release, in two downloads: **Slive** (on-device speech only) and **Slive F
 - Fine-tune Whisper on your own voice, on this Mac.
 - The bundled server starts only when needed, stops after 10 idle minutes, and only answers Slive.
 
+[0.2.7]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.7
 [0.2.6]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.6
 [0.2.5]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.5
 [0.2.4]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.4
