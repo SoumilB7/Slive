@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 
@@ -84,9 +85,22 @@ struct TypingSink: TextSink, LiveTextSink {
         let (verdict, element) = judge(log: "insert")
         guard case .type(let verifiable, _) = verdict else { return false }
         let snapshot = verifiable ? element.flatMap(DeliveryVerifier.snapshot(of:)) : nil
+        // The rule: the copy box shows unless the text is CONFIRMED to have
+        // landed (the field's value or caret moved). A target that can't be
+        // checked — AX couldn't say what has focus, or the focused thing has
+        // nothing to read (a Safari page's list, Nov 26) — gets the typing
+        // AND the box, so a text box no rule knows about costs at most a
+        // spare box, never lost words. Code editors are the one exception:
+        // never woken (AXWake), "can't check" is their norm, and they type.
+        let codeEditor = FocusProbe.engine(of: NSWorkspace.shared.frontmostApplication).codeEditor
+        Log.paste("insert: delivery check \(snapshot != nil ? "scheduled" : codeEditor ? "none (code editor)" : "none — copy box too")")
         SyntheticTyper.enqueue(text) {
-            guard let snapshot else { return }
-            DeliveryVerifier.verify(snapshot, onFailure: onDeliveryFailure)
+            if let snapshot {
+                DeliveryVerifier.verify(snapshot, onFailure: onDeliveryFailure)
+            } else if !codeEditor {
+                Log.event("typed without a way to confirm — copy box shown too")
+                DispatchQueue.main.async(execute: onDeliveryFailure)
+            }
         }
         return true
     }
@@ -111,6 +125,8 @@ struct TypingSink: TextSink, LiveTextSink {
             })
         if let log, case .refuse(let reason?, _) = verdict {
             Log.paste("\(log) refused — \(reason)")
+        } else if let log {
+            Log.paste("\(log) verdict \(verdict)")
         }
         return (verdict, element)
     }

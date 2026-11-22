@@ -25,7 +25,10 @@ enum DeliveryVerifier {
     /// `onFailure` (main thread) only when both readings show no change.
     static func verify(_ before: Snapshot, attempt: Int = 0,
                        onFailure: @escaping () -> Void) {
-        let delays: [TimeInterval] = [0.08, 0.20]
+        // The last look is late for apps that report their text slowly
+        // (Ghostty, Nov 26: typed, still unchanged at 0.28 s). The box only
+        // ever comes after a miss, so waiting costs nothing when it landed.
+        let delays: [TimeInterval] = [0.08, 0.20, 0.60]
         DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) {
             let afterValue = AXRead.string(before.element, kAXValueAttribute as String)
             let afterRange = AXRead.range(

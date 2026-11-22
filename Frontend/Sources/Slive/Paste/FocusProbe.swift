@@ -58,6 +58,7 @@ enum FocusProbe {
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
             systemWide, kAXFocusedUIElementAttribute as CFString, &value)
+        Log.paste("focus: \(frontmost?.bundleIdentifier ?? "?") system-wide → \(err.rawValue)")
         switch err {
         case .success:
             guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
@@ -65,7 +66,7 @@ enum FocusProbe {
             }
             return resolveFocus((value as! AXUIElement), frontmost: frontmost)
         default:
-            return Self.axSaysNothingFocused(err)
+            return Self.asksAppDirectly(err)
                 ? corroboratedNone(frontmost: frontmost) : .unknown
         }
     }
@@ -79,6 +80,14 @@ enum FocusProbe {
     /// (needing corroboration) vs plainly "couldn't tell" (fail open).
     static func axSaysNothingFocused(_ error: AXError) -> Bool {
         error == .noValue
+    }
+
+    /// System-wide errors worth asking the frontmost app itself about: the
+    /// "nothing focused" claim above, and `.cannotComplete`, which some apps
+    /// (WhatsApp, Nov 23) answer system-wide while their own element answers.
+    /// Anything else stays "couldn't tell". Pure, self-tested.
+    static func asksAppDirectly(_ error: AXError) -> Bool {
+        axSaysNothingFocused(error) || error == .cannotComplete
     }
 
     /// `.noValue` from the system-wide probe is AMBIGUOUS, learned the hard
@@ -100,12 +109,20 @@ enum FocusProbe {
         let appFocusError = AXUIElementCopyAttributeValue(
             appElement, kAXFocusedUIElementAttribute as CFString, &appFocus)
         if appFocusError == .success, let element = AXRead.element(appFocus) {
-            return resolveFocus(element, frontmost: app)
+            Log.paste("focus: app-level element")
+            // The system-wide question failed, so this second route's "nothing
+            // typable here" isn't trusted to REFUSE typing: WhatsApp answers
+            // it with a group while its chat box has focus (Nov 26). Type —
+            // and, unconfirmed, the copy box shows too.
+            let result = resolveFocus(element, frontmost: app)
+            if case .none = result { return .unknown }
+            return result
         }
 
         var window: CFTypeRef?
         let windowError = AXUIElementCopyAttributeValue(
             appElement, kAXFocusedWindowAttribute as CFString, &window)
+        Log.paste("focus: app-level \(appFocusError.rawValue), window \(windowError.rawValue)")
         if windowError == .noValue { return .none }
         guard windowError == .success,
               let windowElement = AXRead.element(window)
@@ -189,13 +206,33 @@ enum FocusProbe {
     }
 
     static func appHasLazyAX(_ app: NSRunningApplication?) -> Bool {
-        let electron = app?.bundleURL.map {
-            FileManager.default.fileExists(
-                atPath: $0.appendingPathComponent(
-                    "Contents/Frameworks/Electron Framework.framework").path)
-        } ?? false
-        return isLazyAXBundle(identifier: app?.bundleIdentifier,
-                              hasElectronFramework: electron)
+        isLazyAXBundle(identifier: app?.bundleIdentifier,
+                       hasElectronFramework: engine(of: app).chromium)
+    }
+
+    /// What an app is built on, read from its bundle once per path.
+    struct Engine: Equatable {
+        /// Ships Electron or a Chromium renderer helper — a lazily built AX
+        /// tree, whatever the app is called (Edge, Comet, Helium, Thorium…
+        /// need no name list).
+        var chromium = false
+        /// A VS Code-based editor (VS Code, Cursor, Windsurf, Antigravity…):
+        /// turning its accessibility on can switch it into screen-reader mode,
+        /// so it is never woken (`AXWake`).
+        var codeEditor = false
+    }
+
+    private static let engineLock = NSLock()
+    nonisolated(unsafe) private static var engines: [URL: Engine] = [:]
+
+    static func engine(of app: NSRunningApplication?) -> Engine {
+        guard let url = app?.bundleURL else { return Engine() }
+        engineLock.lock()
+        if let known = engines[url] { engineLock.unlock(); return known }
+        engineLock.unlock()
+        let found = Engine(bundle: url)
+        engineLock.lock(); engines[url] = found; engineLock.unlock()
+        return found
     }
 
     private static func resolveFocus(_ element: AXUIElement,
@@ -213,6 +250,7 @@ enum FocusProbe {
     private static func resolveCandidate(_ element: AXUIElement,
                                          frontmost app: NSRunningApplication?) -> Result {
         let role = AXRead.string(element, kAXRoleAttribute as String)
+        Log.paste("focus: candidate role \(role ?? "nil") lazyAX \(appHasLazyAX(app))")
         switch candidate(role: role, lazyAX: { appHasLazyAX(app) }) {
         case .element: return .element(element)
         case .none: return .none
@@ -374,5 +412,25 @@ enum AXRead {
             element, kAXChildrenAttribute as CFString, &value)
         guard error == .success, let values = value as? [Any] else { return [] }
         return values.compactMap { Self.element($0 as CFTypeRef) }
+    }
+}
+
+extension FocusProbe.Engine {
+    /// Reads the bundle's layout: Electron's framework, a Chromium
+    /// "… Helper (Renderer).app" under Frameworks, VS Code's workbench.
+    init(bundle url: URL) {
+        let fm = FileManager.default
+        let frameworks = url.appendingPathComponent("Contents/Frameworks")
+        var chromium = fm.fileExists(atPath: frameworks.appendingPathComponent("Electron Framework.framework").path)
+        if !chromium, let walker = fm.enumerator(at: frameworks, includingPropertiesForKeys: nil,
+                                                 options: [.skipsHiddenFiles]) {
+            while let item = walker.nextObject() as? URL {
+                if walker.level > 5 { walker.skipDescendants(); continue }
+                if item.lastPathComponent.hasSuffix("Helper (Renderer).app") { chromium = true; break }
+                if item.pathExtension == "app" { walker.skipDescendants() }
+            }
+        }
+        let codeEditor = fm.fileExists(atPath: url.appendingPathComponent("Contents/Resources/app/out/vs/workbench").path)
+        self.init(chromium: chromium, codeEditor: codeEditor)
     }
 }

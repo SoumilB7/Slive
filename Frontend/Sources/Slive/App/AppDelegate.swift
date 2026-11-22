@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // First: the problem reporter (its own process) and the main-thread
         // watchdog, so even a crash or freeze during launch can be reported.
         FailureReporter.shared.start()
+        // Chromium/Electron build their accessibility tree only when asked —
+        // without it, "is a text field focused?" has no answer there.
+        AXWake.start()
 
         // Keep the global hotkey + overlay alive when Slive has no open window
         // and sits in the background — otherwise App Nap throttles the event tap.

@@ -57,6 +57,16 @@ enum Log {
 
     private static func emit(_ category: Category, _ message: () -> String) {
         guard enabled else { return }
-        NSLog("Slive.%@: %@", category.rawValue, message())
+        let line = message()
+        // Typing decisions are focus facts only (app, AX roles, error codes —
+        // never text), and NSLog's are stored as <private>, unreadable after
+        // the fact: these go out public under their own category, so
+        // "why no copy box" can be read back from the log.
+        if category == .paste {
+            pasteLogger.notice("Slive.paste: \(line, privacy: .public)")
+        } else {
+            NSLog("Slive.%@: %@", category.rawValue, line)
+        }
     }
+    private static let pasteLogger = Logger(subsystem: "com.slive.app", category: "paste")
 }

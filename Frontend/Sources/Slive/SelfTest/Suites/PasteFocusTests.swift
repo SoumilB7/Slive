@@ -73,6 +73,22 @@ enum PasteFocusTests {
                 && !PasteEngine.axSaysNothingFocused(.apiDisabled)
                 && !PasteEngine.axSaysNothingFocused(.notImplemented),
               "AX can't-answer errors fail open and type")
+        // Engines are read from the bundle, not a name list: every installed
+        // Chromium/Electron app counts, VS Code-family editors are flagged.
+        for (path, chromium, editor) in [("/Applications/Google Chrome.app", true, false),
+                                         ("/Applications/Visual Studio Code.app", true, true),
+                                         ("/Applications/Slack.app", true, false),
+                                         ("/System/Applications/TextEdit.app", false, false),
+                                         ("/Applications/Safari.app", false, false)]
+            where FileManager.default.fileExists(atPath: path) {
+            let e = FocusProbe.Engine(bundle: URL(fileURLWithPath: path))
+            t.check(e.chromium == chromium && e.codeEditor == editor,
+                    "engine of \((path as NSString).lastPathComponent): chromium \(chromium), editor \(editor)",
+                    "got \(e)")
+        }
+        t.check(FocusProbe.asksAppDirectly(.noValue) && FocusProbe.asksAppDirectly(.cannotComplete)
+                && !FocusProbe.asksAppDirectly(.apiDisabled) && !FocusProbe.asksAppDirectly(.notImplemented),
+              "system-wide .noValue or .cannotComplete → ask the frontmost app itself (WhatsApp, Nov 23)")
         t.check(PasteEngine.confirmsNoFocus(windowError: .noValue),
               "app confirming 'no focused window' corroborates the void → copy box")
         // The copy box says why only for machine-wide blocks the user can fix.
