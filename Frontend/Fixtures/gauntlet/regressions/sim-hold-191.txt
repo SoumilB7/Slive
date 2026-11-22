@@ -1,0 +1,5 @@
+# sim-hold seed 191
+t=0.03 toggle dictate
+t=0.13 press dictate
+t=1.13 release
+t=1.73 release

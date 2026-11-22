@@ -22,6 +22,7 @@ import base64
 import io
 import logging
 import re
+import unicodedata
 from typing import Any
 
 import httpx
@@ -103,14 +104,22 @@ def compose_prompt(context: str | None, base: str | None = None) -> str:
     return f"{head} {ctx[:400]}" if ctx else head
 
 
-_WORD_RE = re.compile(r"[a-z0-9']+")
+def _is_word_char(ch: str) -> bool:
+    if ch.isascii():
+        return ch.isalnum() or ch == "'"
+    # Latin letters that don't decompose to ASCII (ß, ø, ł, đ, ə ...) stay.
+    return ch.isalnum() and unicodedata.name(ch, "").startswith("LATIN")
 
 
 def normalize_words(text: str) -> list[str]:
     """Words for comparison only: lowercase letters/digits/apostrophes, with
-    hyphens as spaces ("sub-agent" = "sub agent")."""
+    hyphens as spaces ("sub-agent" = "sub agent"). Accents are stripped
+    ("café" = "cafe"), not the letter: a word of only accented letters ("à",
+    "ñ") must stay a word, or comparing against it says nothing."""
     lowered = text.lower().replace("’", "'").replace("-", " ")
-    return _WORD_RE.findall(lowered)
+    plain = unicodedata.normalize("NFKD", lowered)
+    return "".join(ch if _is_word_char(ch) else " " for ch in plain
+                   if not unicodedata.combining(ch)).split()
 
 
 def word_distance(a: list[str], b: list[str]) -> int:

@@ -179,13 +179,15 @@ enum SimLive {
 
         var string: String { String(chars) }
 
-        mutating func backspace() {
-            guard caret > 0 else { return }
+        /// Returns the character it took from before the caret.
+        @discardableResult
+        mutating func backspace() -> Character? {
+            guard caret > 0 else { return nil }
             if transforms, chars[caret - 1] == "(", caret < chars.count, chars[caret] == ")" {
                 chars.remove(at: caret)   // deleting an auto-closed pair takes both
             }
-            chars.remove(at: caret - 1)
             caret -= 1
+            return chars.remove(at: caret)
         }
 
         mutating func type(_ c: Character) {
@@ -291,7 +293,8 @@ enum SimLive {
     final class Field: TextSink, LiveTextSink, @unchecked Sendable {
         private let lanes: Lanes
         private(set) var text: FieldText
-        private(set) var edits: [(lane: Int?, backspaces: Int, insert: String)] = []
+        /// `removed`: what the backspaces took from before the caret, in field order.
+        private(set) var edits: [(lane: Int?, backspaces: Int, insert: String, removed: String)] = []
 
         init(_ pre: String, transforms: Bool, lanes: Lanes) {
             text = FieldText(pre, transforms: transforms)
@@ -305,10 +308,15 @@ enum SimLive {
         func deliver(_ text: String, onDeliveryFailure: @escaping () -> Void) -> Bool { false }
         func beginStream() -> LiveStreamHandle { LiveStreamHandle(allowed: true, target: nil) }
         func stillOurs(_ handle: LiveStreamHandle) -> Bool { true }
+        /// Readable, like a native text view: what's left of the caret.
+        func textBeforeCaret(_ count: Int, in handle: LiveStreamHandle) -> String? {
+            String(text.chars[max(0, text.caret - count)..<text.caret])
+        }
 
         func replace(backspaces: Int, insert: String) {
-            edits.append((lanes.running, backspaces, insert))
-            for _ in 0..<backspaces { text.backspace() }
+            var removed = ""
+            for _ in 0..<backspaces { if let c = text.backspace() { removed.insert(c, at: removed.startIndex) } }
+            edits.append((lanes.running, backspaces, insert, removed))
             for c in insert { text.type(c) }
         }
     }
@@ -674,7 +682,23 @@ enum SimLive {
 
         /// Which sessions' tokens a text mentions ("s3w2" → 3).
         static func mentions(_ text: String) -> Set<Int> {
-            var found: Set<Int> = []
+            Set(tokens(text).map(\.session))
+        }
+
+        /// With transforms the app rewrites what a session typed; it then stops
+        /// correcting and types only new words. That's fine when the field
+        /// holds its words once each, in spoken order (the plain field, which
+        /// never rewrites, still demands exact text).
+        private func appendedInOrder(_ k: Int, _ shadow: String) -> Bool {
+            guard config.transforms else { return false }
+            let found = SimLive.World.tokens(shadow)
+            let words = found.map(\.word)
+            return found.allSatisfy { $0.session == k } && zip(words, words.dropFirst()).allSatisfy { $0 < $1 }
+        }
+
+        /// Every token in `text`, in order ("s3w2" → session 3, word 2).
+        static func tokens(_ text: String) -> [(session: Int, word: Int)] {
+            var found: [(session: Int, word: Int)] = []
             let chars = Array(text)
             var i = 0
             while i < chars.count {
@@ -683,7 +707,10 @@ enum SimLive {
                     var digits = ""
                     while j < chars.count, chars[j].isNumber { digits.append(chars[j]); j += 1 }
                     if !digits.isEmpty, j + 1 < chars.count, chars[j] == "w", chars[j + 1].isNumber, let k = Int(digits) {
-                        found.insert(k)
+                        var w = ""
+                        j += 1
+                        while j < chars.count, chars[j].isNumber { w.append(chars[j]); j += 1 }
+                        found.append((k, Int(w) ?? 0))
                     }
                 }
                 i += 1
@@ -695,6 +722,8 @@ enum SimLive {
             var found = SimKit.Findings()
             var fieldProblems: [String] = []
             var f6: [String] = []
+            /// Backspaces that took characters other than the ones meant.
+            var wrongDeletes: [String] = []
             let sessionOfLane = Dictionary(sessions.compactMap { s in s.lane.map { ($0, s.index) } },
                                            uniquingKeysWith: { first, _ in first })
 
@@ -707,6 +736,10 @@ enum SimLive {
                 }
                 if edit.backspaces > shadows[k].count {
                     fieldProblems.append("session \(k) backspaced \(edit.backspaces) over its \(shadows[k].count) characters")
+                }
+                let meant = String(shadows[k].suffix(edit.backspaces))
+                if edit.removed != meant {
+                    wrongDeletes.append("session \(k)'s backspaces took «\(edit.removed)», not its «\(meant)»")
                 }
                 shadows[k].removeLast(min(edit.backspaces, shadows[k].count))
                 shadows[k] += edit.insert
@@ -721,13 +754,20 @@ enum SimLive {
             let want = config.transforms
                 ? FieldText.typed(typed, after: preExisting, transforms: true)
                 : preExisting + typed
-            if real != want { fieldProblems.append("field «\(real)», expected «\(want)»") }
+            fieldProblems += wrongDeletes
+            // With transforms, typing the net text cleanly isn't the only right
+            // field: a retyped ")" can step over an older auto-closed one. If
+            // every backspace took exactly what it meant to, nothing was eaten.
+            if real != want, !(config.transforms && wrongDeletes.isEmpty) {
+                fieldProblems.append("field «\(real)», expected «\(want)»")
+            }
 
             for s in sessions {
                 let shadow = shadows[s.index]
                 // Cut short (✕, a false start, a newer session): what it had
                 // streamed so far, or all of it.
                 let partial = shadow.isEmpty || s.targets.contains { $0.hasPrefix(shadow) } || shadow == s.expected
+                    || appendedInOrder(s.index, shadow)
                 var why: String?
                 if s.phase == .failedToStart || !s.typeAtCursor {
                     if !shadow.isEmpty { why = s.typeAtCursor ? "never started" : "had Type at cursor off" }
@@ -737,7 +777,9 @@ enum SimLive {
                     if !partial { why = "gave way to session \(newer)" }
                 } else if s.phase == .dropped {
                     if !partial { why = "was dropped" }
-                } else if let expected = s.expected, shadow != expected {
+                } else if let expected = s.expected, shadow != expected,
+                          // Not typed exactly: its final text must be in a copy box.
+                          !(appendedInOrder(s.index, shadow) && boxes.contains(expected)) {
                     why = "finished"
                 }
                 if let why {

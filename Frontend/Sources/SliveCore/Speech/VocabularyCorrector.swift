@@ -26,6 +26,11 @@ import Foundation
 ///    model's "Claude", "iOS" and "Argo CD" stay. Identifier-shaped terms
 ///    (hyphens, dots, digits — "z-docs") or ones with capitals ("OnFinance")
 ///    are exact spellings, casing included.
+///  - A term whose plain letters are an ordinary English word ("IT", "US",
+///    "Go", ".NET" → "net", "C#" → "c") would force its casing on every "it",
+///    "us", "go", "net" and "c" the model writes. Those only apply when the
+///    heard word already has the term's casing, or, for terms with symbols
+///    (".NET", "C#"), when the heard text already has the symbol.
 ///  - Punctuation around a match and every other byte of the text is kept.
 ///    A term's own leading/trailing symbols ("C++", ".NET", "$HOME") already
 ///    in the text belong to the match — they used to be typed twice ("C++++").
@@ -41,7 +46,16 @@ public enum VocabularyCorrector {
         public let enforcesCase: Bool
         /// Hyphens, dots or digits — a name ("cos-mp-agent"), not a word.
         public var isIdentifier: Bool { form.contains { $0 == "-" || $0 == "." || $0.isNumber } }
+        /// Its letters alone are a common word or a single letter ("IT", ".NET", "C#").
+        public var isCommonWord: Bool { VocabularyCorrector.commonWords.contains(key) || (key.count == 1 && key.first!.isLetter) }
     }
+
+    /// Short words people also add as terms. A term in this set needs
+    /// confirmation before it rewrites anything. Lowercase, letters only.
+    private nonisolated static let commonWords: Set<String> = [
+        "it", "us", "am", "go", "net", "is", "on", "in", "at", "to", "as", "an", "or", "up", "so", "no",
+        "do", "be", "me", "we", "he", "she", "ai", "ok", "id", "pm", "by", "if", "my", "of",
+    ]
 
     /// Longest run of words a single term can be heard as.
     public nonisolated static let maxSpanWords = 4
@@ -101,8 +115,9 @@ public enum VocabularyCorrector {
                 let span = words[i..<(i + n)]
                 guard spanIsContiguous(span),
                       let (replacement, term) = match(span, terms: terms) else { continue }
-                let range = withEdgeSymbols(of: replacement, around: span.first!.core.lowerBound..<span.last!.core.upperBound,
-                                            in: text, after: cursor)
+                let core = span.first!.core.lowerBound..<span.last!.core.upperBound
+                let range = withEdgeSymbols(of: replacement, around: core, in: text, after: cursor)
+                if term.isCommonWord, !confirmsCommonWord(term, heard: text[range], core: text[core]) { continue }
                 let original = text[range]
                 // A plain lowercase term never lowercases what the model
                 // capitalised ("Claude", "iOS"). A rewrite at a sentence start
@@ -118,6 +133,22 @@ public enum VocabularyCorrector {
         }
         out += text[cursor...]
         return out
+    }
+
+    /// A common-word term applies only on a sign the user meant the term. With
+    /// symbols (".NET", "C#") that is the symbol already in the heard text:
+    /// "C" alone has the casing but is still the letter. Without, it is the
+    /// term's own casing. A trailing period or comma is the sentence's, not a
+    /// symbol of the term ("a.m." heard as "am.").
+    private nonisolated static func confirmsCommonWord(_ term: Term, heard: Substring, core: Substring) -> Bool {
+        let isCore: (Character) -> Bool = { $0.isLetter || $0.isNumber }
+        let form = term.form
+        guard let first = form.firstIndex(where: isCore), let last = form.lastIndex(where: isCore) else { return false }
+        let lead = String(form.prefix { !isCore($0) })
+        var trail = String(form.reversed().prefix { !isCore($0) }.reversed())
+        if trail.allSatisfy({ ".,;:!?".contains($0) }) { trail = "" }
+        if lead.isEmpty, trail.isEmpty { return core == form[first...last] }
+        return heard.hasPrefix(lead) && heard.hasSuffix(trail)
     }
 
     /// `core` widened over the form's own leading/trailing symbols when the

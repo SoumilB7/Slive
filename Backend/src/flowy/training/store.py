@@ -338,13 +338,16 @@ class TrainingStore:
         seen_ids: set[str] = set()
         seen_audio_hashes: set[str] = set()
 
-        with self.index_file.open("r", encoding="utf-8") as handle:
+        # Read bytes and decode per line: one invalid byte or a torn multibyte
+        # character is that row's problem, not the whole index's (it used to
+        # raise out of the line loop and turn readiness into a 500).
+        with self.index_file.open("rb") as handle:
             for line_number, raw_line in enumerate(handle, start=1):
                 if not raw_line.strip():
                     continue
                 total_rows += 1
                 try:
-                    payload = json.loads(raw_line)
+                    payload = json.loads(raw_line.decode("utf-8"))
                     sample = _parse_sample(payload, line_number)
                 except (json.JSONDecodeError, TypeError, ValueError) as exc:
                     rejected.append(

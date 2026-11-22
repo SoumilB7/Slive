@@ -21,6 +21,7 @@ struct HistoryEntry: Codable, Identifiable {
 /// `~/Library/Application Support/Slive/history.json` (a `JSONFileStore`). A
 /// missing file is an empty catalogue; an unreadable one is moved aside
 /// (never overwritten) and the catalogue starts fresh rather than crashing.
+/// A file with some unreadable entries keeps the rest and a copy of the original.
 /// The set-aside copy expires 24 h later and goes with Clear, like the
 /// entries it holds.
 final class HistoryStore: ObservableObject {
@@ -173,8 +174,8 @@ final class HistoryStore: ObservableObject {
         queue.async { self.removeCorruptBackups(olderThan: Date().addingTimeInterval(-Self.ttl)) }
         // Start clean, never crash — an unreadable file is moved aside by the
         // store first: the next add() would otherwise overwrite the only copy
-        // of the user's history.
-        guard let file, case .ok(var decoded) = file.load() else { return }
+        // of the user's history. One unreadable entry costs only itself.
+        guard let file, case .ok(var decoded) = file.loadElements() else { return }
         decoded.sort { $0.createdAt > $1.createdAt }   // newest first
         let rawCount = decoded.count
         Self.applyBounds(&decoded)

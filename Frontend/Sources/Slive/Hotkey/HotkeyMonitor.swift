@@ -43,6 +43,10 @@ final class HotkeyMonitor {
     private var hasReceivedEvent = false
     /// Toggle chord whose keyUp is still owed a swallow.
     private var toggleSwallowKeycode: UInt16?
+    /// Hold chord key whose modifier let go first: its key-up is still owed a
+    /// swallow. Kept apart from `engagedKeyCode` so a missed key-up can't
+    /// block the modifier-only shortcuts (fn hold) until the key is pressed again.
+    private var releasedChordKeycode: UInt16?
     /// Last seen flags state — the down-edge detector for modifier toggles.
     private var previousFlags: UInt64 = 0
     /// The double-tap detector works in taps the way the recorder records
@@ -370,8 +374,14 @@ final class HotkeyMonitor {
         if type == .flagsChanged { previousFlags = flags }   // edge detector state
 
         // 1. Chord shortcuts (a key + modifiers) — these consume the key.
+        var chordJustReleased = false
         switch type {
         case .keyDown:
+            // A fresh press of that key means its key-up was missed: nothing is owed.
+            if keycode == releasedChordKeycode,
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                releasedChordKeycode = nil
+            }
             for t in targets where !t.hotkey.isModifierOnly {
                 if keycode == t.hotkey.keyCode && flags == t.hotkey.modifiers {
                     engage(t.action, engagedKey: keycode)
@@ -384,15 +394,22 @@ final class HotkeyMonitor {
                 release()
                 return true        // swallow the matching key-up too
             }
+            if let rk = releasedChordKeycode, keycode == rk {
+                releasedChordKeycode = nil
+                return true        // the chord key outlived its modifier
+            }
         case .flagsChanged:
-            // A chord is engaged and a required modifier was released → stop, but
-            // keep swallowing the key's eventual key-up via `engagedKeyCode`.
-            if engagedKeyCode != nil,
+            // A chord is engaged and a required modifier was released → stop.
+            // The action is over, so the chord disengages now (its key-up may
+            // never come); only the swallow of that key-up stays owed.
+            if let ek = engagedKeyCode,
                let a = activeAction,
                let t = targets.first(where: { $0.action == a }),
                flags != t.hotkey.modifiers {
-                if let held = activeAction { activeAction = nil; onStop?(held) }
-                syncReleaseWatchdog()
+                engagedKeyCode = nil
+                releasedChordKeycode = ek
+                release()
+                chordJustReleased = true
             }
         default:
             break
@@ -405,7 +422,8 @@ final class HotkeyMonitor {
         //    flags on Apple keyboards (the OS synthesizes them as fn+key), so
         //    matching on those event types made a bare arrow press read as
         //    "fn held" — phantom dictation out of nowhere. Skipped while a
-        //    chord is engaged (that engagement owns `activeAction`).
+        //    chord is engaged (that engagement owns `activeAction`), and on the
+        //    event that let a chord go (its leftover modifiers aren't a new press).
         //
         //    Precedence: an EXACT flag match is the single gesture the user is
         //    making, so it wins (this keeps a superset chord like fn+ctrl from
@@ -414,7 +432,7 @@ final class HotkeyMonitor {
         //    shortcut whose modifiers are ALL held wins. `targets` is ordered
         //    dictate → assist → stream, so plain (all-at-once) dictation
         //    dominates over the continuous and assistant keys.
-        if engagedKeyCode == nil, type == .flagsChanged,
+        if engagedKeyCode == nil, !chordJustReleased, type == .flagsChanged,
            // A flags state that exactly matches a SINGLE-tap toggle bind
            // belongs to the toggle — the hold matcher must not read it as a
            // held gesture. Double-tap binds share their gesture with holds

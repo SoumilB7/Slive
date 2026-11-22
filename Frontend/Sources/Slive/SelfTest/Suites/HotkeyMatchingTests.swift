@@ -200,5 +200,44 @@ enum HotkeyMatchingTests {
         t.check(HotkeyMonitor.physicallyHeld(requiredModifiers: fn | ctrl,
                                            keyDown: { $0 == 63 || $0 == 59 }),
               "combos hold while every required modifier has a key down")
+
+        // ⌥ / let go modifier first, and the / key-up never reaches the tap:
+        // the chord must not stay engaged and keep the fn hold dead. A key-up
+        // that does arrive is still swallowed.
+        do {
+            let rig = ShortcutConfigTests.KeyRig([
+                ShortcutConfigTests.binding(.dictation, .fnDefault),
+                ShortcutConfigTests.binding(.stream, Hotkey(modifiers: alt, keyCode: 44, label: "⌥ /")),
+            ])
+            rig.pressModifiers(alt)
+            _ = rig.keyDown(44)
+            rig.keys.down.remove(44)   // its key-up is missed
+            rig.releaseModifiers(alt)
+            rig.pressModifiers(fn)
+            t.equal(rig.trail.log, ["start stream", "stop stream", "start dictate"],
+                    "fn hold works after a chord's key-up was missed")
+            rig.releaseModifiers(fn)
+            rig.pressModifiers(alt)
+            _ = rig.keyDown(44)
+            rig.releaseModifiers(alt)
+            t.check(rig.keyUp(44), "a chord key released after its modifier is still swallowed")
+            rig.monitor.stop()
+        }
+        // The modifiers left over when a chord lets go aren't a new press:
+        // releasing ⇧ of ⌃⇧ Space doesn't start the ⌃ hold.
+        do {
+            let rig = ShortcutConfigTests.KeyRig([
+                ShortcutConfigTests.binding(.stream, Hotkey(modifiers: ctrl, keyCode: nil, label: "⌃")),
+                ShortcutConfigTests.binding(.assistant, Hotkey(modifiers: ctrl | ShortcutConfigTests.shift, keyCode: 49,
+                                                               label: "⌃⇧ Space")),
+            ])
+            rig.pressModifiers(ctrl | ShortcutConfigTests.shift)
+            _ = rig.keyDown(49)
+            let mark = rig.trail.log.count
+            rig.releaseModifiers(ShortcutConfigTests.shift)
+            t.equal(Array(rig.trail.log.dropFirst(mark)), ["stop assist"],
+                    "a chord's leftover modifier doesn't start another hold")
+            rig.monitor.stop()
+        }
     }
 }

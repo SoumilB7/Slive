@@ -72,6 +72,7 @@ import Foundation
         self.sleeper = sleeper
         self.secureInputNotice = secureInputNotice
         self.wakeFrontApp = wakeFrontApp
+        session.onSessionEnded = { [weak presenter] in presenter?.sessionEnded() }
     }
 
     static let micFailedMessage = "Couldn't start the microphone."

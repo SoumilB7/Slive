@@ -65,6 +65,14 @@ struct TypingSink: TextSink, LiveTextSink {
         return FocusProbe.isStillFocused(on: target)
     }
 
+    /// Two AX reads on the claimed element (caret, then just the span before
+    /// it). Elementless targets (Electron) and apps without these attributes
+    /// read as nil.
+    func textBeforeCaret(_ count: Int, in handle: LiveStreamHandle) -> String? {
+        guard let element = handle.target?.element else { return nil }
+        return AXRead.textBeforeCaret(element, characters: count)
+    }
+
     // MARK: Checks
 
     /// Whether we may stream-type right now: Accessibility granted (needed to

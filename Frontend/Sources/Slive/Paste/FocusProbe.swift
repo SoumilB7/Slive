@@ -402,6 +402,22 @@ enum AXRead {
         return (value as! AXUIElement)
     }
 
+    /// The last `characters` characters before a collapsed caret. Reads up to
+    /// four UTF-16 units per character, so emoji and combining marks fit.
+    static func textBeforeCaret(_ element: AXUIElement, characters: Int) -> String? {
+        guard let caret = range(element, kAXSelectedTextRangeAttribute as String),
+              caret.length == 0, caret.location >= 0 else { return nil }
+        let units = min(caret.location, characters * 4)
+        guard units > 0 else { return "" }
+        var span = CFRange(location: caret.location - units, length: units)
+        guard let param = AXValueCreate(.cfRange, &span) else { return nil }
+        var value: CFTypeRef?
+        let err = AXUIElementCopyParameterizedAttributeValue(
+            element, kAXStringForRangeParameterizedAttribute as CFString, param, &value)
+        guard err == .success, let value, CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        return String(((value as! CFString) as String).suffix(characters))
+    }
+
     static func isFocused(_ element: AXUIElement) -> Bool {
         var value: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(

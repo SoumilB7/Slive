@@ -212,9 +212,10 @@ final class ContinuousDictation {
             typist.setTarget(finalText)
             // Flush the remaining diff immediately so the field is correct on release.
             let done = await typist.finish()
-            // Focus moved mid-session: typing stopped there, so hand back the
-            // whole text for the copy box instead of the partial field.
-            if done.focusLost { result = finalText; typed = false } else { result = done.text }
+            // Focus moved mid-session, or the app rewrote the typed text so
+            // corrections stopped: hand back the whole text for the copy box
+            // instead of the partial field.
+            if done.focusLost || done.diverged { result = finalText; typed = false } else { result = done.text }
         } else {
             typist.cancel()
             result = finalText
@@ -252,7 +253,10 @@ final class ContinuousDictation {
     /// repeat the confirmed suffix. Words are compared case- and
     /// punctuation-insensitively ("Report." matches "report"); the confirmed
     /// side's rendering wins. No overlap found → plain join (never drops text).
+    /// Scripts written without spaces (Chinese, Japanese, Thai…) have no
+    /// words to split on, so their seam is matched by characters instead.
     static func stitchTranscripts(confirmed: String, tail: String) -> String {
+        if let joined = stitchUnspaced(confirmed: confirmed, tail: tail) { return joined }
         let cw = confirmed.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         let tw = tail.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !cw.isEmpty else { return tail }
@@ -268,6 +272,34 @@ final class ContinuousDictation {
             }
         }
         return (cw + tw.dropFirst(overlap)).joined(separator: " ")
+    }
+
+    /// The seam of a script written without spaces: drop the longest prefix of
+    /// `tail` that ends `confirmed` and join with no space. nil when either side
+    /// of the seam isn't such a script (the word rules apply). A single shared
+    /// character isn't trusted: common ones (的, 了) repeat by chance, and a
+    /// doubled character is a smaller loss than a dropped one.
+    private static func stitchUnspaced(confirmed: String, tail: String) -> String? {
+        guard let last = confirmed.last, let first = tail.first,
+              writtenWithoutSpaces(last), writtenWithoutSpaces(first) else { return nil }
+        let c = Array(confirmed), t = Array(tail)
+        var overlap = 0
+        for k in stride(from: min(32, c.count, t.count), through: 2, by: -1)
+        where c.suffix(k).elementsEqual(t.prefix(k)) {
+            overlap = k
+            break
+        }
+        return confirmed + String(t.dropFirst(overlap))
+    }
+
+    /// Han, kana, Thai, Lao, Khmer, Myanmar and CJK punctuation.
+    private static func writtenWithoutSpaces(_ ch: Character) -> Bool {
+        guard let v = ch.unicodeScalars.first?.value else { return false }
+        return (0x0E00...0x0EFF).contains(v) || (0x1000...0x109F).contains(v)
+            || (0x1780...0x17FF).contains(v) || (0x3000...0x30FF).contains(v)
+            || (0x3400...0x4DBF).contains(v) || (0x4E00...0x9FFF).contains(v)
+            || (0xF900...0xFAFF).contains(v) || (0xFF00...0xFFEF).contains(v)
+            || (0x20000...0x2FA1F).contains(v)
     }
 
     // MARK: - Text hygiene

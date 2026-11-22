@@ -45,6 +45,15 @@ protocol LiveTextSink {
     /// Is the destination still the one `handle` claimed? False stops typing
     /// for the rest of the session (the text goes to the copy box instead).
     func stillOurs(_ handle: LiveStreamHandle) -> Bool
+    /// The last `count` characters before the caret, as the field shows them,
+    /// or nil when it can't be read. Apps rewrite typed text (smart dashes,
+    /// auto-brackets, text replacement), so this is checked before deleting.
+    func textBeforeCaret(_ count: Int, in handle: LiveStreamHandle) -> String?
+}
+
+extension LiveTextSink {
+    /// Unreadable by default: corrections go ahead unchecked.
+    func textBeforeCaret(_ count: Int, in handle: LiveStreamHandle) -> String? { nil }
 }
 
 /// One live session's claim on a destination.

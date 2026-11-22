@@ -65,12 +65,20 @@ final class LiveTypist: @unchecked Sendable {
     /// Set by `cancel()`: a `finish()` queued after it must not reconcile —
     /// cancel had already cleared `committed`, so it retyped the WHOLE text.
     private var cancelled = false
+    /// The field no longer ends with what we typed (the app rewrote it:
+    /// "--" → "—", an auto-closed bracket, a text replacement), so backspaces
+    /// counted from `committed` would delete the wrong characters. For the
+    /// rest of the session nothing is deleted; only new words are typed.
+    private var diverged = false
 
     /// What a finished session left in the field, and whether focus moved
     /// away mid-session (then the caller should show the text instead).
     struct FinishResult {
         let text: String
         let focusLost: Bool
+        /// The app changed the typed text, so corrections stopped and the
+        /// field isn't the final text: the caller shows it instead.
+        var diverged = false
     }
 
     /// Begin a session on a destination the sink claimed (`sink.beginStream()`,
@@ -86,6 +94,7 @@ final class LiveTypist: @unchecked Sendable {
             self.lastFocusCheck = .distantPast
             self.enabled = handle.allowed
             self.cancelled = false
+            self.diverged = false
             self.cps = cps
             self.instant = cps >= Self.instantThreshold
             self.running = true
@@ -116,11 +125,12 @@ final class LiveTypist: @unchecked Sendable {
                 self.pendingTick?.cancel(); self.pendingTick = nil
                 if self.enabled && !self.cancelled {
                     self.revealed = self.target.count
-                    self.reconcile(to: Array(self.target))
+                    self.reconcile(to: Array(self.target), final: true)
                 }
-                let result = FinishResult(text: self.committed, focusLost: self.focusLost)
+                let result = FinishResult(text: self.committed, focusLost: self.focusLost,
+                                          diverged: self.diverged)
                 self.committed = ""; self.target = ""; self.revealed = 0; self.frozenLen = 0
-                self.handle = nil; self.focusLost = false
+                self.handle = nil; self.focusLost = false; self.diverged = false
                 continuation.resume(returning: result)
             }
         }
@@ -170,19 +180,49 @@ final class LiveTypist: @unchecked Sendable {
     /// the divergent tail, then type the corrected remainder as one keystroke.
     /// Respects the freeze boundary (never backspaces below `frozenLen`), so deep
     /// revisions can't cascade. A pure forward step (desired = committed + 1 char)
-    /// is just that one appended character.
-    private func reconcile(to desired: [Character]) {
+    /// is just that one appended character. `final`: the session's last edit.
+    private func reconcile(to desired: [Character], final: Bool = false) {
+        if diverged { appendNewWords(desired, final: final); return }
         let old = Array(committed)
         let (keep, from) = Self.plan(old: old, desired: desired, frozen: frozenLen)
         let deletes = old.count - keep
         guard deletes > 0 || desired.count > from else { return }   // nothing changed
         guard focusStillOurs(deleting: deletes > 0) else { return }
+        // Delete only what the field still shows as ours. Unreadable: go ahead.
+        if deletes > 0, let handle, let seen = sink.textBeforeCaret(deletes, in: handle),
+           seen != String(old[keep...]) {
+            diverged = true
+            Log.live("the app changed the typed text — corrections stopped; the text goes to the copy box")
+            appendNewWords(desired, final: final)
+            return
+        }
 
         let insert = desired.count > from ? String(desired[from...]) : ""
         sink.replace(backspaces: deletes, insert: insert)            // instant
         // `committed` mirrors the FIELD: kept (old) prefix + what we just typed.
         committed = String(old[0..<keep]) + insert
         frozenLen = max(frozenLen, committed.count - Self.editableTail)
+    }
+
+    /// Once diverged: type the words of `desired` past those already typed,
+    /// never deleting. A last word typed partway is finished if it still
+    /// matches. Mid-session a word still forming waits (it can't be fixed
+    /// later); the final text types everything.
+    private func appendNewWords(_ desired: [Character], final: Bool) {
+        let typed = committed.split(whereSeparator: \.isWhitespace)
+        var words = String(desired).split(whereSeparator: \.isWhitespace)
+        if !final, desired.last.map({ !$0.isWhitespace }) == true, !words.isEmpty { words.removeLast() }
+        let midWord = committed.last.map { !$0.isWhitespace } ?? false
+        var insert = ""
+        if midWord, let partial = typed.last, typed.count <= words.count,
+           words[typed.count - 1].count > partial.count, words[typed.count - 1].hasPrefix(partial) {
+            insert = String(words[typed.count - 1].dropFirst(partial.count))
+        }
+        let new = words.dropFirst(typed.count)
+        if !new.isEmpty { insert += (midWord ? " " : "") + new.joined(separator: " ") }
+        guard !insert.isEmpty, focusStillOurs(deleting: false) else { return }
+        sink.replace(backspaces: 0, insert: insert)
+        committed += insert
     }
 
     /// The edit that moves the field (`old`) toward `desired` without touching

@@ -62,6 +62,24 @@ enum VocabularyCorrectorTests {
         t.equal(fix("open the compliance OS app", "ComplianceOS"), "open the ComplianceOS app",
               "capitalised user form used verbatim")
 
+        // A term that is also an ordinary word never rewrites that word: it
+        // applies only where the heard text already has its casing or symbol.
+        let plain = "Is it ok to go to us? Ask it, then go. I am in the net and on C."
+        for term in ["IT", "US", "AM", "Go", "IN", "OK", "ME", ".NET", "C#", "AI"] {
+            t.equal(fix(plain, term), plain, "term \(term) leaves the ordinary words alone")
+        }
+        t.equal(fix("It is IT support", "IT"), "It is IT support", "IT keeps the sentence-start It and the heard IT")
+        t.equal(fix("we use .net and c# daily", ".NET, C#"), "we use .NET and C# daily",
+                "heard symbols still take the user's casing")
+        t.equal(fix("I use net and c", ".NET, C#"), "I use net and c", "without the symbol net and c stay")
+        t.equal(fix("start at 9 am. Then go", "a.m., Go"), "start at 9 am. Then go", "a sentence period is not a.m.")
+        t.equal(fix("a Go service and go home", "Go"), "a Go service and go home", "Go applies only to Go")
+        t.equal(fix("meet at 9 AM, said the IT guy", "AM, IT"), "meet at 9 AM, said the IT guy", "same casing is accepted")
+        // Terms that aren't common words keep today's behaviour.
+        t.equal(fix("use swift and kubernetes", "Swift, Kubernetes"), "use Swift and Kubernetes",
+                "non-common terms still apply")
+        t.equal(fix("we use c++ daily", "C++, Rust"), "we use C++ daily", "a symbol term with the symbol heard still applies")
+
         // Already correct → no double rewrite; the pass is idempotent.
         let correct = "z-docs, cos-ai-agent, onfinance and argo cd."
         t.equal(fix(correct), correct, "already-correct terms untouched")

@@ -223,14 +223,23 @@ enum DictationConfigMatrixTests {
         }
         // The runs settle on the world's own state and virtual time, so a
         // second pass must repeat every one exactly, however busy the Mac.
+        var firstDiff = ""
         let replayed = configs.indices.filter { i in
             let world = World(configs[i])
             _ = world.runAndJudge()
-            return world.fingerprint != fingerprints[i]
+            guard world.fingerprint != fingerprints[i] else { return false }
+            if firstDiff.isEmpty {
+                // Where the two runs part ways, so a replay miss is diagnosable.
+                let a = Array(fingerprints[i]), b = Array(world.fingerprint)
+                let at = (0..<min(a.count, b.count)).first { a[$0] != b[$0] } ?? min(a.count, b.count)
+                let from = max(0, at - 60)
+                firstDiff = " — first run «…\(String(a[from..<min(a.count, at + 80)]))…» vs replay «…\(String(b[from..<min(b.count, at + 80)]))…»"
+            }
+            return true
         }
         t.check(replayed.isEmpty, "every run replays exactly (verdicts, trail, overlay states, field)",
                 "\(replayed.count)/\(configs.count) differ, e.g. "
-                    + replayed.prefix(3).map { configs[$0].description }.joined(separator: " | "))
+                    + replayed.prefix(3).map { configs[$0].description }.joined(separator: " | ") + firstDiff)
         checkSecureInputIsTheWorlds(&t)
         t.check(modeEntries.allSatisfy { delivered[$0.action, default: 0] >= 5 },
                 "plus \(deliveringRows.count) delivering runs (all-pairs); every mode delivers words in 5+ runs",
@@ -448,12 +457,18 @@ enum DictationConfigMatrixTests {
                 clock.advance(by: tail)
             case .twoHolds:
                 hold()
-                // A re-press is never faster than one main-actor turn: the
-                // release's task has started by then. Waited for, not timed: a
-                // stream's start is its final pass taking the session (else
-                // the re-press finds it live and does nothing).
+                // The re-press lands at a point the world defines, never at
+                // whatever the cooperative pool happened to finish: a stream's
+                // when its final pass has taken the session (else the re-press
+                // finds it live and does nothing); a dictation's or request's
+                // once the first release's work is done or parked on virtual
+                // time. One drained turn raced the first release's box against
+                // the second hold's cue (1–6 of 515 runs replayed in the
+                // other order on a busy Mac).
                 let realLimit = Date().addingTimeInterval(Self.realWorkLimit)
-                repeat { Self.drainMainQueue() } while action == .stream && continuous.isActive && Date() < realLimit
+                repeat { Self.drainMainQueue() } while Date() < realLimit && (action == .stream
+                    ? continuous.isActive
+                    : !(queue.isEmpty && requestDone) && sleeper.clock.nextDue == nil)
                 hold()
             }
         }

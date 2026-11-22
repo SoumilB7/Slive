@@ -36,5 +36,15 @@ enum StitchTests {
         t.equal(ContinuousDictation.stitchTranscripts(
                 confirmed: "again and again", tail: "and again and again we tried"),
               "again and again and again we tried", "repeat phrase not over-trimmed")
+        // Scripts without spaces: the seam is matched by characters, joined
+        // with no space; one shared character alone is chance, not overlap.
+        t.equal(ContinuousDictation.stitchTranscripts(confirmed: "我们今天去公园", tail: "去公园散步"),
+                "我们今天去公园散步", "Chinese seam dedup by characters")
+        t.equal(ContinuousDictation.stitchTranscripts(confirmed: "สวัสดีครับวันนี้", tail: "วันนี้อากาศดี"),
+                "สวัสดีครับวันนี้อากาศดี", "Thai seam dedup by characters")
+        t.equal(ContinuousDictation.stitchTranscripts(confirmed: "我们的", tail: "的书"),
+                "我们的的书", "a single shared character is kept twice, never dropped")
+        t.equal(ContinuousDictation.stitchTranscripts(confirmed: "我们今天", tail: "去公园"),
+                "我们今天去公园", "no overlap: joined without a space")
     }
 }

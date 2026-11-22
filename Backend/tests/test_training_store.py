@@ -144,6 +144,23 @@ def test_invalid_json_is_reported_without_stopping_other_rows(tmp_path: Path) ->
     assert report.rejected_samples[0].reasons[0].startswith("invalid-row:")
 
 
+def test_invalid_utf8_and_a_torn_multibyte_last_line_are_invalid_rows(tmp_path: Path) -> None:
+    root = tmp_path / "training"
+    _write_wav(root / "audio" / "good.wav")
+    _write_rows(root, [_row("good", finalText="this is correct")])
+    good = (root / "samples.jsonl").read_bytes()
+    torn = json.dumps(_row("torn", finalText="café"), ensure_ascii=False).encode()
+    torn = torn[: torn.index("caf".encode()) + 4]  # ends inside the two-byte "é"
+    (root / "samples.jsonl").write_bytes(b'{"id": "\xff\xfe"}\n' + good + torn)
+
+    report = TrainingStore(root).inspect()
+
+    assert report.total_rows == 3
+    assert report.eligible_count == 1
+    assert [r.line_number for r in report.rejected_samples] == [1, 3]
+    assert all(r.reasons[0].startswith("invalid-row:") for r in report.rejected_samples)
+
+
 def test_manifest_contains_only_eligible_samples(tmp_path: Path) -> None:
     root = tmp_path / "training"
     _write_wav(root / "audio" / "good.wav")

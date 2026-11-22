@@ -36,8 +36,12 @@ import AppKit
     private var collapseWork: DispatchWorkItem?
     /// Pending "offer a ✕" on the transcribing pill.
     private var stuckWork: DispatchWorkItem?
-    /// Run once at the next hide (see `whenIdle`).
-    private var idleWaiters: [@MainActor () -> Void] = []
+    /// Run once at the next hide that frees the overlay (see `whenIdle`).
+    private var idleWaiters: [IdleWaiter] = []
+    private struct IdleWaiter {
+        let sessionLive: @MainActor () -> Bool
+        let work: @MainActor () -> Void
+    }
 
     init(model: AudioModel, scheduler: MainScheduler = DispatchMainScheduler.shared,
          makeSurface: @escaping () -> OverlaySurface) {
@@ -128,10 +132,13 @@ import AppKit
         }
     }
 
-    /// Run `work` now if nothing is showing, else right after the overlay
-    /// next hides — for late results that mustn't cover a newer hold or box.
-    func whenIdle(_ work: @escaping @MainActor () -> Void) {
-        if isIdle { work() } else { idleWaiters.append(work) }
+    /// Run `work` now if the overlay is free, else at the first hide that
+    /// frees it — for late results that mustn't cover a newer hold or box.
+    /// Free means nothing showing AND no session live: ✕ during a newer
+    /// hold's tail hides the panel while that hold still owns the overlay.
+    func whenIdle(sessionLive: @escaping @MainActor () -> Bool, _ work: @escaping @MainActor () -> Void) {
+        if isIdle, !sessionLive() { work() }
+        else { idleWaiters.append(IdleWaiter(sessionLive: sessionLive, work: work)) }
     }
 
     /// A new session supersedes the result box: its auto-collapse is moot.
@@ -166,9 +173,21 @@ import AppKit
 
     private func hide() {
         surface.hide()   // hide() resets the model
-        // A waiter may show something new; ones it queues wait for that to hide.
+        runIdleWaiters()
+    }
+
+    /// A hide can land inside an empty release tail. Try again when that
+    /// session ends, even if it has no recording or result left to hide.
+    func sessionEnded() { runIdleWaiters() }
+
+    private func runIdleWaiters() {
+        guard isIdle else { return }
         let waiters = idleWaiters
         idleWaiters = []
-        for work in waiters { work() }
+        for waiter in waiters {
+            // Earlier work may have claimed the overlay in this same pass.
+            if !isIdle || waiter.sessionLive() { idleWaiters.append(waiter) }
+            else { waiter.work() }
+        }
     }
 }

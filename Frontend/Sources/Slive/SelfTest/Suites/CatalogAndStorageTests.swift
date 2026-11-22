@@ -159,6 +159,29 @@ enum CatalogAndStorageTests {
         t.equal(names().filter { $0.hasPrefix("history.json.corrupt-") }, ["history.json.corrupt-1700000000"],
                 "json: expired backups pruned, fresh ones kept")
 
+        // loadElements: one undecodable entry costs only itself; the original is kept once.
+        let list = JSONFileStore<[Row]>(url: dir.appendingPathComponent("list.json"), label: "selftest list")
+        let listed = Data(#"[{"id":"a","at":"2023-11-14T22:13:20Z"},{"id":"b","at":"yesterday"},{"id":"c","at":"2023-11-14T22:14:20Z"}]"#.utf8)
+        try? listed.write(to: list.url)
+        let kept = { () -> [String]? in
+            if case .ok(let back) = list.loadElements(now: now) { return back.map(\.id) } else { return nil }
+        }()
+        t.equal(kept, ["a", "c"], "json list: the good entries survive one bad one")
+        let listBackup = CorruptBackup.url(for: list.url, at: now)
+        t.check((try? Data(contentsOf: listBackup)) == listed, "json list: the original is copied aside when an entry was dropped")
+        if case .ok(let back) = list.load() { t.equal(back.map(\.id), ["a", "c"], "json list: the live file is rewritten without the bad entry") }
+        else { t.check(false, "json list: the live file is rewritten without the bad entry") }
+        _ = list.loadElements(now: now.addingTimeInterval(10))
+        t.equal(names().filter { $0.hasPrefix("list.json.corrupt-") }, ["list.json.corrupt-1700000000"],
+                "json list: a clean file adds no backup")
+        try? Data(#"{"id":"a"}"#.utf8).write(to: list.url)
+        if case .corrupt(let movedTo) = list.loadElements(now: now.addingTimeInterval(20)) {
+            t.check(movedTo != nil && !fm.fileExists(atPath: list.url.path),
+                    "json list: a file that isn't an array is set aside whole")
+        } else {
+            t.check(false, "json list: a file that isn't an array is set aside whole")
+        }
+
         // JSONLFileStore: append, torn-line guard, parse counting, backup once.
         let jsonl = JSONLFileStore<Row>(url: dir.appendingPathComponent("samples.jsonl"), label: "selftest index")
         let first = (try? jsonl.append(rows[0])) ?? 0

@@ -201,6 +201,33 @@ enum TextSinkTests {
             let result = finish(typist)
             t.check(field.calls == 0 && result.text.isEmpty, "disallowed session never touches the field")
         }
+        // The app turned "--" into "—": two backspaces counted from what was
+        // typed would eat "t—". A readable field shows it: nothing is deleted,
+        // new words still type, and the result says the field isn't final.
+        do {
+            let field = FakeField("Dear team, ")
+            field.smartDashes = true
+            field.readable = true
+            let typist = LiveTypist(sink: field)
+            typist.start(field.beginStream(), cps: 1000)
+            typist.setTarget("wait--")
+            typist.setTarget("wait, then")
+            let result = finish(typist)
+            t.check(field.text == "Dear team, wait— then" && result.diverged,
+                    "a field the app rewrote is never backspaced into", "field=\(field.text)")
+        }
+        // Readable and untouched by the app: corrections go ahead as before.
+        do {
+            let field = FakeField()
+            field.readable = true
+            let typist = LiveTypist(sink: field)
+            typist.start(field.beginStream(), cps: 1000)
+            typist.setTarget("hello wrld")
+            typist.setTarget("hello world")
+            let result = finish(typist)
+            t.check(field.text == "hello world" && !result.diverged,
+                    "a readable field that matches is still corrected", "field=\(field.text)")
+        }
     }
 
     /// Blocks until `finish()` returns. Safe: the typist works on its own
@@ -227,6 +254,12 @@ private final class FakeField: LiveTextSink, @unchecked Sendable {
     private var _calls = 0
     /// `stillOurs` answers false once the field holds exactly this.
     var lostWhenFieldIs: String?
+    /// Turns a second "-" into "—", as smart dashes do.
+    var smartDashes = false
+    /// Answers `textBeforeCaret` (the caret sits at the end).
+    var readable = false
+
+    init(_ text: String = "") { _text = text }
 
     var text: String { lock.withLock { _text } }
     var typedCount: Int { lock.withLock { _typed } }
@@ -240,9 +273,15 @@ private final class FakeField: LiveTextSink, @unchecked Sendable {
         lock.withLock {
             _calls += 1
             _text.removeLast(min(backspaces, _text.count))
-            _text += insert
+            for c in insert {
+                if smartDashes, c == "-", _text.last == "-" { _text.removeLast(); _text.append("—") } else { _text.append(c) }
+            }
             _typed += insert.count
         }
+    }
+
+    func textBeforeCaret(_ count: Int, in handle: LiveStreamHandle) -> String? {
+        lock.withLock { readable ? String(_text.suffix(count)) : nil }
     }
 
     func stillOurs(_ handle: LiveStreamHandle) -> Bool {

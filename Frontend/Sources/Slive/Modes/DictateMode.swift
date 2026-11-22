@@ -11,9 +11,13 @@ import Foundation
 
     private let ctx: ModeContext
     private let capture: HoldCapture
-    /// An unconfirmed dictation's copy box (text, note), waiting for the
-    /// overlay to free up.
-    private var pendingCopyBox: (text: String, note: String?)?
+    /// What waits for the overlay to free up, shown together in one box:
+    /// unconfirmed dictations' text (oldest first) and the mic-lost note of
+    /// one typed while a newer hold owned the overlay.
+    private var pendingTexts: [(order: Int, text: String)] = []
+    private var deliveryOrder = 0
+    private var pendingNote: String?
+    private var waitingForIdle = false
 
     init(_ ctx: ModeContext) {
         self.ctx = ctx
@@ -60,8 +64,10 @@ import Foundation
         // save, stats — can ever sit in front of the typeout. This ordering is
         // the guarantee; saving happens strictly after the text is on its way.
         // (Auto-insert off: the sink is the copy box, which never types.)
+        deliveryOrder += 1
+        let order = deliveryOrder
         let typed = ctx.sink.deliver(trimmed) { [weak self] in
-            DispatchQueue.main.async { self?.showCopyBoxWhenIdle(trimmed, note: lostNote) }
+            DispatchQueue.main.async { self?.showWhenIdle(text: trimmed, order: order, note: lostNote) }
         }
         if let releasedAt {
             // Unconditional: THE number to check when "dictation feels slow".
@@ -83,6 +89,9 @@ import Foundation
             }
         } else if !typed {
             Log.event("dictation not typed (overlay busy) — kept in history")
+        } else if let lostNote {
+            // Typed under a newer hold: still say its end may be missing.
+            showWhenIdle(text: nil, note: lostNote)
         }
 
         // ---- Bookkeeping, strictly after the typeout dispatch ----
@@ -104,17 +113,24 @@ import Foundation
 
     /// The delivery check ends ~0.9 s after typing, often under a newer
     /// hold or box, so the copy box waits for the overlay to free up rather
-    /// than be dropped. Only the newest waits: one box per idle moment, and
-    /// older unconfirmed ones are in history.
-    private func showCopyBoxWhenIdle(_ text: String, note: String?) {
-        let waiting = pendingCopyBox != nil
-        if waiting { Log.event("older unconfirmed dictation's box superseded — kept in history") }
-        pendingCopyBox = (text, note)
-        if waiting { return }
-        ctx.presenter.whenIdle { [weak self] in
-            guard let self, let box = self.pendingCopyBox else { return }
-            self.pendingCopyBox = nil
-            self.showDictationCopyBox(box.text, note: box.note)
+    /// than be dropped. Everything waiting shows in ONE box, so a newer one
+    /// never replaces an older one and Copy takes all of it.
+    private func showWhenIdle(text: String?, order: Int = 0, note: String?) {
+        if let text { pendingTexts.append((order, text)) }
+        if let note { pendingNote = note }
+        guard !waitingForIdle else { return }
+        waitingForIdle = true
+        ctx.presenter.whenIdle(sessionLive: { [weak self] in self?.ctx.session.isSessionLive ?? false }) { [weak self] in
+            guard let self else { return }
+            let texts = self.pendingTexts, note = self.pendingNote
+            self.pendingTexts = []
+            self.pendingNote = nil
+            self.waitingForIdle = false
+            if !texts.isEmpty {
+                self.showDictationCopyBox(texts.sorted { $0.order < $1.order }.map(\.text).joined(separator: "\n\n"), note: note)
+            } else if let note {
+                self.ctx.presenter.notice(note)
+            }
         }
     }
 

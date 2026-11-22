@@ -42,6 +42,8 @@ import Foundation
     }
 
     weak var handler: SessionHandler?
+    /// Recheck deferred overlay work after capture AND the release tail end.
+    var onSessionEnded: (@MainActor () -> Void)?
     private let scheduler: MainScheduler
     private let holdDelay: () -> TimeInterval
 
@@ -173,6 +175,7 @@ import Foundation
             guard let self else { return }
             self.settle()
             self.handler?.endSession(action)
+            self.onSessionEnded?()
         }
     }
 
@@ -183,6 +186,7 @@ import Foundation
         gestureWork?.cancel()
         settle()
         handler?.endSession(currentAction)
+        onSessionEnded?()
     }
 
     // MARK: - Tap-to-toggle (click to start, click again to stop)
@@ -254,6 +258,7 @@ import Foundation
         gestureWork?.cancel()
         settle()
         handler?.abortSession()
+        onSessionEnded?()
         Log.hotkey("false-start hold session aborted by double-tap")
     }
 

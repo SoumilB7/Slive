@@ -144,6 +144,10 @@ def test_store_gate_uses_the_same_unconfirmed_threshold() -> None:
     assert store.MIN_UNCONFIRMED_WORDS == lc.MIN_UNCONFIRMED_WORDS
 
 
+def test_normalize_words_keeps_accented_letters_as_their_base() -> None:
+    assert lc.normalize_words("Café à ñ, Straße Łódź") == ["cafe", "a", "n", "straße", "łodz"]
+
+
 def test_normalize_words_treats_hyphens_as_spaces() -> None:
     assert lc.normalize_words("Sub-agent’s GPT-6, OK?") == ["sub", "agent's", "gpt", "6", "ok"]
 

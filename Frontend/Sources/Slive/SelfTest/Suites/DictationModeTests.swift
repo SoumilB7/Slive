@@ -302,9 +302,9 @@ enum DictationModeTests {
                                                  queueID: nil),
                                   ownsOverlay: true)
         }
-        func fireFailures(_ h: Harness) {
+        func fireFailures(_ h: Harness, reversed: Bool = false) {
             let failures = h.sink.takeFailures()
-            failures.forEach { $0() }
+            (reversed ? failures.reversed().map { $0 } : failures).forEach { $0() }
             h.settle(0.2) { false }   // the callback hops to main
         }
 
@@ -329,14 +329,33 @@ enum DictationModeTests {
             typedUnconfirmed(h, mode, "newer")
             h.overlayClock.advance(by: 1)
             h.presenter.notice("Another box")
-            fireFailures(h)
+            fireFailures(h, reversed: true)   // receipts can return out of speaking order
             t.equal(h.presenter.state.resultText, "Another box", "a late miss doesn't replace another box")
             h.presenter.dismiss()
-            t.equal(h.presenter.state.resultText, "newer", "closing it shows the newest waiting copy box")
+            t.equal(h.presenter.state.resultText, "older\n\nnewer",
+                    "closing it shows every waiting copy box in one, oldest first")
             h.presenter.dismiss()
-            t.check(h.presenter.isIdle, "and only that one (older ones are in history)")
+            t.check(h.presenter.isIdle, "and nothing after it")
             t.check(h.trail.all.contains("history older") && h.trail.all.contains("history newer"),
                     "both are in history")
+        }
+
+        do {
+            // ✕ during a newer hold's release tail hides the overlay while
+            // that hold still owns it: the old box must keep waiting.
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            typedUnconfirmed(h, mode, "older")
+            h.overlayClock.advance(by: 1)
+            h.ctx.session.keyDown(.dictate)
+            h.sessionClock.advance(by: 0.01)   // armed
+            h.presenter.listening(.dictation)
+            h.ctx.session.keyUp()               // in the tail now
+            fireFailures(h)
+            h.presenter.dismiss()
+            t.check(h.presenter.isIdle, "✕ in a newer hold's tail doesn't surface an old copy box")
+            h.sessionClock.advance(by: 1)       // the tail ends, with no recording to stop
+            t.equal(h.presenter.state.resultText, "older", "an empty tail ending wakes the waiting box (seed 191)")
         }
 
         do {
@@ -381,6 +400,38 @@ enum DictationModeTests {
             mode.end()
             h.settle { h.ctx.queue.isEmpty }
             t.check(h.presenter.state.result == nil, "a mic that stayed: no notice")
+        }
+
+        do {
+            // Typed while a newer hold owns the overlay: the notice waits for it.
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            h.presenter.listening(.dictation)
+            mode.deliverDictation(DecodedRelease(text: "hello", audioURL: URL(fileURLWithPath: "/dev/null"),
+                                                 releasedAt: nil, waitedForModel: false, seconds: 1,
+                                                 queueID: nil, micLost: true),
+                                  ownsOverlay: false)
+            t.equal(h.presenter.state, .listening(.dictation), "mic lost under a newer hold: its pill stays")
+            h.presenter.hideSoon()
+            h.overlayClock.advance(by: 1)
+            t.equal(h.presenter.state, .result(OverlayResult(text: ModeContext.micLostNote)),
+                    "mic lost under a newer hold: the notice shows once it's done")
+        }
+        do {
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            h.sink.unconfirmed = true
+            h.presenter.listening(.dictation)
+            mode.deliverDictation(DecodedRelease(text: "cut short", audioURL: URL(fileURLWithPath: "/dev/null"),
+                                                 releasedAt: nil, waitedForModel: false, seconds: 1,
+                                                 queueID: nil, micLost: true),
+                                  ownsOverlay: false)
+            h.sink.takeFailures().forEach { $0() }
+            h.settle(0.2) { false }
+            h.presenter.hideSoon()
+            h.overlayClock.advance(by: 1)
+            t.equal(h.presenter.state, .result(OverlayResult(text: "cut short", note: ModeContext.micLostNote)),
+                    "a delayed mic notice joins its waiting copy box")
         }
     }
 
@@ -827,6 +878,8 @@ enum DictationModeTests {
         let presenter: OverlayPresenter
         /// The overlay's timers (hide-after-fade, auto-collapse).
         let overlayClock: ManualScheduler
+        /// The gesture machine's timers (hold delay, release tail).
+        let sessionClock = ManualScheduler()
         let ctx: ModeContext
         let continuous: ContinuousDictation
 
@@ -837,8 +890,7 @@ enum DictationModeTests {
             let overlay = OverlayStateTests.make()
             presenter = overlay.0
             overlayClock = overlay.2
-            let clock = ManualScheduler()
-            let session = SessionCoordinator(scheduler: clock, holdDelay: { 0 })
+            let session = SessionCoordinator(scheduler: sessionClock, holdDelay: { 0 })
             let queue = DictationQueue()
             let trail = self.trail
             ctx = ModeContext(

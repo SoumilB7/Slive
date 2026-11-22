@@ -113,8 +113,8 @@ enum PipelineConfigTests {
         let symbols = DictationPipeline.standard(vocabulary: "C++, .NET, $HOME, (x), Node.js")
         t.equal(symbols.finish("I write C++ and .NET in $HOME (x) with Node.js."),
                 "I write C++ and .NET in $HOME (x) with Node.js.", "a term's own symbols are never typed twice")
-        t.equal(symbols.finish("I write c and net in home"), "I write C++ and .NET in $HOME",
-                "and a term heard without them still gets them")
+        t.equal(symbols.finish("I write c and net in home"), "I write c and net in $HOME",
+                "a term heard without its symbols still gets them, unless it is also a common word (c, net)")
     }
 
     // MARK: - Silence trim on every clip

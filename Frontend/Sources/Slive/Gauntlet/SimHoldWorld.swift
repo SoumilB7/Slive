@@ -167,10 +167,13 @@ final class SimHoldWorld {
     }
 
     /// Main-queue passes with no visible move before the instant counts as
-    /// settled. A pass runs every job queued before it, so this only has to
+    /// settled. A pass runs every job queued before it, so this has to
     /// outlast the longest chain of jobs that touch nothing the world sees
-    /// (a Task starting, a queue turn handed on), which is a few passes.
-    private static let calmPasses = 8
+    /// (a Task starting, a queue turn handed on) — and a continuation that
+    /// detours through the cooperative pool can take up to ~48 passes to
+    /// reach the main queue on a busy Mac (measured, 9dd195a). 8 passes
+    /// lost a seed in ~1 of 6 loaded runs.
+    private static let calmPasses = 64
     /// A safety net for real work only (the answer stream takes
     /// milliseconds); past it the stream is reported as hung.
     private static let realWorkLimit: TimeInterval = 10
@@ -263,18 +266,27 @@ final class SimHoldWorld {
     private func onState(_ state: OverlayState) {
         tick += 1
         guard case .result(let r) = state else { return }
-        if r.text == ModeContext.micLostNote {
-            deliveringUtterance?.sawMicNote = true
-            return
+        if r.text == ModeContext.micLostNote || r.note == ModeContext.micLostNote {
+            if let u = deliveringUtterance {
+                u.sawMicNote = true   // shown as it typed: that dictation's
+            } else {
+                // Shown later, once a newer hold let go (alone or on the
+                // waiting copy box): for the mic-lost dictations typed before it.
+                for u in utterances where u.micWasLost && u.typingSinkDelivered { u.sawMicNote = true }
+            }
         }
-        guard let u = byFinished[r.text] else { return }
-        u.boxShown = true
-        if r.note == ModeContext.micLostNote { u.sawMicNote = true }
-        // One-owner: a dictation's box must never surface while a strictly
-        // newer hold is still capturing (its pill owns the overlay).
-        if recorder.isRecording, let cur = recorder.currentToken,
-           (Int(cur.dropFirst()) ?? 0) > u.tokenNum {
-            violations.insert("sim-hold.one-owner")
+        if r.text == ModeContext.micLostNote { return }
+        // Several unconfirmed dictations share one box, a blank line apart.
+        for part in r.text.components(separatedBy: "\n\n") {
+            guard let u = byFinished[part] else { continue }
+            u.boxShown = true
+            if r.note == ModeContext.micLostNote { u.sawMicNote = true }
+            // One-owner: a dictation's box must never surface while a strictly
+            // newer hold is still capturing (its pill owns the overlay).
+            if recorder.isRecording, let cur = recorder.currentToken,
+               (Int(cur.dropFirst()) ?? 0) > u.tokenNum {
+                violations.insert("sim-hold.one-owner")
+            }
         }
     }
 
@@ -595,7 +607,14 @@ final class SimSink: TextSink, @unchecked Sendable {
     @MainActor private func deliverOnMain(_ text: String, onFailure: @escaping () -> Void) -> Bool {
         guard let world else { return true }
         world.bump()
-        world.deliveringUtterance = world.finishedUtterance(text)
+        let delivering = world.finishedUtterance(text)
+        world.deliveringUtterance = delivering
+        // Only for this delivery's own turn: a notice after it is a late one.
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if world.deliveringUtterance === delivering { world.deliveringUtterance = nil }
+            }
+        }
         world.finishedUtterance(text)?.typingSinkDelivered = true
         let receipt = world.chooseReceipt()
         if receipt == .landed {

@@ -113,9 +113,6 @@ def test_normalization_keeps_something_for_ascii_text(text):
     assert label_consensus.normalize_words(text), f"{text!r} normalized to no words"
 
 
-@pytest.mark.xfail(strict=True, reason="known red (found by this check): the word pattern is "
-                   "[a-z0-9'], so a word of only accented letters (\"à\", \"ñ\", \"ß\") "
-                   "normalizes to nothing and any comparison with it is meaningless")
 @PROPERTY
 @given(ANY_LATIN.filter(_has_latin_letter))
 def test_props_latin_normalize_keeps_something_for_accented_text(text):
@@ -182,8 +179,6 @@ def test_training_readiness_survives_torn_lines(tmp_path_factory, ops, count):
     assert "ready" in reply.json()
 
 
-@pytest.mark.xfail(strict=True, reason="F26 known red: the index is read as UTF-8 text, so one "
-                   "invalid byte raises UnicodeDecodeError out of readiness (HTTP 500)")
 def test_f26_invalid_utf8_in_the_index_never_500s(tmp_path):
     index = _damage([_line(i) for i in range(5)], [(2, 30, 4)], utf8=True)
     reply = _readiness(tmp_path, index)
