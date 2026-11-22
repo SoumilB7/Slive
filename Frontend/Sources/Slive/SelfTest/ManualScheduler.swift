@@ -29,4 +29,22 @@ import Foundation
 
     /// Timers still waiting to run.
     var waiting: Int { pending.filter { !$0.item.isCancelled }.count }
+
+    /// The time of the earliest live timer, if any.
+    var nextDue: Date? { pending.filter { !$0.item.isCancelled }.map(\.at).min() }
+
+    /// Fire only the single earliest timer (ties in scheduling order),
+    /// moving `now` to its time; false when none remain. A driver that must
+    /// pump the Swift concurrency executor between timers (so async
+    /// continuations resolve one chain at a time) steps with this instead of
+    /// `advance(by:)`, which fires a whole batch without yielding.
+    @discardableResult
+    func advanceToNext() -> Bool {
+        guard let next = pending.filter({ !$0.item.isCancelled })
+            .min(by: { ($0.at, $0.seq) < ($1.at, $1.seq) }) else { return false }
+        pending.removeAll { $0.seq == next.seq }
+        now = max(now, next.at)
+        next.item.perform()
+        return true
+    }
 }

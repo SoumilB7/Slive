@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 
@@ -27,6 +28,51 @@ import Foundation
     /// The activation sound for an action (`FeedbackPlayer`).
     let cue: (HotkeyAction) -> Void
     let micAuthorization: () -> AVAuthorizationStatus
+    /// Virtual time for the bounded model wait (`awaitServing`); the wall
+    /// clock in the app, the Gauntlet's clock under simulation.
+    let nowProvider: () -> Date
+    /// How the model wait yields between polls — a real `Task.sleep` in the
+    /// app, a virtual-time wake under simulation.
+    let sleeper: Sleeper
+    /// Why a dictate hold must be refused for secure input, or nil. The live
+    /// system reading in the app; a fixed answer under test, which otherwise
+    /// inherits this Mac's state (a locked screen refuses every hold).
+    let secureInputNotice: () -> String?
+    /// Wakes the front app's lazy accessibility tree at key-down (AXWake).
+    /// A no-op under test: the real one writes to whatever app is in front
+    /// of this Mac.
+    let wakeFrontApp: @MainActor () -> Void
+
+    init(recorder: Recording, speech: DictationSpeech, models: ModelServing,
+         presenter: OverlayPresenter, queue: DictationQueue, session: SessionCoordinator,
+         work: InFlightWork, settings: Settings, records: DictationRecords, report: FaultSink,
+         typing: TextSink, typingBlockedNote: @escaping () -> String?,
+         captureOptions: @escaping () -> CaptureOptions, cue: @escaping (HotkeyAction) -> Void,
+         micAuthorization: @escaping () -> AVAuthorizationStatus,
+         secureInputNotice: @escaping () -> String? = { TypingPolicy.secureInputHoldNotice() },
+         wakeFrontApp: @escaping @MainActor () -> Void = {
+             AXWake.wakeIfLazy(NSWorkspace.shared.frontmostApplication, minInterval: 2) },
+         nowProvider: @escaping () -> Date = { Date() }, sleeper: Sleeper = TaskSleeper()) {
+        self.recorder = recorder
+        self.speech = speech
+        self.models = models
+        self.presenter = presenter
+        self.queue = queue
+        self.session = session
+        self.work = work
+        self.settings = settings
+        self.records = records
+        self.report = report
+        self.typing = typing
+        self.typingBlockedNote = typingBlockedNote
+        self.captureOptions = captureOptions
+        self.cue = cue
+        self.micAuthorization = micAuthorization
+        self.nowProvider = nowProvider
+        self.sleeper = sleeper
+        self.secureInputNotice = secureInputNotice
+        self.wakeFrontApp = wakeFrontApp
+    }
 
     static let micFailedMessage = "Couldn't start the microphone."
     static let micLostNote = "Mic disconnected · may be cut short"
@@ -149,10 +195,12 @@ extension DictationSpeech {
     /// in 0.1s on the stand-in — queued behind it.
     func awaitServing(_ model: String, standIn: @escaping @MainActor () -> String?,
                       poll: UInt64 = 200_000_000,
-                      maxWait: TimeInterval = ModelWait.maxSeconds) async -> String {
+                      maxWait: TimeInterval = ModelWait.maxSeconds,
+                      sleeper: Sleeper = TaskSleeper(),
+                      now: @escaping () -> Date = { Date() }) async -> String {
         let load = ModelWait()
         Task { @MainActor in _ = await self.awaitReady(model); load.ended = true }
-        let deadline = Date().addingTimeInterval(maxWait)
+        let deadline = now().addingTimeInterval(maxWait)
         while !Task.isCancelled {
             if isReady(model) { return model }
             if let other = standIn(), other != model, isReady(other) { return other }
@@ -163,14 +211,30 @@ extension DictationSpeech {
             // newer pick): `canBecomeReady` stays true, and this polled until
             // that pick downloaded, or forever. The file path loads it again.
             if load.ended { return model }
-            if Date() > deadline {
+            if now() > deadline {
                 Log.event(String(format: "gave up waiting for %@ after %.0fs", model, maxWait))
                 return model
             }
-            try? await Task.sleep(nanoseconds: poll)
+            await sleeper.sleep(nanoseconds: poll)
         }
         return model
     }
+}
+
+/// How `awaitServing` yields between model-readiness polls. The app sleeps
+/// on the cooperative pool; the Gauntlet wakes it on virtual time so the
+/// bounded-wait guarantee is checkable without real waits.
+/// Main-actor isolated like its only caller: a nonisolated requirement made
+/// every call hop through the cooperative pool before the sleep began, so
+/// under load a simulated wait started an unpredictable number of main-queue
+/// passes late.
+protocol Sleeper: Sendable {
+    @MainActor func sleep(nanoseconds: UInt64) async
+}
+
+/// Production sleeper: the same `Task.sleep` the poll loop always used.
+struct TaskSleeper: Sleeper {
+    @MainActor func sleep(nanoseconds: UInt64) async { try? await Task.sleep(nanoseconds: nanoseconds) }
 }
 
 /// `awaitServing`'s view of its load: whether it has ended, and the cap.
@@ -212,6 +276,10 @@ extension ModelResidency: ModelServing {}
 struct AppRecords: DictationRecords {
     let settings: Settings
     let capabilities: Capabilities
+    /// Test seams (the Gauntlet): a private training store and label run
+    /// instead of the app's. nil in the app.
+    var training: TrainingStore?
+    var labels: LabelRun?
 
     func addToHistory(_ text: String) { HistoryStore.shared.add(text) }
 
@@ -220,9 +288,9 @@ struct AppRecords: DictationRecords {
     /// Once saved, it's queued for its automatic label (Slive Custom 4).
     func addTrainingPair(_ text: String, audioURL: URL) {
         guard Self.savesTraining(capabilities: capabilities, captureEdits: settings.captureEdits,
-                                 overLimit: TrainingStore.shared.isOverLimit) else { return }
-        if let id = TrainingStore.shared.addRecording(transcript: text, audioURL: audioURL) {
-            LabelRun.shared.labelNew(id: id)
+                                 overLimit: (training ?? TrainingStore.shared).isOverLimit) else { return }
+        if let id = (training ?? TrainingStore.shared).addRecording(transcript: text, audioURL: audioURL) {
+            (labels ?? LabelRun.shared).labelNew(id: id)
         }
     }
 

@@ -211,6 +211,7 @@ enum DictationConfigMatrixTests {
         var failures: [String: [String]] = [:]
         var order: [String] = []
         var delivered: [HotkeyAction: Int] = [:]
+        var fingerprints: [String] = []
         for config in configs {
             let world = World(config)
             for (name, ok) in world.runAndJudge() {
@@ -218,7 +219,19 @@ enum DictationConfigMatrixTests {
                 if !ok { failures[name, default: []].append(config.description) }
             }
             if world.deliverable { delivered[config.mode.action, default: 0] += 1 }
+            fingerprints.append(world.fingerprint)
         }
+        // The runs settle on the world's own state and virtual time, so a
+        // second pass must repeat every one exactly, however busy the Mac.
+        let replayed = configs.indices.filter { i in
+            let world = World(configs[i])
+            _ = world.runAndJudge()
+            return world.fingerprint != fingerprints[i]
+        }
+        t.check(replayed.isEmpty, "every run replays exactly (verdicts, trail, overlay states, field)",
+                "\(replayed.count)/\(configs.count) differ, e.g. "
+                    + replayed.prefix(3).map { configs[$0].description }.joined(separator: " | "))
+        checkSecureInputIsTheWorlds(&t)
         t.check(modeEntries.allSatisfy { delivered[$0.action, default: 0] >= 5 },
                 "plus \(deliveringRows.count) delivering runs (all-pairs); every mode delivers words in 5+ runs",
                 delivered.map { "\($0.key) \($0.value)" }.sorted().joined(separator: ", "))
@@ -229,6 +242,24 @@ enum DictationConfigMatrixTests {
         }
     }
 
+    /// The hold's secure-input refusal answers from the world, not from
+    /// this Mac: with the screen locked, loginwindow holds secure input and
+    /// every dictate hold here was refused ("Secure input is on in
+    /// loginwindow"), which read as lost words in 5 of 515 runs.
+    private static func checkSecureInputIsTheWorlds(_ t: inout Checks) {
+        let off = World(base)
+        _ = off.runAndJudge()
+        let notice = "Secure input is on in Terminal"
+        let on = World(base, secureInput: notice)
+        _ = on.runAndJudge()
+        let offLog = off.trail.all, onLog = on.trail.all
+        t.check(offLog.contains("typed hello world") && offLog.contains("history hello world")
+                    && onLog == ["box \(notice)"] && on.recorder.options.isEmpty,
+                "secure input is the run's, never this Mac's: off, the dictation types; on, the hold is refused "
+                    + "with its notice and nothing records",
+                "off: \(offLog) · on: \(onLog)")
+    }
+
     // MARK: - One run
 
     @MainActor final class World {
@@ -236,6 +267,9 @@ enum DictationConfigMatrixTests {
         let trail = Trail()
         let settings = World.settings
         let clock = ManualScheduler()
+        /// Time for the work between gestures: the model wait's poll and the
+        /// live typist's steps (see `settle`).
+        let workClock = ManualScheduler()
         let recorder: Recorder
         let speech: Speech
         let models: Models
@@ -247,6 +281,8 @@ enum DictationConfigMatrixTests {
         let work: InFlightWork
         let registry: ModeRegistry
         let continuous: ContinuousDictation
+        let sleeper: VirtualSleeper
+        let lanes: TypistLanes
         private var states: [OverlayState] = []
         private var watch: AnyCancellable?
         private var finished: Set<Task<Void, Never>> = []
@@ -254,6 +290,10 @@ enum DictationConfigMatrixTests {
         var faults = 0
         /// The run should have delivered words (set by `runAndJudge`).
         private(set) var deliverable = false
+        /// What the run did, for the replay check: verdicts, the trail (less
+        /// the screenshot, taken on a background task at its own moment),
+        /// every overlay state and the field.
+        private(set) var fingerprint = ""
 
         /// One in-memory Settings for every run (each run sets every value
         /// it varies; the flows never write it): its init reads the real
@@ -265,9 +305,14 @@ enum DictationConfigMatrixTests {
             World(base, capabilities: capabilities).registry.actions
         }
 
-        convenience init(_ config: Config) { self.init(config, capabilities: config.mode.capabilities) }
+        convenience init(_ config: Config, secureInput: String? = nil) {
+            self.init(config, capabilities: config.mode.capabilities, secureInput: secureInput)
+        }
 
-        init(_ config: Config, capabilities: Capabilities) {
+        /// `secureInput`: what the hold's secure-input check answers (nil:
+        /// off). Fixed per run, never this Mac's: a locked screen gives
+        /// loginwindow secure input, which refused every dictate hold.
+        init(_ config: Config, capabilities: Capabilities, secureInput: String? = nil) {
             self.config = config
             let s = settings
             s.whisperModel = config.model
@@ -301,7 +346,12 @@ enum DictationConfigMatrixTests {
             presenter = OverlayPresenter(model: model, scheduler: clock) { surface }
             session = SessionCoordinator(scheduler: clock, holdDelay: { s.holdActivationDelay })
             work = InFlightWork(queue: queue, session: session)
-            continuous = ContinuousDictation(speech: speech, sink: sink, settings: s)
+            let lanes = TypistLanes(clock: workClock)
+            self.lanes = lanes
+            continuous = ContinuousDictation(speech: speech, sink: sink, settings: s,
+                                             makeTypist: { LiveTypist(sink: $0, queue: lanes.make()) })
+            sleeper = VirtualSleeper(clock: workClock)
+            let clockRef = clock
             let trail = self.trail
             let mic: AVAuthorizationStatus = config.input == .micDenied ? .denied : .authorized
             var reported: () -> Void = {}
@@ -312,7 +362,8 @@ enum DictationConfigMatrixTests {
                 report: FaultSink { _, _, _, _, _, _, _ in reported() },
                 typing: sink, typingBlockedNote: { "Allow Accessibility" },
                 captureOptions: { CaptureOptions.from(s) }, cue: { trail.add("cue \($0)") },
-                micAuthorization: { mic })
+                micAuthorization: { mic }, secureInputNotice: { secureInput }, wakeFrontApp: {},
+                nowProvider: { MainActor.assumeIsolated { clockRef.now } }, sleeper: sleeper)
             registry = ModeRegistry.standard(ctx, continuous: continuous, assistant: assistant,
                                              capabilities: capabilities,
                                              screenshot: { trail.add("screenshot"); return ("image/png", "AA==") })
@@ -398,8 +449,11 @@ enum DictationConfigMatrixTests {
             case .twoHolds:
                 hold()
                 // A re-press is never faster than one main-actor turn: the
-                // release's task has started by then.
-                RunLoop.main.run(mode: .default, before: Date())
+                // release's task has started by then. Waited for, not timed: a
+                // stream's start is its final pass taking the session (else
+                // the re-press finds it live and does nothing).
+                let realLimit = Date().addingTimeInterval(Self.realWorkLimit)
+                repeat { Self.drainMainQueue() } while action == .stream && continuous.isActive && Date() < realLimit
                 hold()
             }
         }
@@ -427,18 +481,61 @@ enum DictationConfigMatrixTests {
             }
         }
 
-        /// Spin the main run loop until nothing is in flight (and stays so
-        /// for a few turns — the stream's final pass is an untracked task).
+        /// Run the world until nothing is in flight. Done is decided by the
+        /// world, never by an idle-looking run loop (main-actor resumes hop
+        /// through the cooperative pool, so idleness depends on load): the
+        /// queue drained, no answer or final pass running, the overlay at
+        /// rest. The overlay and gesture clock stays frozen, as it was; the
+        /// model wait's poll and the typist's steps run on `workClock`,
+        /// stepped only when a round moved nothing, so a slow hop costs
+        /// real time, not virtual time. False past `settleSeconds` of work
+        /// time (a wait that never ends) or `realWorkLimit` of real time.
         private func settle() -> Bool {
-            let deadline = Date().addingTimeInterval(3)
-            var calm = 0
-            while Date() < deadline {
-                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.0005))
-                calm = quiet ? calm + 1 : 0
-                if calm >= 4 { return true }
+            let end = workClock.now.addingTimeInterval(Self.settleSeconds)
+            let realLimit = Date().addingTimeInterval(Self.realWorkLimit)
+            while true {
+                let before = progress
+                Self.drainMainQueue()
+                lanes.releaseForeign()
+                if done { return true }
+                guard Date() < realLimit else { return false }
+                guard progress == before else { continue }
+                if let due = workClock.nextDue {
+                    guard due <= end else { return false }
+                    workClock.advanceToNext()
+                } else {
+                    usleep(20)   // real work (an answer, a final pass) is on its way
+                }
             }
-            return false
         }
+
+        /// Virtual work time a run may take to settle: 300 model-wait polls;
+        /// the flows need a handful.
+        static let settleSeconds: TimeInterval = 60
+        /// A safety net for real work only: it takes milliseconds, so this
+        /// only ends a run whose task truly hung.
+        static let realWorkLimit: TimeInterval = 30
+
+        /// Nothing left to run: `quiet`, and no stream final pass running or
+        /// typist step waiting to be released (the final pass's flush runs on
+        /// the cooperative pool, so it is invisible to the queue and overlay).
+        private var done: Bool { quiet && !continuous.isFinishing && !lanes.hasForeign }
+
+        /// Moves on every fake call, typist step, overlay change and wake.
+        private var progress: Int {
+            trail.all.count + states.count + speech.calls + lanes.steps + sleeper.wakes
+        }
+
+        /// One pass over the main queue: every job queued so far, up to a
+        /// marker. A pacing step only: a resumed task reaches the main queue
+        /// via the cooperative pool (up to ~50 passes later under load), so an
+        /// empty pass proves nothing and `settle` never ends on one.
+        static func drainMainQueue() {
+            let target = markers + 1
+            DispatchQueue.main.async { MainActor.assumeIsolated { markers += 1 } }
+            while markers < target { _ = CFRunLoopRunInMode(.defaultMode, 0, true) }
+        }
+        private static var markers = 0
 
         // MARK: Judging
 
@@ -557,6 +654,9 @@ enum DictationConfigMatrixTests {
             out.append(("an unusable model says why instead of fading",
                         !(heard && !usable && releases > 0 && c.gesture != .dismissAfterRelease) || problem))
             for url in recorder.created { try? FileManager.default.removeItem(at: url) }
+            fingerprint = [out.map { "\($0.0)=\($0.1)" }.joined(separator: ";"),
+                           log.filter { $0 != "screenshot" }.joined(separator: ";"),
+                           states.map { "\($0)" }.joined(separator: ";"), sink.field].joined(separator: "|")
             return out
         }
     }
@@ -610,6 +710,8 @@ enum DictationConfigMatrixTests {
         let liveFails: Bool
         var liveUpdate: (@MainActor (String, Float) -> Void)?
         private(set) var liveStarts = 0
+        /// Every call: the settle loop's sign that a task moved.
+        private(set) var calls = 0
 
         init(states: [String: ModelState], transcript: String, liveFails: Bool) {
             self.states = states
@@ -617,7 +719,10 @@ enum DictationConfigMatrixTests {
             self.liveFails = liveFails
         }
 
-        func state(_ model: String) -> ModelState { states[model] ?? .ready }
+        func state(_ model: String) -> ModelState {
+            calls += 1
+            return states[model] ?? .ready
+        }
         func isReady(_ model: String) -> Bool { state(model) == .ready }
         /// As `TranscriptionModel`: resident, loading, or on disk and not cooling down.
         func canBecomeReady(_ model: String) -> Bool { [.ready, .loading, .failed].contains(state(model)) }
@@ -636,7 +741,8 @@ enum DictationConfigMatrixTests {
             return isReady(model)
         }
         func transcribeSamples(_ samples: [Float], model: String) async -> String? {
-            isReady(model) ? transcript : nil
+            calls += 1
+            return isReady(model) ? transcript : nil
         }
         func transcribe(_ url: URL, model: String) async -> String? {
             await awaitReady(model) ? transcript : nil
@@ -646,14 +752,110 @@ enum DictationConfigMatrixTests {
                                 onFailure: (@MainActor () -> Void)?,
                                 onMicLost: (@MainActor () -> Void)?) -> Bool {
             liveStarts += 1
+            calls += 1
             guard !liveFails else { return false }
             liveUpdate = onUpdate
             return true
         }
-        func liveSamplesSnapshot(model: String) -> [Float] { Recorder.samples(.speech) }
+        func liveSamplesSnapshot(model: String) -> [Float] {
+            calls += 1
+            return Recorder.samples(.speech)
+        }
         var liveConfirmedText: String { "" }
         var liveConfirmedEndSeconds: Double { 0 }
-        func stopLiveDictation() { liveUpdate = nil }
+        func stopLiveDictation() {
+            calls += 1
+            liveUpdate = nil
+        }
+    }
+
+    /// The model wait's poll as a wake on the run's work clock, so a wait
+    /// costs no real time and only moves when `settle` steps that clock.
+    @MainActor final class VirtualSleeper: Sleeper {
+        let clock: ManualScheduler
+        private(set) var wakes = 0
+        init(clock: ManualScheduler) { self.clock = clock }
+
+        func sleep(nanoseconds: UInt64) async {
+            await withCheckedContinuation { (wake: CheckedContinuation<Void, Never>) in
+                clock.after(Double(nanoseconds) / 1_000_000_000) { [weak self] in
+                    self?.wakes += 1
+                    wake.resume()
+                }
+            }
+        }
+    }
+
+    /// The live typists' queues, one per stream session: steps run on the
+    /// main thread in arrival order, timed steps on the virtual clock.
+    final class TypistLanes: @unchecked Sendable {
+        private let clock: ManualScheduler
+        private let lock = NSLock()
+        /// Steps sent from off the main thread (the final pass's flush runs
+        /// on the cooperative pool): held for the settle loop, which runs
+        /// them only once the world is otherwise still, so their arrival
+        /// time never decides where they land.
+        private var foreign: [(lane: Lane, work: @Sendable () -> Void)] = []
+        /// Steps run so far (main thread only).
+        private(set) var steps = 0
+
+        init(clock: ManualScheduler) { self.clock = clock }
+
+        func make() -> Lane { Lane(owner: self) }
+
+        var hasForeign: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return !foreign.isEmpty
+        }
+
+        /// Move the off-main steps onto their lanes, in arrival order.
+        func releaseForeign() {
+            lock.lock()
+            let arrived = foreign
+            foreign = []
+            lock.unlock()
+            for step in arrived { step.lane.enqueue(step.work) }
+        }
+
+        final class Lane: TypistQueue, @unchecked Sendable {
+            private unowned let owner: TypistLanes
+            private var ready: [@Sendable () -> Void] = []
+            private var draining = false
+
+            init(owner: TypistLanes) { self.owner = owner }
+
+            func run(_ work: @escaping @Sendable () -> Void) {
+                guard Thread.isMainThread else {
+                    owner.lock.lock()
+                    owner.foreign.append((self, work))
+                    owner.lock.unlock()
+                    return
+                }
+                enqueue(work)
+            }
+
+            /// Only a step schedules a step, and steps run on the main thread.
+            func run(after seconds: TimeInterval, _ item: DispatchWorkItem) {
+                MainActor.assumeIsolated {
+                    _ = owner.clock.after(seconds) { [weak self] in
+                        self?.enqueue { if !item.isCancelled { item.perform() } }
+                    }
+                }
+            }
+
+            /// Serial: a step queued by a running step waits for it to end.
+            fileprivate func enqueue(_ work: @escaping @Sendable () -> Void) {
+                ready.append(work)
+                guard !draining else { return }
+                draining = true
+                while !ready.isEmpty {
+                    let next = ready.removeFirst()
+                    owner.steps += 1
+                    next()
+                }
+                draining = false
+            }
+        }
     }
 
     /// Residency as the modes see it; the continuous auto-download follows

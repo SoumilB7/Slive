@@ -1,0 +1,11 @@
+# sim-hold seed 37
+t=0.10 press dictate
+t=1.10 release
+t=1.14 flip autoInsert
+t=1.24 press dictate
+t=2.24 release
+t=2.33 flip autoInsert
+t=2.55 press dictate
+t=3.05 release
+t=3.31 press dictate
+t=3.85 release

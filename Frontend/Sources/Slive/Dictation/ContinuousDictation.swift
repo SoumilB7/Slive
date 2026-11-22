@@ -73,12 +73,21 @@ final class ContinuousDictation {
     private var finalPasses: Set<UUID> = []
 
     var isActive: Bool { active }
+    /// A `stop()` is still running its final pass. Read-only, for test
+    /// drivers: the pass may be off the main actor (the typist's flush), so
+    /// an idle main queue doesn't mean the session has ended.
+    var isFinishing: Bool { !finalPasses.isEmpty }
 
-    init(speech: DictationSpeech, sink: LiveTextSink = TypingSink(), settings: Settings = .shared) {
+    /// Builds each session's typist. The Gauntlet's types on a queue it drives.
+    private let makeTypist: (LiveTextSink) -> LiveTypist
+
+    init(speech: DictationSpeech, sink: LiveTextSink = TypingSink(), settings: Settings = .shared,
+         makeTypist: @escaping (LiveTextSink) -> LiveTypist = { LiveTypist(sink: $0) }) {
         whisper = speech
         self.sink = sink
         self.settings = settings
-        typist = LiveTypist(sink: sink)
+        self.makeTypist = makeTypist
+        typist = makeTypist(sink)
     }
 
     /// Start streaming with `model` (the serving continuous model — the
@@ -108,7 +117,7 @@ final class ContinuousDictation {
         // A previous session still in its final pass stops typing here: its
         // provisional text stays, and its keys can't land between ours.
         typist.cancel()
-        typist = LiveTypist(sink: sink)
+        typist = makeTypist(sink)
         typist.start(handle, cps: settings.continuousTypeCPS)
         let ok = whisper.startLiveDictation(model: model, onUpdate: { [weak self] transcript, energy in
             guard let self, self.active, self.session == session else { return }

@@ -1,0 +1,115 @@
+{
+  "version": "0.2.6",
+  "commit": "4f2f54b",
+  "read": "Settings/Model/Settings.swift: autoLabelNew default false; AssistantConfig.savedFallback anthropic/assistant/false (the 94bd46c fixes)",
+  "profiles": [
+    {
+      "name": "untouched",
+      "about": "Installed, dictated, never touched shortcuts, models or the assistant: only unrelated prefs are stored.",
+      "stored": {
+        "didFirstRun": true,
+        "hotwords": "Slive, Parakeet",
+        "holdActivationDelay": 0.1
+      },
+      "expected": {
+        "autoLabelNew": false,
+        "assistantProvider": "openai",
+        "assistantPrompt": "rewrite",
+        "attachScreenshot": true,
+        "autoInsert": true,
+        "dictationModel": "tiny.en",
+        "shortcut.dictation": "m8388608",
+        "shortcut.dictationToggle": "m262144x2",
+        "shortcut.assistant": "m8650752",
+        "shortcut.stream": "none",
+        "shortcut.streamToggle": "none"
+      }
+    },
+    {
+      "name": "customized",
+      "about": "Own dictation/assistant/live shortcuts, toggle removed, large-v3 turbo, typing off, assistantConfig as this version wrote it, paid auto-labeling switched on by the user.",
+      "stored": {
+        "didFirstRun": true,
+        "hotwords": "Slive, Parakeet",
+        "holdActivationDelay": 0.1,
+        "hotkey": {
+          "modifiers": 524288,
+          "label": "⌥ .",
+          "keyCode": 47
+        },
+        "assistantHotkey": {
+          "modifiers": 786432,
+          "label": "⌃⌥"
+        },
+        "streamHotkey": {
+          "modifiers": 524288,
+          "label": "⌥ /",
+          "keyCode": 44
+        },
+        "streamHoldOn": false,
+        "dictateToggleHotkey": "<empty data>",
+        "whisperModel": "large-v3-v20240930_626MB",
+        "autoInsert": false,
+        "assistantConfig": {
+          "provider": "openai",
+          "models": {
+            "openai": "gpt-4o"
+          },
+          "baseURL": "",
+          "promptName": "email-reply",
+          "systemPrompt": "You are Slive, a concise voice assistant. The user speaks a question or request; answer directly and briefly in plain text with no markdown.",
+          "attachScreenshot": false,
+          "fetchedModels": {
+            "openai": [
+              "gpt-4o",
+              "gpt-4o-mini"
+            ]
+          }
+        },
+        "autoLabelNew": true
+      },
+      "expected": {
+        "autoLabelNew": true,
+        "assistantProvider": "openai",
+        "assistantPrompt": "email-reply",
+        "attachScreenshot": false,
+        "autoInsert": false,
+        "dictationModel": "large-v3-v20240930_626MB",
+        "shortcut.dictation": "m524288+k47",
+        "shortcut.dictationToggle": "none",
+        "shortcut.assistant": "m786432",
+        "shortcut.stream": "m524288+k44|off",
+        "shortcut.streamToggle": "none"
+      }
+    },
+    {
+      "name": "carried",
+      "about": "assistantConfig saved by a pre-0.2.0 build (no provider, promptName, attachScreenshot or fetchedModels), kept as is since.",
+      "stored": {
+        "didFirstRun": true,
+        "hotwords": "Slive, Parakeet",
+        "holdActivationDelay": 0.1,
+        "assistantConfig": {
+          "models": {
+            "openai": "gpt-4o"
+          },
+          "baseURL": "",
+          "systemPrompt": "You are Slive, a concise voice assistant. The user speaks a question or request; answer directly and briefly in plain text with no markdown."
+        }
+      },
+      "expected": {
+        "autoLabelNew": false,
+        "assistantProvider": "anthropic",
+        "assistantPrompt": "assistant",
+        "attachScreenshot": false,
+        "autoInsert": true,
+        "dictationModel": "tiny.en",
+        "shortcut.dictation": "m8388608",
+        "shortcut.dictationToggle": "m262144x2",
+        "shortcut.assistant": "m8650752",
+        "shortcut.stream": "none",
+        "shortcut.streamToggle": "none"
+      }
+    }
+  ]
+}

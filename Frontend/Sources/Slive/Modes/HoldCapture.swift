@@ -49,7 +49,7 @@ struct DecodedRelease {
         // other apps then, so the release would never be seen and the pill
         // vanished after 0.3 s with no word why (Nov 26). Say why up front.
         if route.action == .dictate, ctx.settings.autoInsert,
-           let notice = TypingPolicy.secureInputHoldNotice() {
+           let notice = ctx.secureInputNotice() {
             Log.event("hold refused — \(notice)")
             ctx.session.endToggle()
             ctx.presenter.notice(notice)
@@ -84,7 +84,8 @@ struct DecodedRelease {
         ctx.speech.primeIfCold(ctx.settings.whisperModel)
         // The app we'll type into: make sure its accessibility tree is being
         // built while the user speaks (a no-op after the first ask).
-        DispatchQueue.main.async { AXWake.wakeIfLazy(NSWorkspace.shared.frontmostApplication, minInterval: 2) }
+        let wake = ctx.wakeFrontApp
+        DispatchQueue.main.async { wake() }
         // Subtle audio cue that a call activated — distinct per call type.
         // Posted on the NEXT runloop turn: its engine restart (auto-shutdown
         // wake) is a few ms of main-thread work that shouldn't sit between
@@ -200,7 +201,8 @@ struct DecodedRelease {
                     waitedForModel = true
                     Log.event("dictation waiting for model \(whisperModel)")
                     whisperModel = await whisper.awaitServing(whisperModel,
-                                                              standIn: { ctx.models.servingDictationModel })
+                                                              standIn: { ctx.models.servingDictationModel },
+                                                              sleeper: ctx.sleeper, now: ctx.nowProvider)
                     Log.event(String(format: "%@ ready after %.1fs of waiting",
                                      whisperModel, Date().timeIntervalSince(tTranscribe)))
                 }

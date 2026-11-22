@@ -1,0 +1,7 @@
+    [sim-keys.stuck] the fn hold no longer works (it gave [])
+    fn hold · ⌥ / hold · fn ×2 toggle · ⌥ . toggle, hold delay 0.3s
+    t=0.00 ⌥ down
+    t=0.00 / down
+    t=0.00 / up (missed)
+    → coordinator: []
+    → after letting go: the fn hold no longer works (it gave [])

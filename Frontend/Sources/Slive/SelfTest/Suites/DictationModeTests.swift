@@ -847,7 +847,8 @@ enum DictationModeTests {
                 settings: settings, records: FakeRecords(trail: trail), report: FaultSink { _, _, _, _, _, _, _ in },
                 typing: sink, typingBlockedNote: { "Allow Accessibility" },
                 captureOptions: { CaptureOptions() }, cue: { trail.add("cue \($0)") },
-                micAuthorization: { .authorized })
+                micAuthorization: { .authorized },
+                secureInputNotice: { nil }, wakeFrontApp: {})
             continuous = ContinuousDictation(speech: speech, sink: sink, settings: settings)
         }
 

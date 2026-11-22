@@ -8,6 +8,12 @@ if CommandLine.arguments.contains("--self-test") {
     MainActor.assumeIsolated { SelfTest.runAndExit() }
 }
 
+// `Slive --gauntlet`: the Gauntlet (Sources/Slive/Gauntlet), same rules as
+// --self-test — fakes only, no app boot.
+if CommandLine.arguments.contains("--gauntlet") {
+    MainActor.assumeIsolated { GauntletRunner.runAndExit() }
+}
+
 // Dev CLIs (`--bench-*`, `--prepare-models`, …): table in DevTools/DevCommand.swift.
 if let command = DevCommands.match(CommandLine.arguments) {
     Task { @MainActor in

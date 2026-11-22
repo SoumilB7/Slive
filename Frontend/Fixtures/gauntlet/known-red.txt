@@ -1,0 +1,15 @@
+# Gauntlet known-red ledger: checks expected to FAIL today, one per line:
+#     <check id>  # short reason (the finding it tracks)
+# The build passes when every failing id is listed here. A NEW failing id
+# fails the build, and so does a listed id whose checks now all pass
+# ("remove F12 from known-red.txt (fixed)"): the list only shrinks.
+# Example:  F12  # short custom words rewrite common words
+
+F12               # short custom words (IT, AM, .NET) rewrite common words
+F22               # one bad history entry drops the whole history
+F30               # live typing backspaces eat text after smart dashes / auto-brackets
+props.stitch-cjk  # live seam de-dup splits on spaces: Chinese and Thai duplicate
+sim-keys.stuck    # chord key-up missed after its modifier was released: fn hold dead
+P-NO-LOSS           # an older unconfirmed dictation's copy box is superseded by a newer one: words only in history
+sim-hold.one-owner  # ✕ during a newer hold's tail runs the idle waiters: an old copy box covers the live pill
+F8                  # a mic-lost dictation typed while a newer hold owns the overlay gets no notice

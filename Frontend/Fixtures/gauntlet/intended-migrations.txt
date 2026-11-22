@@ -1,0 +1,44 @@
+# Differences between what a release decided from a user's stored prefs and what
+# this build decides from the same prefs. Anything not listed here fails the
+# Gauntlet's "upgrade" family.
+#
+# <version> <profile|*> <field> <old> -> <new>   # changelog <release>: why
+#
+# A listed change must also be in CHANGELOG.md under the release that made it
+# (the family checks the heading exists). Values are the decision table's
+# encodings: shortcuts are m<modifier bits>[+k<key code>][x<taps>][|off].
+#
+# Not listed on purpose: autoLabelNew for 0.2.0-0.2.4 (no auto-labeling then,
+# none now) and for any user who switched it on themselves.
+
+
+# 0.2.0: the assistant and the toggle gained default shortcuts and a new default config in 0.2.3
+0.2.0 untouched assistantProvider anthropic -> openai   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.0 untouched assistantPrompt assistant -> rewrite   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.0 untouched attachScreenshot false -> true   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.0 untouched shortcut.assistant none -> m8650752   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.0 carried shortcut.assistant none -> m8650752   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.0 * shortcut.dictationToggle none -> m262144x2   # changelog 0.2.3: before 0.2.3 a removed toggle shortcut left no key behind, so it reads as never set and gets the new default back
+
+# 0.2.1: the assistant and the toggle gained default shortcuts and a new default config in 0.2.3
+0.2.1 untouched assistantProvider anthropic -> openai   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.1 untouched assistantPrompt assistant -> rewrite   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.1 untouched attachScreenshot false -> true   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.1 untouched shortcut.assistant none -> m8650752   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.1 carried shortcut.assistant none -> m8650752   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.1 * shortcut.dictationToggle none -> m262144x2   # changelog 0.2.3: before 0.2.3 a removed toggle shortcut left no key behind, so it reads as never set and gets the new default back
+
+# 0.2.2: the assistant and the toggle gained default shortcuts and a new default config in 0.2.3
+0.2.2 untouched assistantProvider anthropic -> openai   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.2 untouched assistantPrompt assistant -> rewrite   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.2 untouched attachScreenshot false -> true   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.2 untouched shortcut.assistant none -> m8650752   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.2 carried shortcut.assistant none -> m8650752   # changelog 0.2.3: new installs start set up the way the author uses it; a user who never set it is indistinguishable from a new install
+0.2.2 * shortcut.dictationToggle none -> m262144x2   # changelog 0.2.3: before 0.2.3 a removed toggle shortcut left no key behind, so it reads as never set and gets the new default back
+
+# 0.2.5: 94bd46c fixed both of its upgrade bugs
+0.2.5 untouched autoLabelNew true -> false   # changelog 0.2.6: automatic paid labeling is off until you turn it on
+0.2.5 carried autoLabelNew true -> false   # changelog 0.2.6: automatic paid labeling is off until you turn it on
+0.2.5 carried assistantProvider openai -> anthropic   # changelog 0.2.6: older assistant settings keep screenshots off and their provider
+0.2.5 carried assistantPrompt rewrite -> assistant   # changelog 0.2.6: older assistant settings keep screenshots off and their provider
+0.2.5 carried attachScreenshot true -> false   # changelog 0.2.6: older assistant settings keep screenshots off and their provider

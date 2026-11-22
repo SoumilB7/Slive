@@ -70,10 +70,19 @@ extension Endpoint where Response == Ignored {
 /// a SliveError; reportable ones are offered as problem reports, attributed
 /// to the caller's line.
 enum LocalServer {
+    /// Test seam (the Gauntlet's egress family): when set, every request goes
+    /// here instead of the network and no server is started, so a session's
+    /// calls can be recorded. Always nil in the app.
+    static var transport: ((URLRequest) async throws -> (Data, URLResponse))?
+
     /// Send `endpoint` and decode its reply.
     static func send<E: Endpoint>(_ endpoint: E, file: String = #fileID, line: Int = #line,
                                   function: String = #function) async throws -> E.Response {
         do {
+            if let transport {
+                let (data, response) = try await transport(try endpoint.urlRequest())
+                return try endpoint.decode(validate(data, response, notFound: endpoint.notFoundMessage))
+            }
             try await ensureServer(for: endpoint)
             let request = try endpoint.urlRequest()
             let session = session(for: endpoint)
@@ -91,6 +100,11 @@ enum LocalServer {
     static func lines<E: Endpoint>(_ endpoint: E, file: String = #fileID, line: Int = #line,
                                    function: String = #function) async throws -> ServerLines {
         do {
+            if let transport {
+                // A stream can't be faked; the request is still recorded.
+                _ = try await transport(try endpoint.urlRequest())
+                throw SliveError.serverDown(nil)
+            }
             try await ensureServer(for: endpoint)
             let request = try endpoint.urlRequest()
             let session = session(for: endpoint)

@@ -1,0 +1,32 @@
+# Sites the Gauntlet static guards (scripts/gauntlet-guards.sh) accept today.
+# Format: <rule> <path relative to Frontend> <trimmed source line>
+# Each line allows one occurrence. The list starts as a snapshot of the code
+# and only grows on purpose: a new raw wall-clock call, unlogged Keychain
+# try? or unbounded sleep loop is a build failure until it is listed here in
+# review (or, better, moved behind the injected clock / a Deadline).
+# Editing a listed line changes its text, so it needs a new entry here too.
+
+sleep-loop Sources/Slive/DevTools/EngineCheck.swift try? await Task.sleep(nanoseconds: 100_000_000)
+raw-time Sources/Slive/Dictation/ContinuousDictation.swift let t0 = Date()
+raw-time Sources/Slive/Dictation/ContinuousDictation.swift Date().timeIntervalSince(t0), result.count, String(result.suffix(40))))
+raw-time Sources/Slive/Dictation/LiveTypist.swift let now = Date()
+raw-time Sources/Slive/Modes/AssistMode.swift if Date().timeIntervalSince(lastRender) >= 0.033 {
+raw-time Sources/Slive/Modes/AssistMode.swift lastRender = Date()
+raw-time Sources/Slive/Modes/AssistMode.swift try? await Task.sleep(nanoseconds: 3_000_000)
+raw-time Sources/Slive/Modes/DictateMode.swift Date().timeIntervalSince(releasedAt)))
+raw-time Sources/Slive/Modes/DictateMode.swift Date().timeIntervalSince(releasedAt)))
+raw-time Sources/Slive/Modes/HoldCapture.swift let tTranscribe = Date()
+raw-time Sources/Slive/Modes/HoldCapture.swift whisperModel, Date().timeIntervalSince(tTranscribe)))
+raw-time Sources/Slive/Modes/HoldCapture.swift let decodeSeconds = Date().timeIntervalSince(tTranscribe)
+raw-time Sources/Slive/Modes/StreamMode.swift Date().timeIntervalSince(releasedAt)))
+raw-time Sources/Slive/Overlay/OverlayController.swift DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+raw-time Sources/Slive/Overlay/OverlayView.swift DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+raw-time Sources/Slive/Paste/AXWake.swift let now = Date()
+raw-time Sources/Slive/Paste/DeliveryVerifier.swift DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) {
+sleep-loop Sources/Slive/Providers/LocalModelsStore.swift try await Task.sleep(nanoseconds: 1_500_000_000)
+sleep-loop Sources/Slive/Transcription/Live/ParakeetLiveSession.swift try? await Task.sleep(nanoseconds: Self.pollNanoseconds)
+sleep-loop Sources/Slive/Transcription/Residency/ModelLoads.swift try? await Task.sleep(nanoseconds: 250_000_000)
+sleep-loop Sources/Slive/Transcription/Support/Timeouts.swift try? await Task.sleep(nanoseconds: tick)
+raw-time Sources/Slive/Modes/ModeContext.swift nowProvider: @escaping () -> Date = { Date() }, sleeper: Sleeper = TaskSleeper()) {
+raw-time Sources/Slive/Modes/ModeContext.swift now: @escaping () -> Date = { Date() }) async -> String {
+raw-time Sources/Slive/Modes/ModeContext.swift @MainActor func sleep(nanoseconds: UInt64) async { try? await Task.sleep(nanoseconds: nanoseconds) }

@@ -1,0 +1,5 @@
+# sim-hold seed 43
+t=0.10 press dictate
+t=1.10 release
+t=1.22 press dictate
+t=2.72 release

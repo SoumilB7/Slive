@@ -36,6 +36,7 @@ training = [
 dev = [
   "flowy[training]",
   "pytest>=8.4.0",
+  "hypothesis>=6.100",
   "ruff>=0.12.0",
 ]
 
@@ -52,6 +53,9 @@ packages = ["src/flowy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "gauntlet: the Gauntlet's server-side checks (egress, properties); run alone with -m gauntlet",
+]
 
 [tool.ruff]
 line-length = 100

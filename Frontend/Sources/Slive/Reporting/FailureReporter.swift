@@ -214,9 +214,8 @@ final class FailureReporter: @unchecked Sendable {
     /// mic's name, API keys, prompts, vocabulary or anything typed.
     @MainActor
     static func context() -> [String: String] {
-        let s = Settings.shared
         let whisper = TranscriptionModel.shared
-        func state(_ model: String) -> String {
+        return context(settings: .shared) { model in
             switch whisper.status(for: model) {
             case .ready: "ready"
             case .failed: "failed"
@@ -225,6 +224,12 @@ final class FailureReporter: @unchecked Sendable {
             case .notDownloaded: "not downloaded"
             }
         }
+    }
+
+    /// `context()` for any settings and model states (the Gauntlet's privacy
+    /// fuzz builds it from planted values).
+    @MainActor
+    static func context(settings s: Settings, modelState state: (String) -> String) -> [String: String] {
         let continuousOn = (s.streamHoldOn && s.streamHotkey != nil)
             || (s.streamToggleOn && s.streamToggleHotkey != nil)
         var c: [String: String] = [

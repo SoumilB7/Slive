@@ -1,0 +1,6 @@
+    [F30] field «Dear team, s0w (s0w2)», expected «Dear team, s0w1 (s0w2)»
+    transforms on, 40 cps
+    t=0.00 tap stream toggle
+    t=0.00 live pass (garbled 1)
+    → field «Dear team, s0w (s0w2)»
+    → history ["s0w1 (s0w2)"]

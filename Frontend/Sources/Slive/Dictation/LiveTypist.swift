@@ -26,11 +26,15 @@ import Foundation
 /// `setTarget` is safe to call from the main thread. `@unchecked Sendable`: all
 /// mutable state is isolated to `queue`; the sink is called only on `queue`.
 final class LiveTypist: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.slive.app.livetypist", qos: .userInitiated)
+    private let queue: TypistQueue
     private let sink: LiveTextSink
 
-    init(sink: LiveTextSink = TypingSink()) {
+    /// `queue`: the app's own serial queue; the Gauntlet passes one it drains
+    /// on a virtual clock, so keystroke timing replays from a seed.
+    init(sink: LiveTextSink = TypingSink(),
+         queue: TypistQueue = DispatchQueue(label: "com.slive.app.livetypist", qos: .userInitiated)) {
         self.sink = sink
+        self.queue = queue
     }
 
     /// Cadence at/above which we type "instantly" — the frontier jumps straight
@@ -72,7 +76,7 @@ final class LiveTypist: @unchecked Sendable {
     /// Begin a session on a destination the sink claimed (`sink.beginStream()`,
     /// on the main thread). `handle.allowed` gates whether we post keystrokes.
     func start(_ handle: LiveStreamHandle, cps: Double) {
-        queue.async {
+        queue.run {
             self.committed = ""
             self.target = ""
             self.revealed = 0
@@ -91,7 +95,7 @@ final class LiveTypist: @unchecked Sendable {
 
     /// Move the goal. The tick loop reveals/reconciles toward it.
     func setTarget(_ text: String) {
-        queue.async {
+        queue.run {
             self.target = text
             // Wake the loop NOW if it's just idle-polling — otherwise a freshly
             // recognised word waits up to 30ms before its first keystroke. A
@@ -107,7 +111,7 @@ final class LiveTypist: @unchecked Sendable {
     /// what's in the field.
     func finish() async -> FinishResult {
         await withCheckedContinuation { continuation in
-            queue.async {
+            queue.run {
                 self.running = false
                 self.pendingTick?.cancel(); self.pendingTick = nil
                 if self.enabled && !self.cancelled {
@@ -124,7 +128,7 @@ final class LiveTypist: @unchecked Sendable {
 
     /// Abort with no further typing (quit / dismiss).
     func cancel() {
-        queue.async {
+        queue.run {
             self.running = false
             self.cancelled = true
             self.pendingTick?.cancel(); self.pendingTick = nil
@@ -159,7 +163,7 @@ final class LiveTypist: @unchecked Sendable {
         }
         let item = DispatchWorkItem { [weak self] in self?.tick() }
         pendingTick = item
-        queue.asyncAfter(deadline: .now() + delay, execute: item)
+        queue.run(after: delay, item)
     }
 
     /// Make the field exactly match `desired` in a single instant step: backspace
@@ -244,5 +248,21 @@ final class LiveTypist: @unchecked Sendable {
         let fastest = cps > 0 ? 1.0 / cps : 0.033
         let slowest = 0.10
         return min(slowest, max(fastest, spread / Double(remaining)))
+    }
+}
+
+/// Where a typist's steps run, one at a time and in order. A protocol so
+/// the Gauntlet can run them on its virtual clock.
+protocol TypistQueue: AnyObject {
+    func run(_ work: @escaping @Sendable () -> Void)
+    /// Run `item` after `seconds`, unless it is cancelled first.
+    func run(after seconds: TimeInterval, _ item: DispatchWorkItem)
+}
+
+extension DispatchQueue: TypistQueue {
+    func run(_ work: @escaping @Sendable () -> Void) { async(execute: work) }
+
+    func run(after seconds: TimeInterval, _ item: DispatchWorkItem) {
+        asyncAfter(deadline: .now() + seconds, execute: item)
     }
 }
