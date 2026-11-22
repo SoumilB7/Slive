@@ -65,7 +65,7 @@ enum SettingsStoreTests {
             "verboseLogging", "reportProblems", "captureEdits", "captureMaxGB", "echoCancellation",
             "inputDeviceUID", "inputDeviceName", "groundTruthProvider", "groundTruthModel",
             "groundTruthBaseURL", "groundTruthPrompt", "consensusPrompt", "groundTruthRecipe",
-            "autoLabelNew", "localQuantized", "localMemLimitGB", "speedTier",
+            "autoLabelNew", "localQuantized", "localMemLimitGB", "speedTier", "showInDock",
         ]
         t.equal(keys, expected, "settings keys unchanged")
         t.equal(s.storedSettings.count + slotKeys.count, expected.count, "no key declared twice")

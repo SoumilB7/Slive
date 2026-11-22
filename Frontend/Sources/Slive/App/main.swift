@@ -16,12 +16,14 @@ if let command = DevCommands.match(CommandLine.arguments) {
     dispatchMain()
 }
 
-// Slive — a hold-to-talk mic overlay. A normal app: Dock icon, Cmd-Tab,
-// Cmd-Q, minimizable window; the hold-to-talk overlay still works everywhere.
+// Slive — a hold-to-talk mic overlay. A normal app (Dock icon, ⌘-Tab, ⌘-Q,
+// minimizable window) unless "Show in Dock" is off: then menu bar only. The
+// hold-to-talk overlay works everywhere either way.
 let app = NSApplication.shared
 // main.swift's entry runs on the main thread; assert it so the @MainActor
 // AppDelegate can be constructed here.
 let delegate = MainActor.assumeIsolated { AppDelegate() }
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+// Before run(), so a menu-bar-only Slive never flashes a Dock icon at launch.
+MainActor.assumeIsolated { DockPresence.apply(windowOpen: false) }
 app.run()

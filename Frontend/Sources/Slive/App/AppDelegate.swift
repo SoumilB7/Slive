@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)   // normal app: Dock icon + Cmd-Tab
+        DockPresence.apply(windowOpen: false)   // Dock icon + ⌘-Tab, or menu bar only
         // First: the problem reporter (its own process) and the main-thread
         // watchdog, so even a crash or freeze during launch can be reported.
         FailureReporter.shared.start()
@@ -164,6 +164,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             residency.refresh()
         case .dictationModel, .continuousModel:
             residency.refresh()
+        case .dockIcon:
+            DockPresence.apply()
         }
     }
 

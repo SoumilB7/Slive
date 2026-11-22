@@ -13,6 +13,8 @@ enum SettingsChange: Equatable {
     case dictationModel
     /// `continuousModel` — the live-typing model.
     case continuousModel
+    /// `showInDock` — Dock icon or menu bar only.
+    case dockIcon
 }
 
 /// App-wide, persisted preferences. Backed by a `KeyValueStore`
@@ -204,6 +206,10 @@ final class Settings: ObservableObject, StoredSettingsOwner {
     @Stored("verboseLogging", default: false) var verboseLogging: Bool {
         didSet { applyLogGate() }
     }
+
+    /// Show Slive in the Dock and ⌘-Tab. Off = menu bar only; the shortcut
+    /// still works, and the Settings window shows the icon while it's open.
+    @Stored("showInDock", default: true, emits: .dockIcon) var showInDock: Bool
 
     /// Offer a prefilled GitHub issue when Slive crashes, freezes or hits a
     /// failure (see FailureReporter). Nothing is sent unless the user submits

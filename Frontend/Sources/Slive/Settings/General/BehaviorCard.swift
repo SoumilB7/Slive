@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Hold delay, login item, problem reports, developer logs.
+/// Hold delay, login item, Dock icon, problem reports, developer logs.
 struct BehaviorCard: View {
     @ObservedObject var settings: Settings
 
@@ -15,6 +15,9 @@ struct BehaviorCard: View {
             .help("Wait before recording starts")
             CardDivider()
             ToggleRow(title: "Launch at login", isOn: $settings.launchAtLogin)
+            CardDivider()
+            ToggleRow(title: "Show in Dock", isOn: $settings.showInDock)
+                .help("Off: menu bar only. The shortcut still works.")
             CardDivider()
             ToggleRow(title: "Offer to report problems", isOn: $settings.reportProblems)
                 .help("After a crash or freeze, offer a GitHub issue. Personal details are removed.")

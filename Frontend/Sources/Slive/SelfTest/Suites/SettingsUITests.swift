@@ -13,6 +13,7 @@ enum SettingsUITests {
         generalCards(&t)
         permissions(&t)
         windowState(&t)
+        dockPresence(&t)
         groundTruthPrompt(&t)
         trainingJob(&t)
     }
@@ -110,6 +111,19 @@ enum SettingsUITests {
         p.refresh()
         watch.cancel()
         t.check(fires > 0 && p.inputMonitoringWorks, "permissions: a tap that starts working is published")
+    }
+
+    // MARK: - Dock icon
+
+    /// "Show in Dock" off = menu bar only, except while Settings is open
+    /// (a window without a Dock icon can't be ⌘-Tabbed to).
+    private static func dockPresence(_ t: inout Checks) {
+        t.equal(DockPresence.policy(showInDock: true, windowOpen: false), .regular, "dock: on → Dock icon")
+        t.equal(DockPresence.policy(showInDock: true, windowOpen: true), .regular, "dock: on + Settings → Dock icon")
+        t.equal(DockPresence.policy(showInDock: false, windowOpen: false), .accessory, "dock: off → menu bar only")
+        t.equal(DockPresence.policy(showInDock: false, windowOpen: true), .regular,
+                "dock: off, but Settings open → icon while it's open")
+        t.check(Settings(store: InMemoryStore()).showInDock, "dock: shown by default (nothing changes until turned off)")
     }
 
     // MARK: - Window state

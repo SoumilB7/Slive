@@ -86,6 +86,7 @@ enum SettingsOptionsTests {
         // Diagnostics.
         flag("verboseLogging", \.verboseLogging),
         flag("reportProblems", \.reportProblems),
+        flag("showInDock", \.showInDock, emits: .dockIcon),
     ]
 
     /// Persisted, but not an option: app state, one-off UI flags, AppKit's.
@@ -269,10 +270,11 @@ enum SettingsOptionsTests {
         t.check(wrong.isEmpty, "\(key): \(all.count) stored forms load safely to the right value", "\(wrong)")
     }
 
-    private static func flag(_ key: String, _ path: ReferenceWritableKeyPath<Settings, Bool>) -> Option {
+    private static func flag(_ key: String, _ path: ReferenceWritableKeyPath<Settings, Bool>,
+                             emits: SettingsChange? = nil) -> Option {
         Option(key: key, show: { "\($0[keyPath: path])" }) { t in
             let read = { (s: Settings) in s[keyPath: path] }
-            exercise(key, values: [true, false, true], emits: nil, read: read,
+            exercise(key, values: [true, false, true], emits: emits, read: read,
                      write: { $0[keyPath: path] = $1 }, &t)
             let d = read(make(InMemoryStore()))
             loads(key, [(true, true), (false, false), (1, true), (0, false), (2.5, true),
@@ -582,6 +584,7 @@ enum SettingsOptionsTests {
             "groundTruthProvider": "openai", "groundTruthModel": "gpt-audio", "groundTruthBaseURL": "",
             "groundTruthPrompt": "", "consensusPrompt": "", "groundTruthRecipe": "consensusFormat",
             "autoLabelNew": "true", "verboseLogging": "false", "reportProblems": "true",
+            "showInDock": "true",
         ]
         let got = snapshot(s)
         let diff = Set(expected.keys).union(got.keys).filter { expected[$0] != got[$0] }.sorted()

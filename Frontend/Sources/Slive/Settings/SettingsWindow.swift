@@ -5,6 +5,10 @@ import SwiftUI
 /// so closing this window just hides it — the app keeps running.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
+    /// The window is on screen (or minimized) — `DockPresence` keeps the Dock
+    /// icon while it is.
+    private(set) static var isOpen = false
+
     var onRelaunch: () -> Void = {}
 
     private var window: NSWindow?
@@ -59,6 +63,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             window = w
         }
 
+        Self.isOpen = true
+        DockPresence.apply(windowOpen: true)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         // The window is kept (not released) on close, so SwiftUI's onAppear
@@ -70,6 +76,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// the 1 Hz permission poll ran for the rest of the app's lifetime.
     func windowWillClose(_ notification: Notification) {
         permissions.stopWatching()
+        Self.isOpen = false
+        DockPresence.apply(windowOpen: false)
     }
 }
 
