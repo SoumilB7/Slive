@@ -2,6 +2,18 @@
 
 Notable changes to Slive, newest first. Versions follow [semver](https://semver.org).
 
+## [0.2.6] - 2026-11-22
+
+### Fixed
+- Automatic paid labeling is off until you turn it on.
+- Older assistant settings keep screenshots off and their provider.
+- A dictation could stay stuck after changing models.
+- Copy box shows when Slive can't confirm typing, even under a newer box.
+- Secure input notice names the real cause.
+- Re-pressing live typing no longer edits the new session's text.
+- A dropped mic says the text may be cut short.
+- Shortcut recorder refuses system shortcuts like ⌘C.
+
 ## [0.2.5] - 2026-11-22
 
 ### Added
@@ -91,6 +103,7 @@ First release, in two downloads: **Slive** (on-device speech only) and **Slive F
 - Fine-tune Whisper on your own voice, on this Mac.
 - The bundled server starts only when needed, stops after 10 idle minutes, and only answers Slive.
 
+[0.2.6]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.6
 [0.2.5]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.5
 [0.2.4]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.4
 [0.2.3]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.3
