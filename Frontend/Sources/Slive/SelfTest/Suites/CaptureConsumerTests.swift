@@ -73,6 +73,25 @@ enum CaptureConsumerTests {
             if let url = capture.url { try? FileManager.default.removeItem(at: url) }
         }
 
+        // The mic dropped mid-hold: the recording keeps what was heard and says so.
+        do {
+            let source = FakeSource()
+            let recorder = AudioRecorder(direct: source, voiceProcessing: FakeSource(),
+                                         wav: WAVWriter(directory: dir))
+            recorder.start(CaptureOptions())
+            source.emit([Float](repeating: 0.1, count: 1_600))
+            source.lost = true
+            let capture = recorder.stop()
+            t.check(capture.deviceLost && capture.samples.count == 1_600,
+                    "a lost device is reported with the audio heard before it")
+            if let url = capture.url { try? FileManager.default.removeItem(at: url) }
+            source.lost = false
+            recorder.start(CaptureOptions())
+            let next = recorder.stop()
+            t.check(!next.deviceLost, "a mic that stayed reports no loss")
+            if let url = next.url { try? FileManager.default.removeItem(at: url) }
+        }
+
         // Native-format fallback: written to the WAV, never accumulated.
         do {
             let stereo48 = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
@@ -128,6 +147,8 @@ private final class FakeSource: AudioSource {
 
     func stop() { stopped += 1; onBuffer = nil }
     func rearm() { rearmed += 1 }
+    var lost = false
+    var deviceLost: Bool { lost }
 
     /// One buffer with `samples` on every channel.
     func emit(_ samples: [Float]) {

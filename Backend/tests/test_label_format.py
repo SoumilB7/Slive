@@ -353,3 +353,27 @@ def test_store_target_style(tmp_path: Path) -> None:
     assert (styled["done"].reference_text, styled["done"].label_source) == (formatted, "llmFormatted")
     assert styled["rejected"].reference_text == plain and styled["old"].reference_text == plain
     assert styled["human"].reference_text == "Fix the build."
+
+
+def test_compound_numbers() -> None:
+    # "one hundred" used to read as 101, so "→ 101" passed and "→ 100" was rejected.
+    cases = {
+        "one hundred": "100", "two hundred": "200", "a hundred": "100",
+        "one hundred and five": "105", "one hundred twenty": "120",
+        "nine hundred ninety nine": "999", "two thousand": "2000",
+        "two thousand twenty six": "2026", "three million": "3000000",
+        "twenty one": "21", "fifteen": "15", "zero": "0",
+    }
+    for spoken, digits in cases.items():
+        assert lf.num_value(spoken.split())[0] == digits, spoken
+        assert lf.num_value(spoken.split()) == lf.num_value([digits]), spoken
+    for not_one_number in ("one two", "twenty thirty", "hundred", "and five", "five and"):
+        assert lf.num_value(not_one_number.split())[0] is None, not_one_number
+
+
+def test_verifier_numbers() -> None:
+    label = "we need " + "very " * 10 + "one hundred chairs for the hall today"
+    good = label.replace("one hundred", "100")
+    bad = label.replace("one hundred", "101")
+    assert lf.verify(label, good, False) == "formatted"
+    assert lf.verify(label, bad, False).startswith("rejected:")

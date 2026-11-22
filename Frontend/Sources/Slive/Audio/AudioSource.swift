@@ -35,10 +35,13 @@ protocol AudioSource: AnyObject {
     /// After the recording is finalized: pre-arm for the next hold, off the
     /// hot path.
     func rearm()
+    /// The device went away during this recording. Read before `stop()`.
+    var deviceLost: Bool { get }
 }
 
 extension AudioSource {
     func rearm() {}
+    var deviceLost: Bool { false }
 }
 
 /// The default: `MicCapture`, a raw HAL output unit on exactly the
@@ -76,4 +79,6 @@ final class AUHALSource: AudioSource {
     func stop() {
         capture.stop()
     }
+
+    var deviceLost: Bool { capture.deviceLost }
 }

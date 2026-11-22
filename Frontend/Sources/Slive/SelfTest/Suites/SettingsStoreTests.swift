@@ -45,7 +45,7 @@ enum SettingsStoreTests {
         t.equal(s.groundTruthPrompt, "", "default: server's label prompt")
         t.equal(s.consensusPrompt, "", "default: server's consensus prompt")
         t.equal(s.groundTruthRecipe, .consensusFormat, "default: Slive Custom 4 recipe")
-        t.equal(s.autoLabelNew, true, "default: new dictations labeled automatically")
+        t.equal(s.autoLabelNew, false, "default: paid auto-labeling stays off until the user turns it on")
         t.equal(s.localQuantized, true, "default: int8 local models")
         t.equal(s.localMemLimitGB, Settings.localMemDefaultGB(ramGB: MachineProfile.ramGB),
                 "default: memory limit fits this Mac")

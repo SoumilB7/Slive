@@ -157,8 +157,8 @@ ITEM_LEAD = LISTW | {"of", "all", "also", "and", "then", "finally", "lastly", "t
                      "point", "step", "last"}
 NUMW = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
                                     "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
-NUMW.update({"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
-             "hundred": 100})
+NUMW.update({"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90})
+SCALES = {"thousand": 1_000, "million": 1_000_000, "billion": 1_000_000_000}
 
 
 def words(text: str) -> list[str]:
@@ -175,18 +175,42 @@ def num_value(tokens: list[str]) -> tuple[str | None, bool]:
     parts = s.split(" point ") if " point " in f" {s} " else [s]
 
     def whole(p: str) -> int | None:
-        p = p.strip()
-        if not p:
+        """A spoken whole number ("one hundred and five", "two thousand twenty"),
+        or None when the words don't form ONE number. Summing every word read
+        "one hundred" as 101 and "one two" as 3, so the verifier accepted wrong
+        numbers and rejected right ones."""
+        ws = p.split()
+        if not ws:
             return 0
-        total = 0
-        for w in p.split():
-            if w.isdigit():
-                total += int(w)
-            elif w in NUMW:
-                total += NUMW[w]
+        if len(ws) == 1 and ws[0].isdigit():
+            return int(ws[0])
+        total, group, last = 0, 0, None  # last: what the previous word was
+        for i, w in enumerate(ws):
+            nxt = ws[i + 1] if i + 1 < len(ws) else None
+            if w == "and" and last in ("hundred", "scale") and nxt in NUMW:
+                continue
+            if w == "a" and last is None and (nxt == "hundred" or nxt in SCALES):
+                group, last = 1, "unit"
+                continue
+            if w in NUMW:
+                v = NUMW[w]
+                if v >= 20 and last in (None, "hundred", "scale"):
+                    group, last = group + v, "tens"
+                elif 0 < v < 10 and last in (None, "tens", "hundred", "scale"):
+                    group, last = group + v, "unit"
+                elif 10 <= v < 20 and last in (None, "hundred", "scale"):
+                    group, last = group + v, "teen"
+                elif v == 0 and last is None and len(ws) == 1:
+                    return 0
+                else:
+                    return None  # "one two", "twenty thirty": digits, not one number
+            elif w == "hundred" and last in ("unit", "teen") and group % 100 == group and group < 100:
+                group, last = group * 100, "hundred"
+            elif w in SCALES and last not in (None, "scale") and group > 0:
+                total, group, last = total + group * SCALES[w], 0, "scale"
             else:
                 return None
-        return total
+        return total + group
 
     if s.startswith("point "):
         parts = ["", s[6:]]

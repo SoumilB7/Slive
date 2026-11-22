@@ -481,9 +481,12 @@ enum DictationConfigMatrixTests {
             self.deliverable = deliverable
             let gate = AppRecords.savesTraining(capabilities: c.mode.capabilities, captureEdits: c.captureEdits,
                                                 overLimit: false)
-            // Only dictations save training pairs (a mode switch may hold one of each).
+            // Only dictations save training pairs (a mode switch may hold one of
+            // each), and only the pick's own: a previous model serving meanwhile
+            // isn't the user's model.
+            let pickDecodes = c.state == .ready || (c.state == .loading && !c.previousServes)
             let trainingCount = c.gesture == .switchMode ? (gate || training.isEmpty)
-                : (action == .dictate && gate ? training.count == history.count : training.isEmpty)
+                : (action == .dictate && gate && pickDecodes ? training.count == history.count : training.isEmpty)
 
             var out: [(String, Bool)] = []
             out.append(("no hang: every run settles with nothing capturing or toggled on",
@@ -584,9 +587,9 @@ enum DictationConfigMatrixTests {
             return true
         }
 
-        func stop() -> (url: URL?, samples: [Float]) {
+        func stop() -> RecordedAudio {
             isRecording = false
-            return (created.last, Self.samples(input))
+            return RecordedAudio(url: created.last, samples: Self.samples(input))
         }
 
         static func samples(_ input: Input) -> [Float] {
@@ -640,7 +643,8 @@ enum DictationConfigMatrixTests {
         }
         func startLiveDictation(model: String,
                                 onUpdate: @escaping @MainActor (String, Float) -> Void,
-                                onFailure: (@MainActor () -> Void)?) -> Bool {
+                                onFailure: (@MainActor () -> Void)?,
+                                onMicLost: (@MainActor () -> Void)?) -> Bool {
             liveStarts += 1
             guard !liveFails else { return false }
             liveUpdate = onUpdate

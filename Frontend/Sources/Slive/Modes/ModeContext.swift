@@ -28,8 +28,8 @@ import Foundation
     let cue: (HotkeyAction) -> Void
     let micAuthorization: () -> AVAuthorizationStatus
 
-    static let passwordFieldMessage = "Password field · Slive won't type here"
     static let micFailedMessage = "Couldn't start the microphone."
+    static let micLostNote = "Mic disconnected · may be cut short"
 
     /// Where a finished dictation goes: typed at the caret, or — auto-insert
     /// off — the copy box.
@@ -126,10 +126,11 @@ import Foundation
     func transcribeSamples(_ samples: [Float], model: String) async -> String?
     func transcribe(_ url: URL, model: String) async -> String?
 
-    // Live streaming (ContinuousDictation)
+    // Live streaming (ContinuousDictation). `onMicLost`: the mic dropped mid-stream.
     func startLiveDictation(model: String,
                             onUpdate: @escaping @MainActor (_ transcript: String, _ energy: Float) -> Void,
-                            onFailure: (@MainActor () -> Void)?) -> Bool
+                            onFailure: (@MainActor () -> Void)?,
+                            onMicLost: (@MainActor () -> Void)?) -> Bool
     func liveSamplesSnapshot(model: String) -> [Float]
     var liveConfirmedText: String { get }
     var liveConfirmedEndSeconds: Double { get }
@@ -147,25 +148,43 @@ extension DictationSpeech {
     /// the whole Whisper compile (80s), and every later dictation — decoded
     /// in 0.1s on the stand-in — queued behind it.
     func awaitServing(_ model: String, standIn: @escaping @MainActor () -> String?,
-                      poll: UInt64 = 200_000_000) async -> String {
-        Task { @MainActor in _ = await self.awaitReady(model) }
+                      poll: UInt64 = 200_000_000,
+                      maxWait: TimeInterval = ModelWait.maxSeconds) async -> String {
+        let load = ModelWait()
+        Task { @MainActor in _ = await self.awaitReady(model); load.ended = true }
+        let deadline = Date().addingTimeInterval(maxWait)
         while !Task.isCancelled {
             if isReady(model) { return model }
             if let other = standIn(), other != model, isReady(other) { return other }
             // `model` won't arrive (load failed, not downloaded): stop
             // waiting; the decode path says why.
             if !canBecomeReady(model) { return model }
+            // Its load ended without it resident (residency evicted it for a
+            // newer pick): `canBecomeReady` stays true, and this polled until
+            // that pick downloaded, or forever. The file path loads it again.
+            if load.ended { return model }
+            if Date() > deadline {
+                Log.event(String(format: "gave up waiting for %@ after %.0fs", model, maxWait))
+                return model
+            }
             try? await Task.sleep(nanoseconds: poll)
         }
         return model
     }
 }
 
+/// `awaitServing`'s view of its load: whether it has ended, and the cap.
+@MainActor final class ModelWait {
+    /// No dictation waits longer than this; later ones queue behind it.
+    nonisolated static let maxSeconds: TimeInterval = 300
+    var ended = false
+}
+
 /// The mic capture a hold records with (`AudioRecorder`).
 protocol Recording: AnyObject {
     var isRecording: Bool { get }
     @discardableResult func start(_ options: CaptureOptions) -> Bool
-    @discardableResult func stop() -> (url: URL?, samples: [Float])
+    @discardableResult func stop() -> RecordedAudio
 }
 
 extension AudioRecorder: Recording {}

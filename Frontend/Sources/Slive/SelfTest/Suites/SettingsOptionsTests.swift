@@ -413,19 +413,26 @@ enum SettingsOptionsTests {
                      write: { $0.assistantConfig = $1 }, &t)
 
             func json(_ s: String) -> Data { Data(s.utf8) }
-            var kept = AssistantConfig.default
+            // A saved config's missing fields read as the build that saved
+            // it meant them (screenshots off, Anthropic) — never as today's
+            // fresh-install defaults.
+            let saved = AssistantConfig.savedFallback
+            t.check(!saved.attachScreenshot && saved.provider == .anthropic && saved.promptName == "assistant",
+                    "assistantConfig: an old saved config never gains screenshots or switches provider")
+            var kept = saved
             kept.baseURL = "http://kept"
             kept.models = ["anthropic": "claude-x"]
             loads("assistantConfig", [
-                (json("{}"), .default),
+                (json("{}"), saved),
                 (json(#"{"baseURL":"http://kept","models":{"anthropic":"claude-x"}}"#), kept),
                 // A provider a newer build added: only that field falls back.
                 (json(#"{"provider":"mistral","baseURL":"http://kept","models":{"anthropic":"claude-x"}}"#), kept),
-                (json(#"{"provider":"openai","attachScreenshot":"yes","baseURL":"http://kept","models":{"anthropic":"claude-x"}}"#), kept),
+                (json(#"{"provider":"openai","attachScreenshot":"yes","baseURL":"http://kept","models":{"anthropic":"claude-x"}}"#),
+                 { var c = kept; c.provider = .openai; return c }()),
                 (json(#"{"provider":"openai","models":["not","a","map"],"baseURL":"http://kept"}"#),
-                 { var c = AssistantConfig.default; c.baseURL = "http://kept"; return c }()),
+                 { var c = saved; c.provider = .openai; c.baseURL = "http://kept"; return c }()),
                 (json(#"{"provider":"gemini","unknownFutureField":42}"#),
-                 { var c = AssistantConfig.default; c.provider = .gemini; return c }()),
+                 { var c = saved; c.provider = .gemini; return c }()),
                 (json("[1,2]"), .default), (json("not json"), .default), (Data(), .default),
                 (#"{"provider":"gemini"}"#, .default),   // a string, not data
             ], default: .default, read: read, &t)
@@ -583,7 +590,7 @@ enum SettingsOptionsTests {
             "captureEdits": "true", "captureMaxGB": "2.0",
             "groundTruthProvider": "openai", "groundTruthModel": "gpt-audio", "groundTruthBaseURL": "",
             "groundTruthPrompt": "", "consensusPrompt": "", "groundTruthRecipe": "consensusFormat",
-            "autoLabelNew": "true", "verboseLogging": "false", "reportProblems": "true",
+            "autoLabelNew": "false", "verboseLogging": "false", "reportProblems": "true",
             "showInDock": "true",
         ]
         let got = snapshot(s)

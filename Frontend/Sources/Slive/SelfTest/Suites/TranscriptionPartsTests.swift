@@ -335,6 +335,46 @@ enum TranscriptionPartsTests {
                 "an unfinished download's marker beats its partial files")
         t.equal(finished, ["m true", "p false"],
                 "each download reports its end once: joined callers and an on-disk model add nothing")
+
+        stalledRedownload(&t)
+    }
+
+    /// A stalled download's fetch can't be stopped and may still write into
+    /// the folder: Re-download used to delete the files and fetch a second
+    /// copy right under it. Now it waits for the old fetch to end.
+    private static func stalledRedownload(_ t: inout Checks) {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let storage = StallingStorage()
+        let model = TranscriptionModel(
+            basket: ModelBasket(root: dir), customModels: { [] },
+            policy: { ResidencyPolicy(pins: true, releasesUnderPressure: false,
+                                      primesOnHold: false, warmsAfterLoad: false) },
+            engines: { _ in (storage, FakeLoader { _ in nil }) },
+            downloadStallSeconds: 0.2)
+        func spin(_ seconds: TimeInterval, until done: () -> Bool) {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !done(), Date() < deadline {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.005))
+            }
+        }
+        func failed() -> Bool { if case .failed = model.status(for: "m") { return true }; return false }
+
+        Task { @MainActor in await model.download("m") }
+        spin(10) { failed() }
+        t.check(failed() && storage.events == ["fetch 1"], "a fetch with no progress fails the download",
+                "\(model.status(for: "m")) \(storage.events)")
+
+        var redone = false
+        Task { @MainActor in await model.redownload("m"); redone = true }
+        spin(0.5) { redone }
+        t.equal(storage.events, ["fetch 1"], "re-download deletes nothing and starts no fetch while the stalled one runs")
+        t.equal(model.status(for: "m"), ModelDownloads.stoppingStatus, "and says it's stopping the old download")
+
+        storage.finishStalled()
+        spin(10) { redone }
+        t.equal(storage.events, ["fetch 1", "fetch 1 ended", "remove", "fetch 2"],
+                "once the old fetch ends: delete, then one fresh fetch")
     }
 
     // MARK: - Storage completeness (temp dir)
@@ -547,4 +587,31 @@ private final class FakeStorage: ModelStorage {
         return folder
     }
     func remove(_ id: String) { files.remove(id) }
+}
+
+/// Its first fetch stalls (no progress, deaf to cancellation, like HubApi
+/// mid-file) until `finishStalled`; later fetches finish at once.
+@MainActor
+private final class StallingStorage: ModelStorage {
+    var files: Set<String> = []
+    private(set) var events: [String] = []
+    private var fetches = 0
+    private var gate: CheckedContinuation<Void, Never>?
+
+    func hasFiles(_ id: String) -> Bool { files.contains(id) }
+    func isInstalledLocally(_ id: String) -> Bool { false }
+    func fetch(_ id: String, progress: DownloadProgress) async throws -> URL? {
+        fetches += 1
+        let n = fetches
+        events.append("fetch \(n)")
+        if n == 1 {
+            await withCheckedContinuation { gate = $0 }
+            events.append("fetch 1 ended")
+        }
+        files.insert(id)
+        return nil
+    }
+    func remove(_ id: String) { events.append("remove"); files.remove(id) }
+
+    func finishStalled() { gate?.resume(); gate = nil }
 }

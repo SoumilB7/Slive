@@ -39,16 +39,31 @@ public struct Checks {
 @MainActor
 public enum SelfTestRunner {
     public static func runAndExit(_ suites: [TestSuite], title: String = "Slive self-test") -> Never {
-        var selected = suites
         let args = CommandLine.arguments
-        if let i = args.firstIndex(of: "--only"), i + 1 < args.count {
-            let needle = args[i + 1].lowercased()
-            selected = suites.filter { $0.name.lowercased().contains(needle) }
-        }
+        let only = args.firstIndex(of: "--only").map { $0 + 1 < args.count ? args[$0 + 1] : "" }
+        let selected = select(suites.map(\.name), only: only).map { suites[$0] }
         print("\(title)\n\(String(repeating: "=", count: title.count))")
         var checks = Checks()
         for suite in selected { suite.run(&checks) }
         print("\(String(repeating: "=", count: title.count))\n\(checks.passed) passed, \(checks.failed) failed")
-        exit(checks.failed == 0 ? 0 : 1)
+        exit(verdict(passed: checks.passed, failed: checks.failed))
+    }
+
+    /// Indices of the suites `--only` keeps (all when it's absent). A
+    /// missing value selects nothing rather than everything, so a typo can't
+    /// silently run a different set.
+    public static func select(_ names: [String], only: String?) -> [Int] {
+        guard let only else { return Array(names.indices) }
+        let needle = only.lowercased()
+        guard !needle.isEmpty else { return [] }
+        return names.indices.filter { names[$0].lowercased().contains(needle) }
+    }
+
+    /// Exit status: a run that checked nothing fails — a misspelled `--only`
+    /// used to print "0 passed, 0 failed" and exit 0, passing while testing
+    /// nothing.
+    public static func verdict(passed: Int, failed: Int) -> Int32 {
+        if passed + failed == 0 { print("No checks ran. Check the --only filter."); return 1 }
+        return failed == 0 ? 0 : 1
     }
 }

@@ -196,10 +196,13 @@ enum ShortcutConfigTests {
     /// Every shortcut the recorder can produce on a key press: each keycode
     /// with each set of physically held modifiers (the event adds fn for
     /// keys that carry it).
+    /// `refused`: ⇧ + a typing key. `blocked`: every other refusal, as
+    /// "key<code>: <reason>" (a bare editing key, a system shortcut).
     static func recordedChords() -> (chords: [Hotkey], cancels: Int, ignored: Int, refused: Int,
-                                     mismatches: [String]) {
+                                     blocked: Set<String>, mismatches: [String]) {
         var chords: [Hotkey] = []
         var cancels = 0, ignored = 0, refused = 0
+        var blocked: Set<String> = []
         var mismatches: [String] = []
         for key in UInt16(0)...127 where !modifierKeycodes.contains(key) {
             for physical in modifierSets {
@@ -214,11 +217,11 @@ enum ShortcutConfigTests {
                 case .ignore:
                     ignored += 1
                     if mods != 0 || Hotkey.isSpecialKey(key) { mismatches.append("key\(key)/\(mods) ignored") }
-                case .refuse(let why):
+                case .refuse(let why) where why == HotkeyRecorderView.shiftTypesText:
                     refused += 1
-                    if !shiftedText || why != HotkeyRecorderView.shiftTypesText {
-                        mismatches.append("key\(key)/\(mods) refused: \(why)")
-                    }
+                    if !shiftedText { mismatches.append("key\(key)/\(mods) refused: \(why)") }
+                case .refuse(let why):
+                    blocked.insert("key\(key): \(why)")
                 case .commit(let hk):
                     // The label reads as the key pressed: no implicit fn, no glyphs.
                     let shown = implicitFn(key) ? physical & ~fn : physical
@@ -233,7 +236,7 @@ enum ShortcutConfigTests {
                 }
             }
         }
-        return (chords, cancels, ignored, refused, mismatches)
+        return (chords, cancels, ignored, refused, blocked, mismatches)
     }
 
     /// Every modifier-only shortcut the recorder saves: each non-empty
@@ -272,6 +275,21 @@ enum ShortcutConfigTests {
         let typingKeys = (UInt16(0)...127).filter { !modifierKeycodes.contains($0) && Hotkey.typesText($0) }
         t.check(rec.cancels == 32 && rec.ignored > 0 && !rec.chords.isEmpty && rec.refused == typingKeys.count,
                 "recorder sweep covers cancel, ignore, refuse (\(rec.refused)) and record (\(rec.chords.count) chords)")
+        // Written out by hand, not derived from the recorder's tables.
+        let system = " is a system shortcut.", alone = " alone fires while you type."
+        let expectedBlocked = [
+            "key8: ⌘ C", "key9: ⌘ V", "key7: ⌘ X", "key6: ⌘ Z", "key0: ⌘ A", "key12: ⌘ Q",
+            "key13: ⌘ W", "key4: ⌘ H", "key46: ⌘ M", "key48: ⌘ Tab", "key49: ⌘ Space",
+            "key49: ⌃ Space", "key20: ⇧⌘ 3", "key21: ⇧⌘ 4", "key23: ⇧⌘ 5",
+        ].map { $0 + system } + [
+            "key123: ←", "key124: →", "key125: ↓", "key126: ↑", "key36: Return", "key76: Enter",
+            "key48: Tab", "key51: Delete", "key49: Space", "key117: ⌦", "key115: Home", "key119: End",
+            "key116: Page Up", "key121: Page Down",
+        ].map { $0 + alone }
+        t.equal(rec.blocked.sorted(), expectedBlocked.sorted(),
+                "recorder refuses exactly the system shortcuts and bare editing keys, saying why")
+        recorderSystemShortcuts(&t)
+        recorderDoubleTapWait(&t)
         var bareRefused: [String] = []
         for style in [BindingStyle.hold, .toggle] {
             for mods in modifierSets.dropFirst() {
@@ -427,6 +445,91 @@ enum ShortcutConfigTests {
         let reloaded = Settings(store: store)
         for (slot, hk) in last { roundTrip.expect(reloaded.shortcut(for: slot) == hk, "\(slot): reload") }
         roundTrip.report(&t, "every recorded shortcut persists on every slot")
+    }
+
+    /// Menu shortcuts follow the layout's letter; the defaults and the
+    /// shortcuts the app suggests still record.
+    static func recorderSystemShortcuts(_ t: inout Checks) {
+        typealias R = HotkeyRecorderView
+        t.equal(R.keyDownOutcome(keyCode: 8, modifiers: cmd, characters: "c"), .refuse("⌘ C is a system shortcut."),
+                "recorder refuses ⌘ C")
+        t.check(R.keyDownOutcome(keyCode: 34, modifiers: cmd, characters: "c") == .refuse("⌘ C is a system shortcut.")
+                && R.keyDownOutcome(keyCode: 8, modifiers: cmd, characters: "j")
+                == .commit(Hotkey(modifiers: cmd, keyCode: 8, label: "⌘ J")),
+                "on Dvorak, ⌘ C is refused by its letter and the C key's ⌘ J records")
+        t.equal(R.keyDownOutcome(keyCode: 8, modifiers: cmd | shift, characters: "C"),
+                .commit(Hotkey(modifiers: cmd | shift, keyCode: 8, label: "⇧⌘ C")), "⇧⌘ C records (only ⌘ C is the system's)")
+        t.equal(R.keyDownOutcome(keyCode: 124, modifiers: fn | alt, characters: "\u{F703}"),
+                .commit(Hotkey(modifiers: fn | alt, keyCode: 124, label: "⌥ →")), "⌥ → records (only a bare arrow is refused)")
+        var allowed = Sweep()
+        let chords: [Hotkey?] = [
+            Settings.suggestedStreamHotkey, Settings.suggestedStreamToggleHotkey,
+            Hotkey(modifiers: ctrl | shift, keyCode: 49, label: "⌃⇧ Space"),
+            Hotkey(modifiers: fn, keyCode: 96, label: "F5"), Hotkey(modifiers: alt, keyCode: 49, label: "⌥ Space"),
+            Hotkey(modifiers: fn, keyCode: 36, label: "fn Return"),
+        ]
+        allowed.expect(chords.allSatisfy { $0 != nil }, "the suggested shortcuts decode")
+        for hk in chords.compactMap({ $0 }) {
+            let chars = Hotkey.keyName(hk.keyCode!) == nil ? String(hk.label.last!) : nil
+            let got = R.keyDownOutcome(keyCode: hk.keyCode!, modifiers: hk.modifiers, characters: chars)
+            allowed.expect(got == .commit(Hotkey(modifiers: hk.modifiers, keyCode: hk.keyCode, label: hk.displayLabel)),
+                           "\(hk.label): \(got)")
+        }
+        allowed.report(&t, "the suggested shortcuts and allowed chords still record")
+    }
+
+    /// Toggle target: tap ⇧, then ⌥ 0.1 s later, then Esc between the two
+    /// waits' deadlines. The ⇧ wait used to survive the ⌥ tap (it refused
+    /// late and dropped the ⌥ wait's handle) so Esc cancelled nothing and ⌥
+    /// saved after cancel.
+    static func recorderDoubleTapWait(_ t: inout Checks) {
+        /// A recorder on a manual clock that acts on outcomes as the view does.
+        func recorder() -> (ShortcutCapture, ManualScheduler, () -> [String]) {
+            let clock = ManualScheduler()
+            let capture = ShortcutCapture(scheduler: clock)
+            var log: [String] = []
+            capture.onOutcome = { outcome in
+                switch outcome {
+                case .cancel: log.append("cancel"); capture.stop()
+                case .ignore: break
+                case .refuse(let why): log.append("refuse \(why)")
+                case .commit(let hk): log.append("save \(hk.label)"); capture.stop()
+                }
+            }
+            capture.start()
+            return (capture, clock, { log })
+        }
+        func tap(_ c: ShortcutCapture, _ mods: UInt64) {
+            c.flagsChanged(mods, style: .toggle)
+            c.flagsChanged(0, style: .toggle)
+        }
+        do {
+            let (c, clock, log) = recorder()
+            tap(c, shift)
+            clock.advance(by: 0.1)
+            tap(c, alt)
+            clock.advance(by: Hotkey.doubleTapInterval - 0.05)   // past ⇧'s deadline, before ⌥'s
+            c.keyDown(keyCode: 53, modifiers: 0, characters: nil)
+            clock.advance(by: 2)
+            t.check(log() == ["cancel"] && !c.isRecording && clock.waiting == 0,
+                    "tap ⇧, tap ⌥, Esc: cancels, refuses nothing, saves nothing", "\(log())")
+        }
+        do {
+            let (c, clock, log) = recorder()
+            tap(c, shift)
+            clock.advance(by: 0.1)
+            tap(c, alt)
+            clock.advance(by: 2)
+            t.equal(log(), ["save ⌥"], "tap ⇧ then ⌥: only the latest tap commits")
+        }
+        do {
+            let (c, clock, log) = recorder()
+            tap(c, ctrl)
+            clock.advance(by: 0.1)
+            tap(c, ctrl)
+            clock.advance(by: 2)
+            t.equal(log(), ["save ⌃ ×2"], "a quick second tap of the same modifier is ×2")
+        }
     }
 
     // MARK: - 2. Every slot: set, switched off, cleared, unavailable, corrupt

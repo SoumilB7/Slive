@@ -23,11 +23,8 @@ struct HotkeyRecorderView: View {
 
     @State private var recording = false
     @State private var monitor: Any?
-    @State private var maxModifiers: UInt64 = 0
-    /// Double-tap capture (toggle targets only): after the first full
-    /// release we wait a beat for a second tap before committing ×1.
-    @State private var pendingTapMods: UInt64 = 0
-    @State private var commitWork: DispatchWorkItem?
+    /// Turns the monitor's events into outcomes (and owns the ×2 wait).
+    @State private var capture = ShortcutCapture()
     /// Why the last press wasn't saved (shown while still recording).
     @State private var refusal: String?
 
@@ -117,7 +114,8 @@ struct HotkeyRecorderView: View {
     private func startRecording() {
         recording = true
         refusal = nil
-        maxModifiers = 0
+        capture.onOutcome = { apply($0) }
+        capture.start()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             handle(event)
             return nil   // swallow everything while recording
@@ -127,8 +125,8 @@ struct HotkeyRecorderView: View {
     private func cancel() {
         recording = false
         refusal = nil
-        commitWork?.cancel(); commitWork = nil
-        pendingTapMods = 0
+        capture.stop()
+        capture.onOutcome = { _ in }   // it held this view: no cycle left behind
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
     }
 
@@ -156,42 +154,12 @@ struct HotkeyRecorderView: View {
 
     private func handle(_ event: NSEvent) {
         let mods = UInt64(event.modifierFlags.rawValue) & Hotkey.modifierMask
-        let style = target.style
-
         switch event.type {
         case .flagsChanged:
-            maxModifiers |= mods
-            // All modifiers released with no key pressed → a modifier-only shortcut.
-            if mods == 0 && maxModifiers != 0 {
-                let released = maxModifiers
-                maxModifiers = 0
-                guard supportsDoubleTap else {
-                    apply(Self.modifierOutcome(released, taps: 1, style: style))
-                    return
-                }
-                // Second tap of the same gesture inside the window → ×2.
-                if pendingTapMods == released {
-                    commitWork?.cancel(); commitWork = nil
-                    pendingTapMods = 0
-                    apply(Self.modifierOutcome(released, taps: 2, style: style))
-                    return
-                }
-                // First tap: hold the commit briefly — tap again for ×2.
-                pendingTapMods = released
-                let work = DispatchWorkItem {
-                    pendingTapMods = 0
-                    commitWork = nil
-                    apply(Self.modifierOutcome(released, taps: 1, style: style))
-                }
-                commitWork = work
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now() + Hotkey.doubleTapInterval, execute: work)
-            }
-
+            capture.flagsChanged(mods, style: target.style)
         case .keyDown:
-            apply(Self.keyDownOutcome(keyCode: event.keyCode, modifiers: mods,
-                                      characters: event.charactersIgnoringModifiers))
-
+            capture.keyDown(keyCode: event.keyCode, modifiers: mods,
+                            characters: event.charactersIgnoringModifiers)
         default:
             break
         }
@@ -210,16 +178,69 @@ struct HotkeyRecorderView: View {
 
     static let shiftTypesText = "⇧ + this key types text."
     static func firesWhileTyping(_ symbol: String) -> String { "\(symbol) alone fires while you type." }
+    static func systemShortcut(_ label: String) -> String { "\(label) is a system shortcut." }
+
+    /// Keys that move the caret or edit text. Saved bare, the monitor would
+    /// swallow them in every app (arrows and Home/End carry fn implicitly).
+    static let editingKeys: Set<UInt16> = [
+        36, 76, 48, 51, 49, 117,      // Return Enter Tab Delete Space ⌦
+        123, 124, 125, 126,           // arrows
+        115, 119, 116, 121,           // Home End PgUp PgDn
+    ]
+
+    /// A shortcut macOS or every app already owns; saved, it would stop
+    /// working everywhere. `character` (the menu shortcuts) matches by the
+    /// layout's letter when the event has one, else by the US key position.
+    struct SystemShortcut {
+        let key: String
+        let modifiers: UInt64
+        let keyCode: UInt16
+        var character: Character?
+    }
+
+    static let systemShortcuts: [SystemShortcut] = {
+        let cmd = CGEventFlags.maskCommand.rawValue
+        let shift = CGEventFlags.maskShift.rawValue
+        let ctrl = CGEventFlags.maskControl.rawValue
+        let menu: [(Character, UInt16)] = [("c", 8), ("v", 9), ("x", 7), ("z", 6), ("a", 0),
+                                           ("q", 12), ("w", 13), ("h", 4), ("m", 46)]
+        return menu.map { SystemShortcut(key: String($0.0).uppercased(), modifiers: cmd, keyCode: $0.1, character: $0.0) }
+            + [SystemShortcut(key: "Tab", modifiers: cmd, keyCode: 48),
+               SystemShortcut(key: "Space", modifiers: cmd, keyCode: 49),
+               SystemShortcut(key: "Space", modifiers: ctrl, keyCode: 49),
+               SystemShortcut(key: "3", modifiers: cmd | shift, keyCode: 20),
+               SystemShortcut(key: "4", modifiers: cmd | shift, keyCode: 21),
+               SystemShortcut(key: "5", modifiers: cmd | shift, keyCode: 23)]
+    }()
+
+    /// The system shortcut a press is, if any.
+    static func systemShortcut(keyCode: UInt16, modifiers: UInt64, characters: String?) -> SystemShortcut? {
+        let typed = characters?.lowercased()
+        let letter = typed.flatMap { $0.count == 1 && $0.unicodeScalars.allSatisfy(\.isASCII) ? $0.first : nil }
+        return systemShortcuts.first { s in
+            guard s.modifiers == modifiers else { return false }
+            if let c = s.character, let letter { return c == letter }
+            return s.keyCode == keyCode
+        }
+    }
 
     /// A key pressed while recording, with the (masked) modifiers its event
-    /// carried. Esc cancels; a bare typing key is ignored; ⇧ + a typing key
-    /// is refused (its capital or symbol could never be typed again);
-    /// function keys, arrows and anything else with a modifier is recorded.
+    /// carried. Esc cancels; a bare editing key or a system shortcut is
+    /// refused; another bare typing key is ignored; ⇧ + a typing key is
+    /// refused (its capital or symbol could never be typed again); function
+    /// keys and anything else with a modifier is recorded.
     static func keyDownOutcome(keyCode: UInt16, modifiers: UInt64, characters: String?) -> KeyOutcome {
         if keyCode == 53 { return .cancel }
+        let pressed = Hotkey.implicitFnKeyCodes.contains(keyCode) ? modifiers & ~Hotkey.fnFlag : modifiers
+        if pressed == 0, editingKeys.contains(keyCode), let name = Hotkey.keyName(keyCode) {
+            return .refuse(firesWhileTyping(name))
+        }
         if modifiers == 0 && !Hotkey.isSpecialKey(keyCode) { return .ignore }
         if modifiers == CGEventFlags.maskShift.rawValue && Hotkey.typesText(keyCode) {
             return .refuse(shiftTypesText)
+        }
+        if let s = systemShortcut(keyCode: keyCode, modifiers: modifiers, characters: characters) {
+            return .refuse(systemShortcut(Hotkey.makeLabel(modifiers: s.modifiers, keyChar: s.key)))
         }
         let label = Hotkey.makeLabel(modifiers: modifiers, keyCode: keyCode, characters: characters)
         return .commit(Hotkey(modifiers: modifiers, keyCode: keyCode, label: label))
@@ -257,5 +278,74 @@ struct HotkeyRecorderView: View {
             lines.append(c.message)
         }
         return lines
+    }
+}
+
+/// The recorder's press handling, apart from the view so the ×2 wait runs
+/// on a test clock. A toggle target's modifier tap waits a beat for a second
+/// tap; only the latest tap's wait may commit, and never once recording ended.
+@MainActor final class ShortcutCapture {
+    private let scheduler: MainScheduler
+    /// Receives each decided press (save, refuse, cancel).
+    var onOutcome: (HotkeyRecorderView.KeyOutcome) -> Void = { _ in }
+    private(set) var isRecording = false
+    private var maxModifiers: UInt64 = 0
+    private var pendingTapMods: UInt64 = 0
+    private var commitWork: DispatchWorkItem?
+
+    init(scheduler: MainScheduler = DispatchMainScheduler.shared) {
+        self.scheduler = scheduler
+    }
+
+    func start() {
+        stop()
+        isRecording = true
+    }
+
+    func stop() {
+        isRecording = false
+        cancelPendingCommit()
+        maxModifiers = 0
+    }
+
+    func flagsChanged(_ mods: UInt64, style: BindingStyle) {
+        guard isRecording else { return }
+        maxModifiers |= mods
+        // All modifiers released with no key pressed → a modifier-only shortcut.
+        guard mods == 0, maxModifiers != 0 else { return }
+        let released = maxModifiers
+        maxModifiers = 0
+        guard style == .toggle else {
+            onOutcome(HotkeyRecorderView.modifierOutcome(released, taps: 1, style: style))
+            return
+        }
+        // Second tap of the same gesture inside the window → ×2.
+        if pendingTapMods == released {
+            cancelPendingCommit()
+            onOutcome(HotkeyRecorderView.modifierOutcome(released, taps: 2, style: style))
+            return
+        }
+        // A tap: hold the commit briefly for a second one. A different
+        // modifier replaces an earlier tap's wait — left running, it refused
+        // or saved after the user had moved on (even after Esc).
+        cancelPendingCommit()
+        pendingTapMods = released
+        commitWork = scheduler.after(Hotkey.doubleTapInterval) { [weak self] in
+            guard let self, self.isRecording, self.pendingTapMods == released else { return }
+            self.pendingTapMods = 0
+            self.commitWork = nil
+            self.onOutcome(HotkeyRecorderView.modifierOutcome(released, taps: 1, style: style))
+        }
+    }
+
+    func keyDown(keyCode: UInt16, modifiers: UInt64, characters: String?) {
+        guard isRecording else { return }
+        onOutcome(HotkeyRecorderView.keyDownOutcome(keyCode: keyCode, modifiers: modifiers, characters: characters))
+    }
+
+    private func cancelPendingCommit() {
+        commitWork?.cancel()
+        commitWork = nil
+        pendingTapMods = 0
     }
 }

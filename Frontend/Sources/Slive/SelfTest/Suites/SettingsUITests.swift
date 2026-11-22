@@ -206,9 +206,12 @@ enum SettingsUITests {
         var startError: Error?
         var statusCalls = 0
         var readinessCalls = 0
+        /// While true, readiness() waits — a slow server mid-refresh.
+        var holdReadiness = false
 
         func readiness() async throws -> TrainingReadiness {
             readinessCalls += 1
+            while holdReadiness { try await Task.sleep(nanoseconds: 2_000_000) }
             return try decode(#"{"eligible_count": 60, "required_samples": 50, "remaining_samples": 0, "ready": true, "eligible_audio_minutes": 12.5}"#)
         }
         func latest() async throws -> WhisperTrainingJob? { latestJob }
@@ -338,6 +341,23 @@ enum SettingsUITests {
             spin(timeout: 0.1) { false }
             t.equal(client.statusCalls, calls, "training: page leave stops polling")
             t.equal(model.jobError, nil, "training: cancel isn't an error")
+        }
+
+        // Leaving while the opening refresh is still waiting on the server:
+        // its late answer must not start a poller nobody will stop.
+        do {
+            let client = FakeTrainingClient()
+            client.latestJob = job("running")
+            client.statuses = [job("running")]
+            client.holdReadiness = true
+            let model = TrainingJobModel(client: client, onModelsChanged: {}, sleep: FakeClock().sleep)
+            model.refresh()
+            spin(timeout: 0.05) { false }
+            model.stopPolling()
+            client.holdReadiness = false
+            t.check(spin { !model.checking }, "training: the late refresh completes")
+            spin(timeout: 0.1) { false }
+            t.equal(client.statusCalls, 0, "training: leaving mid-refresh starts no poller")
         }
     }
 

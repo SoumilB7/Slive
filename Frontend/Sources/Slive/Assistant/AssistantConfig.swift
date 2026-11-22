@@ -53,14 +53,23 @@ struct AssistantConfig: Codable, Equatable {
 }
 
 extension AssistantConfig {
+    /// What a field missing from a SAVED config meant to the build that saved
+    /// it — not today's fresh-install `.default`. A config saved before
+    /// `attachScreenshot` existed must not start sending screenshots, and one
+    /// saved before the provider/prompt defaults changed keeps Anthropic and
+    /// the assistant prompt (0.2.5 used `.default` here and silently turned
+    /// screenshots on and switched upgraders to OpenAI).
+    static let savedFallback = AssistantConfig(
+        provider: .anthropic, models: [:], baseURL: "", promptName: "assistant",
+        systemPrompt: defaultSystemPrompt, attachScreenshot: false, fetchedModels: [:])
+
     /// Tolerant decoding: any missing OR unreadable field (one added in a
     /// later version, a provider a newer build added) falls back to
-    /// `.default`'s value instead of failing the whole decode and wiping the
-    /// user's saved settings — one source of defaults, so a missing field and
-    /// a fresh install agree. Defined in an extension so the memberwise
+    /// `savedFallback` instead of failing the whole decode and wiping the
+    /// user's saved settings. Defined in an extension so the memberwise
     /// initializer is preserved.
     init(from decoder: Decoder) throws {
-        let d = Self.default
+        let d = Self.savedFallback
         let c = try decoder.container(keyedBy: CodingKeys.self)
         func field<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
             ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback

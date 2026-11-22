@@ -3,7 +3,8 @@ import SliveTestKit
 
 /// Whether Slive types, for every combination of the things the user
 /// controls or the Mac reports: Accessibility on/off × secure input (off,
-/// held by the app we'd type into, by another app, holder unreadable) ×
+/// held by the app we'd type into, by another app, holder unreadable —
+/// which blocks only over a password field) ×
 /// what has focus (fields, password fields, cells, controls, Electron and
 /// Chromium trees, nothing, AX silent). The expected column is the rule
 /// table in TypingPolicy's docs, written out — not re-derived from the code.
@@ -112,12 +113,13 @@ enum TypingPolicyTableTests {
         }
     }
 
-    /// Secure input as the Mac reports it, and whether it blocks typing here.
-    static let secureInputStates: [(name: String, enabled: Bool, owner: pid_t?, frontmost: pid_t?, blocks: Bool)] = [
+    /// Secure input as the Mac reports it, and whether it blocks typing here
+    /// (nil: only over a password field).
+    static let secureInputStates: [(name: String, enabled: Bool, owner: pid_t?, frontmost: pid_t?, blocks: Bool?)] = [
         ("off", false, nil, 100, false),
         ("held by the app we'd type into", true, 100, 100, true),
         ("held by another app (Terminal, a password manager)", true, 200, 100, false),
-        ("on, holder unreadable", true, nil, 100, true),
+        ("on, holder unreadable", true, nil, 100, nil),
         ("held by an app, no frontmost app", true, 200, nil, false),
     ]
 
@@ -131,18 +133,20 @@ enum TypingPolicyTableTests {
                     rows += 1
                     var readSecure = false, probed = false
                     let blocks = TypingPolicy.secureInputBlocks(enabled: secure.enabled, owner: secure.owner,
-                                                                frontmost: secure.frontmost)
+                                                                frontmost: secure.frontmost,
+                                                                focusIsSecure: situation.secure)
+                    let wantBlocks = secure.blocks ?? situation.secure
                     let verdict = TypingPolicy.verdict(
                         accessibility: accessibility,
                         secureInput: { readSecure = true; return blocks }(),
                         focus: { probed = true; return focus(situation) })
                     let want: Outcome = !accessibility ? .refuseAccessibility
-                        : secure.blocks ? .refuseSecureInput : situation.expect
-                    table.expect(blocks == secure.blocks && outcome(verdict) == want,
+                        : wantBlocks ? .refuseSecureInput : situation.expect
+                    table.expect(blocks == wantBlocks && outcome(verdict) == want,
                                  "AX \(accessibility), secure input \(secure.name), \(situation.name): "
                                  + "\(outcome(verdict).map(String.init(describing:)) ?? "\(verdict)") ≠ \(want)")
                     // Nothing is read that the verdict doesn't need.
-                    lazyRead.expect(readSecure == accessibility && probed == (accessibility && !secure.blocks),
+                    lazyRead.expect(readSecure == accessibility && probed == (accessibility && !wantBlocks),
                                     "AX \(accessibility), \(secure.name), \(situation.name)")
                     let d = TypingPolicy.deliverability(verdict)
                     let wantDelivery: Deliverability

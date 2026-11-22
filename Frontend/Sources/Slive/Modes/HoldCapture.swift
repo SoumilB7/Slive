@@ -30,6 +30,10 @@ struct DecodedRelease {
     let seconds: TimeInterval
     /// Its place in the DictationQueue (nil = an unqueued assistant request).
     let queueID: UUID?
+    /// The model that decoded it: the pick, or a stand-in serving meanwhile.
+    var decodedBy: String = ""
+    /// The mic dropped mid-hold, so the text may be missing its end.
+    var micLost = false
 }
 
 /// Hold-to-talk dictation (and the assistant's capture, which shares it):
@@ -41,13 +45,14 @@ struct DecodedRelease {
 
     func begin<R: RecordingRoute>(_ route: R) {
         guard !ctx.recorder.isRecording else { return }
-        // A password field has focus: macOS hides key presses from other apps
-        // there, so the release would never be seen and the pill vanished
-        // after 0.3 s with no word why (Nov 26). Say it up front instead.
-        if route.action == .dictate, ctx.settings.autoInsert, TypingPolicy.secureInputBlocksTyping() {
-            Log.event("hold refused — password field")
+        // Secure input is on in the front app: macOS hides key presses from
+        // other apps then, so the release would never be seen and the pill
+        // vanished after 0.3 s with no word why (Nov 26). Say why up front.
+        if route.action == .dictate, ctx.settings.autoInsert,
+           let notice = TypingPolicy.secureInputHoldNotice() {
+            Log.event("hold refused — \(notice)")
             ctx.session.endToggle()
-            ctx.presenter.notice(ModeContext.passwordFieldMessage)
+            ctx.presenter.notice(notice)
             return
         }
         guard ctx.micAllowed() else { return }
@@ -105,6 +110,7 @@ struct DecodedRelease {
         let capture = ctx.recorder.stop()
         let wavURL = capture.url
         let samples = capture.samples
+        let micLost = capture.deviceLost
 
         guard let wavURL else {
             ctx.presenter.hideSoon()
@@ -249,7 +255,7 @@ struct DecodedRelease {
             //    the LLM, so ensure it's up first, then stream the answer.
             await route.deliver(DecodedRelease(text: text, audioURL: wavURL, releasedAt: releaseTime,
                                                waitedForModel: waitedForModel, seconds: duration,
-                                               queueID: queueID),
+                                               queueID: queueID, decodedBy: whisperModel, micLost: micLost),
                                 prepared: prepared)
         }
         if let queueID {

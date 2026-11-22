@@ -92,21 +92,77 @@ final class MicCapture {
             let again = AudioOutputUnitStart(rebuilt)
             guard again == noErr else { throw CaptureError(stage: "AudioOutputUnitStart", status: again) }
             isRunning = true
+            watchDevice(device)
             return
         }
         isRunning = true
+        watchDevice(device)
     }
 
     /// Stop IO (the mic indicator turns off); the unit stays ready.
     func stop() {
         guard isRunning, let unit else { return }
+        unwatchDevice()
         AudioOutputUnitStop(unit)
         isRunning = false
         onBuffer = nil
     }
 
+    // MARK: - Device loss
+
+    /// The device died during the current capture. Its renders just fail
+    /// from then on, so without this a hold silently recorded nothing more.
+    /// Stays set after `stop()` until the next `start`.
+    var deviceLost: Bool { lostLock.withLock { lost } }
+    /// Main thread, once, when the capturing device goes (a live stream ends on it).
+    var onDeviceLost: (() -> Void)?
+    private let lostLock = NSLock()
+    private var lost = false
+    private var aliveListener: AudioObjectPropertyListenerBlock?
+    private var watchedDevice: AudioDeviceID = 0
+    private static let aliveAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceIsAlive,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+
+    private func watchDevice(_ device: AudioDeviceID) {
+        unwatchDevice()
+        lostLock.withLock { lost = false }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self, !Self.isAlive(device) else { return }
+            let first = self.lostLock.withLock { () -> Bool in
+                defer { self.lost = true }
+                return !self.lost
+            }
+            guard first else { return }
+            Log.event("mic disconnected mid-capture (device \(device))")
+            self.onDeviceLost?()
+        }
+        var address = Self.aliveAddress
+        guard AudioObjectAddPropertyListenerBlock(device, &address, .main, listener) == noErr else { return }
+        aliveListener = listener
+        watchedDevice = device
+    }
+
+    private func unwatchDevice() {
+        guard let listener = aliveListener else { return }
+        var address = Self.aliveAddress
+        AudioObjectRemovePropertyListenerBlock(watchedDevice, &address, .main, listener)
+        aliveListener = nil
+        watchedDevice = 0
+    }
+
+    private static func isAlive(_ device: AudioDeviceID) -> Bool {
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = aliveAddress
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &alive)
+        return status == noErr && alive != 0
+    }
+
     /// Tear the unit down completely (device change, deinit).
     func dispose() {
+        unwatchDevice()
         if let unit {
             if isRunning { AudioOutputUnitStop(unit) }
             AudioUnitUninitialize(unit)

@@ -16,6 +16,19 @@ import Foundation
         let model = ctx.presenter.model
         continuous.onEnergy = { [weak model] energy in model?.pushStreamEnergy(energy) }
         continuous.onFailure = { [weak self] in self?.liveStreamFailed() }
+        continuous.onMicLost = { [weak self] in self?.micLost() }
+    }
+
+    /// The running session's mic dropped (set until its `end` reads it).
+    private var lostMic = false
+
+    /// The mic dropped mid-stream: typing just stopped with no word why. End
+    /// the session now, as a release would, and say so.
+    private func micLost() {
+        guard continuous.isActive else { return }
+        lostMic = true
+        ctx.session.endToggle()   // else the next tap is eaten as this session's "stop"
+        end()
     }
 
     var isCapturing: Bool { continuous.isActive }
@@ -33,7 +46,9 @@ import Foundation
     /// confirmed word straight into the focused field as you speak, showing the
     /// still-forming tail in the overlay. Needs a model already loaded.
     func begin() {
-        guard !ctx.recorder.isRecording else { return }
+        // A repeat begin while streaming is a no-op. A previous session's
+        // final pass never blocks: it yields the field and pill to this one.
+        guard !continuous.isActive, !ctx.recorder.isRecording else { return }
         guard ctx.micAllowed() else { return }
         ctx.work.cancelRequest()
         ctx.presenter.cancelCollapse()
@@ -102,10 +117,13 @@ import Foundation
         let heldSeconds = ctx.session.liveEnded()
         ctx.presenter.transcribing()
         let ctx = self.ctx, continuous = self.continuous
+        let lostNote = lostMic ? ModeContext.micLostNote : nil
+        lostMic = false
         Task { @MainActor in
             let outcome = await continuous.stop()
             ctx.work.endDictationActivityIfIdle()
-            if let releasedAt = ctx.session.releasedAt {
+            // (Superseded: the release time is the newer session's.)
+            if !outcome.superseded, let releasedAt = ctx.session.releasedAt {
                 Log.event(String(format: "stream release→final %.2fs (tail+final pass)",
                       Date().timeIntervalSince(releasedAt)))
                 ctx.session.releasedAt = nil
@@ -118,10 +136,14 @@ import Foundation
                 ctx.records.addToHistory(text)
                 ctx.records.recordPace(text, seconds: heldSeconds)  // after write
             }
+            // A newer session started meanwhile: the overlay is its pill.
+            if outcome.superseded { return }
             if !outcome.typed && !text.isEmpty {
                 // Copy button clickable.
-                ctx.presenter.result(text, note: outcome.typingOff ? nil : ctx.typingBlockedNote(),
+                ctx.presenter.result(text, note: lostNote ?? (outcome.typingOff ? nil : ctx.typingBlockedNote()),
                                      collapseAfter: OverlayPresenter.resultDisplayDuration)
+            } else if let lostNote {
+                ctx.presenter.notice(text.isEmpty ? "Mic disconnected." : lostNote)
             } else {
                 ctx.presenter.hideSoon()
             }

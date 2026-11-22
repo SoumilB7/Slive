@@ -277,7 +277,10 @@ final class Settings: ObservableObject, StoredSettingsOwner {
     }
 
     /// Label each new dictation with Slive Custom 4 right after it's saved.
-    @Stored("autoLabelNew", default: true) var autoLabelNew: Bool
+    /// Off until the user turns it on: it uploads audio and costs money per
+    /// dictation, so it needs an explicit yes (0.2.5 defaulted it on, which
+    /// started paid labeling for upgraders who had a key saved).
+    @Stored("autoLabelNew", default: false) var autoLabelNew: Bool
 
     /// Local provider: load models int8-quantized (≈ half the RAM of bf16,
     /// near-identical output). Default on; applies from the next local ask

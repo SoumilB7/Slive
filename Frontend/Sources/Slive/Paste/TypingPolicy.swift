@@ -120,19 +120,54 @@ enum TypingPolicy {
     /// Secure input is on in the app we'd type into (its password field has
     /// focus). macOS reports secure input machine-wide, and Terminal's Secure
     /// Keyboard Entry or a password manager can leave it on for hours, so
-    /// the app holding it is matched against the frontmost one. When the
-    /// holder can't be read, any secure input counts.
+    /// the app holding it is matched against the frontmost one.
     static func secureInputBlocksTyping() -> Bool {
         guard IsSecureEventInputEnabled() else { return false }
         return secureInputBlocks(enabled: true, owner: secureInputOwnerPID(),
-                                 frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+                                 frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                                 focusIsSecure: FocusProbe.focusIsSecure())
     }
 
-    /// Pure owner-vs-frontmost rule, self-tested.
-    static func secureInputBlocks(enabled: Bool, owner: pid_t?, frontmost: pid_t?) -> Bool {
+    /// Pure owner-vs-frontmost rule, self-tested. When the holder can't be
+    /// read, only a focused password field blocks: blocking everywhere
+    /// stopped typing in every app on an unreadable registry entry.
+    static func secureInputBlocks(enabled: Bool, owner: pid_t?, frontmost: pid_t?,
+                                  focusIsSecure: @autoclosure () -> Bool) -> Bool {
         guard enabled else { return false }
-        guard let owner else { return true }
+        guard let owner else { return focusIsSecure() }
         return owner == frontmost
+    }
+
+    static let passwordFieldMessage = "Password field · Slive won't type here"
+
+    /// Why a hold is refused under secure input, or nil to let it start.
+    /// The event tap can't see the release while secure input is on in the
+    /// front app, so the hold is refused whenever that may be so (an
+    /// unreadable holder included). Live wrapper over `holdNotice`.
+    static func secureInputHoldNotice() -> String? {
+        guard IsSecureEventInputEnabled() else { return nil }
+        let owner = secureInputOwnerPID()
+        return holdNotice(owner: owner,
+                          frontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                          focusIsSecure: FocusProbe.focusIsSecure(),
+                          ownerName: owner.flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName })
+    }
+
+    /// Pure hold rule (secure input already on), self-tested.
+    static func holdNotice(owner: pid_t?, frontmost: pid_t?,
+                           focusIsSecure: @autoclosure () -> Bool,
+                           ownerName: @autoclosure () -> String?) -> String? {
+        if let owner, owner != frontmost { return nil }
+        return secureInputMessage(focusIsSecure: focusIsSecure(), ownerName: ownerName())
+    }
+
+    /// Names the real cause. Terminal's Secure Keyboard Entry or a password
+    /// manager also turn secure input on, and "Password field" there was
+    /// false (Nov 27), so that line needs a focused secure field.
+    static func secureInputMessage(focusIsSecure: Bool, ownerName: String?) -> String {
+        if focusIsSecure { return passwordFieldMessage }
+        if let ownerName, !ownerName.isEmpty { return "Secure input is on in \(ownerName)" }
+        return "Secure input is on"
     }
 
     /// The process that turned secure input on (the window server records it

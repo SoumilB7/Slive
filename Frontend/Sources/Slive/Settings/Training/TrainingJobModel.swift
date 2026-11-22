@@ -61,8 +61,14 @@ final class TrainingJobModel: ObservableObject {
         trainingModels.first { $0.id == selectedModel }
     }
 
+    /// Bumped when the page is left. A refresh/start/resume whose requests
+    /// were still in flight then must not start a poller: it would run,
+    /// unowned, until the job ends (hours), since `stopPolling` already ran.
+    private var pageGeneration = 0
+
     /// Page left: stop the live poller (the job itself keeps running).
     func stopPolling() {
+        pageGeneration += 1
         pollTask?.cancel()
         pollTask = nil
     }
@@ -76,6 +82,7 @@ final class TrainingJobModel: ObservableObject {
         checking = true
         if !keepingError { jobError = nil }
         let client = client
+        let generation = pageGeneration
         Task { @MainActor in
             defer { checking = false }
             do {
@@ -95,7 +102,7 @@ final class TrainingJobModel: ObservableObject {
                     selectedMethod = job.method == "lora" ? TrainingMethod.hybrid : job.method
                     maxRamGB = job.maxRamGB
                 }
-                if let job, job.isActive { poll(job.id) }
+                if let job, job.isActive { poll(job.id, ifStill: generation) }
                 if job?.state == "done" { onModelsChanged() }
                 if job?.state == "error", !keepingError { jobError = job?.error }
             } catch {
@@ -106,6 +113,7 @@ final class TrainingJobModel: ObservableObject {
 
     func start() {
         jobError = nil
+        let generation = pageGeneration
         Task { @MainActor in
             do {
                 let trimmedName = customName.trimmingCharacters(in: .whitespaces)
@@ -114,7 +122,7 @@ final class TrainingJobModel: ObservableObject {
                     name: trimmedName.isEmpty ? nil : trimmedName,
                     maxRamGB: maxRamGB)
                 job = started
-                poll(started.id)
+                poll(started.id, ifStill: generation)
             } catch {
                 jobError = error.localizedDescription
                 refresh(keepingError: true)
@@ -124,11 +132,12 @@ final class TrainingJobModel: ObservableObject {
 
     func resume(_ id: String) {
         jobError = nil
+        let generation = pageGeneration
         Task { @MainActor in
             do {
                 let resumed = try await client.resume(id: id)
                 job = resumed
-                poll(resumed.id)
+                poll(resumed.id, ifStill: generation)
             } catch {
                 jobError = error.localizedDescription
                 refresh(keepingError: true)
@@ -136,7 +145,8 @@ final class TrainingJobModel: ObservableObject {
         }
     }
 
-    private func poll(_ id: String) {
+    private func poll(_ id: String, ifStill generation: Int) {
+        guard generation == pageGeneration else { return }   // page left meanwhile
         pollTask?.cancel()
         pollTask = Task { @MainActor in
             var failures = 0

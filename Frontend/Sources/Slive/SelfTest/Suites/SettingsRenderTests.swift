@@ -33,7 +33,20 @@ enum SettingsRenderTests {
         if let i = CommandLine.arguments.firstIndex(of: RenderChild.flag) {
             RenderChild.run(Array(CommandLine.arguments[(i + 1)...]))   // never returns
         }
+        retriesEnd(&t)
         runParent(&t)
+    }
+
+    /// A child that dies before measuring anything, every time, must end in
+    /// failures — never an endless retry.
+    private static func retriesEnd(_ t: inout Checks) {
+        var launches = 0
+        let o = runChunk(0, [0, 1, 2], startTogether: true) { _, _, _ in
+            launches += 1
+            return RenderChild.Report()   // not finished, no culprit
+        }
+        t.check(launches <= 4 && o.cases.count == 3 && o.cases.values.allSatisfy { $0.died != nil },
+                "render: children that always die early end as failures (\(launches) launches)")
     }
 
     // MARK: - Thresholds (every run prints what it measured against them)
@@ -415,12 +428,15 @@ enum SettingsRenderTests {
     /// it names, re-runs the rest without it; when it can't name one, or
     /// the chunk was busy without any one view being so, re-runs the rest
     /// one view at a time.
-    nonisolated static func runChunk(_ g: Int, _ cases: [Int]) -> Outcome {
+    nonisolated static func runChunk(_ g: Int, _ cases: [Int],
+                                     startTogether: Bool? = nil,
+                                     launch: (Int, [Int], Bool) -> RenderChild.Report = {
+                                         RenderChild.launch(group: $0, cases: $1, together: $2) }) -> Outcome {
         var outcome = Outcome()
-        var together = !groups[g].oneAtATime
+        var together = startTogether ?? !groups[g].oneAtATime
         var left = cases
         while !left.isEmpty {
-            let r = RenderChild.launch(group: g, cases: left, together: together)
+            let r = launch(g, left, together)
             outcome.childRuns += 1
             for (k, m) in r.cases { outcome.cases[k] = m }
             for (k, v) in r.side {
@@ -450,8 +466,15 @@ enum SettingsRenderTests {
             if let dead = r.culprit {
                 outcome.cases[dead] = Measure(died: r.death ?? "child died")
                 left.removeAll { $0 == dead }
-            } else {
+            } else if together {
                 together = false   // died with no view to blame
+            } else if let first = left.first {
+                // Alone and still no view to blame: it died before measuring
+                // the first one. Blame that one so every pass shrinks `left` —
+                // retrying unchanged looped forever (a child that can't start
+                // hung the whole self-test instead of failing it).
+                outcome.cases[first] = Measure(died: r.death ?? "child died before measuring")
+                left.removeFirst()
             }
         }
         return outcome

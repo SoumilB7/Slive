@@ -80,9 +80,9 @@ enum CaptureAndHistoryTests {
 
         // Settings fallbacks match fresh-install defaults.
         if let empty = try? JSONDecoder().decode(AssistantConfig.self, from: Data("{}".utf8)) {
-            t.equal(empty, AssistantConfig.default, "assistant config: missing fields fall back to .default")
+            t.equal(empty, AssistantConfig.savedFallback, "assistant config: missing fields read as the saving build meant them")
         } else {
-            t.check(false, "assistant config: missing fields fall back to .default", "decode threw")
+            t.check(false, "assistant config: missing fields read as the saving build meant them", "decode threw")
         }
         t.equal(Settings.localMemDefaultGB(ramGB: 8), 4, "8 GB Mac: memory limit default fits")
         t.equal(Settings.localMemDefaultGB(ramGB: 32), 9, "big Mac: memory limit default stays 9 GB")

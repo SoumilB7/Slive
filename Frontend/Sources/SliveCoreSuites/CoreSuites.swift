@@ -18,5 +18,6 @@ public enum CoreSuites {
         DictationQueueTests.suite,
         TranscriptDiffTests.suite,
         ProblemReportTests.suite,
+        TestRunnerTests.suite,
     ]
 }

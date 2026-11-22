@@ -61,9 +61,11 @@ func withTimeout<T>(seconds: UInt64, what: String = "model load",
 /// files are kept (the next download resumes from them).
 func withStallWatchdog<T>(seconds: TimeInterval, clock: ProgressClock,
                           _ operation: @escaping () async throws -> T) async throws -> T {
-    try await race(what: "download", operation) { race in
+    // A few looks per window: every 2 s at the 60 s default.
+    let tick = UInt64(min(2, max(0.01, seconds / 4)) * 1_000_000_000)
+    return try await race(what: "download", operation) { race in
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: tick)
             if !Task.isCancelled, clock.idleSeconds > seconds { _ = race.finish(.failure(StallError())); return }
         }
     }

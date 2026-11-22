@@ -135,6 +135,20 @@ enum SessionCoordinatorTests {
             t.equal(s.toggleActive, .dictate, "the toggle owns the session")
         }
 
+        for action in [HotkeyAction.dictate, .stream] {
+            // A long hold just released: a tap in its tail must not throw it away.
+            let (s, f, clock) = make()
+            s.keyDown(action)
+            clock.advance(by: holdDelay)
+            clock.advance(by: 20)
+            s.keyUp()
+            clock.advance(by: 0.05)
+            s.toggleTapped(.dictate)
+            clock.advance(by: 1)
+            t.check(f.log == ["begin \(action)", "end \(action)"] && s.toggleActive == nil,
+                    "\(action): a toggle tap in a 20 s hold's tail keeps the dictation", "\(f.log)")
+        }
+
         do {
             let (s, f, clock) = make()
             s.keyDown(.dictate)

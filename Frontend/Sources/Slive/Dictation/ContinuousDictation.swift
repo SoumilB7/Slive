@@ -36,6 +36,9 @@ final class ContinuousDictation {
         /// Type at cursor was off for this session: nothing was typed by the
         /// user's choice, so the copy box carries no "why" note.
         var typingOff = false
+        /// A newer session started during the final pass. The field and the
+        /// overlay are its now: this text is only recorded.
+        var superseded = false
     }
 
     private var active = false
@@ -58,10 +61,16 @@ final class ContinuousDictation {
     /// The live stream failed after `start` returned (the mic wouldn't open).
     /// The session is already cancelled; the caller says so.
     var onFailure: (() -> Void)?
+    /// The mic dropped mid-stream; the session is still live, for the caller
+    /// to end (nothing more will be heard).
+    var onMicLost: (() -> Void)?
     /// Identifies the session, so a late failure or a ✕ can't touch a newer one.
     private var session = UUID()
-    /// The session `cancel()` ended — its final pass, if running, must not type.
-    private var cancelledSession: UUID?
+    /// Sessions `cancel()` ended whose final pass is still running: it must
+    /// not type. A set: ✕ on a newer session must not un-cancel an older one.
+    private var cancelledSessions: Set<UUID> = []
+    /// Sessions whose final pass is running (so a ✕ has something to cancel).
+    private var finalPasses: Set<UUID> = []
 
     var isActive: Bool { active }
 
@@ -96,10 +105,13 @@ final class ContinuousDictation {
         let handle = sink.beginStream()
         typing = handle.allowed
         Log.live("start — model=\(model) cps=\(Int(settings.continuousTypeCPS)) canType=\(handle.allowed)")
+        // A previous session still in its final pass stops typing here: its
+        // provisional text stays, and its keys can't land between ours.
+        typist.cancel()
         typist = LiveTypist(sink: sink)
         typist.start(handle, cps: settings.continuousTypeCPS)
         let ok = whisper.startLiveDictation(model: model, onUpdate: { [weak self] transcript, energy in
-            guard let self, self.active else { return }
+            guard let self, self.active, self.session == session else { return }
             self.onEnergy?(energy)
             let text = self.pipeline.finish(transcript)
             self.lastTranscript = text
@@ -109,6 +121,9 @@ final class ContinuousDictation {
             guard let self, self.active, self.session == session else { return }
             self.cancel()
             self.onFailure?()
+        }, onMicLost: { [weak self] in
+            guard let self, self.active, self.session == session else { return }
+            self.onMicLost?()
         })
         if !ok { active = false; typist.cancel() }
         return ok
@@ -127,6 +142,8 @@ final class ContinuousDictation {
         let typist = self.typist, model = self.model, typing = self.typing
         let session = self.session, typingOff = !self.typeAtCursor
         let lastTranscript = self.lastTranscript, pipeline = self.pipeline
+        finalPasses.insert(session)
+        defer { finalPasses.remove(session); cancelledSessions.remove(session) }
         let snapshot = whisper.liveSamplesSnapshot(model: model)   // grab BEFORE stopping
         let confirmedText = pipeline.clean(whisper.liveConfirmedText)
         let confirmedEnd = whisper.liveConfirmedEndSeconds
@@ -167,9 +184,17 @@ final class ContinuousDictation {
         // the seam merge so a term split across the seam still matches).
         let finalText = final.map(pipeline.correct)
             ?? lastTranscript
-        if cancelledSession == session {
+        if cancelledSessions.contains(session) {
             Log.live("cancelled during the final pass — nothing typed")
             return Outcome(text: "", typed: true, cancelled: true)
+        }
+        // A newer session owns the field now: correcting this one's text
+        // would backspace into the new words. Leave it as typed.
+        if self.session != session {
+            typist.cancel()
+            Log.live("a newer session started during the final pass — field left as typed")
+            return Outcome(text: finalText.trimmingCharacters(in: .whitespacesAndNewlines),
+                           typed: true, typingOff: typingOff, superseded: true)
         }
 
         let result: String
@@ -188,12 +213,13 @@ final class ContinuousDictation {
         Log.live(String(format: "DONE  final pass %.2fs  len=%d  «%@»",
                         Date().timeIntervalSince(t0), result.count, String(result.suffix(40))))
         return Outcome(text: result.trimmingCharacters(in: .whitespacesAndNewlines),
-                       typed: typed, typingOff: typingOff)
+                       typed: typed, typingOff: typingOff, superseded: self.session != session)
     }
 
-    /// Abort without a final pass or field edits (app quit / dismiss).
+    /// Abort without a final pass or field edits (app quit / dismiss). Ends
+    /// the newest session — the one the overlay shows.
     func cancel() {
-        cancelledSession = session
+        if active || finalPasses.contains(session) { cancelledSessions.insert(session) }
         active = false
         whisper.stopLiveDictation()
         typist.cancel()

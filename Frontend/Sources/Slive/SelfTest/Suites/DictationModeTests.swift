@@ -22,8 +22,12 @@ enum DictationModeTests {
     final class LoadingSpeech: DictationSpeech {
         var ready: Set<String> = []
         var loading: Set<String> = []
+        /// On disk, not cooling down: `awaitReady` would start a load.
+        var downloaded: Set<String> = []
         func isReady(_ model: String) -> Bool { ready.contains(model) }
-        func canBecomeReady(_ model: String) -> Bool { isReady(model) || loading.contains(model) }
+        func canBecomeReady(_ model: String) -> Bool {
+            isReady(model) || loading.contains(model) || downloaded.contains(model)
+        }
         func status(for model: String) -> ModelStatus { isReady(model) ? .ready : .preparing("Loading") }
         func servingModel(wanted: String, fallback: String?) -> String { wanted }
         func select(_ model: String) {}
@@ -35,7 +39,8 @@ enum DictationModeTests {
         func transcribeSamples(_ samples: [Float], model: String) async -> String? { nil }
         func transcribe(_ url: URL, model: String) async -> String? { nil }
         func startLiveDictation(model: String, onUpdate: @escaping @MainActor (String, Float) -> Void,
-                                onFailure: (@MainActor () -> Void)?) -> Bool { false }
+                                onFailure: (@MainActor () -> Void)?,
+                                onMicLost: (@MainActor () -> Void)?) -> Bool { false }
         func liveSamplesSnapshot(model: String) -> [Float] { [] }
         var liveConfirmedText: String { "" }
         var liveConfirmedEndSeconds: Double { 0 }
@@ -48,10 +53,12 @@ enum DictationModeTests {
     /// 0.1s) queued behind it.
     private static func waitForModel(_ t: inout Checks) {
         func wait(_ speech: LoadingSpeech, standIn: @escaping @MainActor () -> String?,
+                  maxWait: TimeInterval = ModelWait.maxSeconds,
                   after: @escaping @MainActor () -> Void) -> String? {
             var result: String?
             Task { @MainActor in
-                result = await speech.awaitServing("whisper", standIn: standIn, poll: 5_000_000)
+                result = await speech.awaitServing("whisper", standIn: standIn, poll: 5_000_000,
+                                                   maxWait: maxWait)
             }
             let flip = Date().addingTimeInterval(0.05)
             var flipped = false
@@ -80,6 +87,20 @@ enum DictationModeTests {
 
         let d = LoadingSpeech(); d.ready = ["whisper", "parakeet"]
         t.equal(wait(d, standIn: { "parakeet" }) {}, "whisper", "the pick wins when both are ready")
+
+        // A newer pick (not downloaded) made residency evict the waited model
+        // as its load finished: still on disk, so `canBecomeReady` stays true,
+        // and the wait used to poll until that pick downloaded, or forever.
+        let e = LoadingSpeech(); e.loading = ["whisper"]; e.downloaded = ["whisper"]
+        let started = Date()
+        let evicted = wait(e, standIn: { nil }) { e.loading = [] }
+        t.check(evicted == "whisper" && Date().timeIntervalSince(started) < 2,
+                "a load that ends without the model resident stops the wait",
+                "\(evicted ?? "nil") after \(Date().timeIntervalSince(started))s")
+
+        let f = LoadingSpeech(); f.loading = ["whisper"]
+        t.equal(wait(f, standIn: { nil }, maxWait: 0.2) {}, "whisper", "no wait outlasts its cap")
+        f.loading = []   // let its spawned awaitReady end
     }
 
     // MARK: - Registry
@@ -265,6 +286,130 @@ enum DictationModeTests {
             t.check(!h.recorder.isRecording && h.trail.all.isEmpty && h.speech.decoded == 0,
                     "a false start is thrown away")
         }
+
+        lateCopyBox(&t)
+        micLostMidHold(&t)
+        standInTraining(&t)
+    }
+
+    /// The delivery check reports a miss ~0.9 s after typing; by then a newer
+    /// hold or box may be up. The copy box waits for it, never dropped.
+    private static func lateCopyBox(_ t: inout Checks) {
+        func typedUnconfirmed(_ h: Harness, _ mode: DictateMode, _ text: String) {
+            h.sink.unconfirmed = true
+            mode.deliverDictation(DecodedRelease(text: text, audioURL: URL(fileURLWithPath: "/dev/null"),
+                                                 releasedAt: nil, waitedForModel: false, seconds: 1,
+                                                 queueID: nil),
+                                  ownsOverlay: true)
+        }
+        func fireFailures(_ h: Harness) {
+            let failures = h.sink.takeFailures()
+            failures.forEach { $0() }
+            h.settle(0.2) { false }   // the callback hops to main
+        }
+
+        do {
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            typedUnconfirmed(h, mode, "first words")
+            h.overlayClock.advance(by: 1)
+            h.presenter.listening(.dictation)   // a newer hold is up when the check misses
+            fireFailures(h)
+            t.equal(h.presenter.state, .listening(.dictation), "a late miss doesn't cover the newer hold")
+            h.presenter.hideSoon()
+            h.overlayClock.advance(by: 1)
+            t.equal(h.presenter.state, .result(OverlayResult(text: "first words", note: nil)),
+                    "the copy box shows once the overlay is free")
+        }
+
+        do {
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            typedUnconfirmed(h, mode, "older")
+            typedUnconfirmed(h, mode, "newer")
+            h.overlayClock.advance(by: 1)
+            h.presenter.notice("Another box")
+            fireFailures(h)
+            t.equal(h.presenter.state.resultText, "Another box", "a late miss doesn't replace another box")
+            h.presenter.dismiss()
+            t.equal(h.presenter.state.resultText, "newer", "closing it shows the newest waiting copy box")
+            h.presenter.dismiss()
+            t.check(h.presenter.isIdle, "and only that one (older ones are in history)")
+            t.check(h.trail.all.contains("history older") && h.trail.all.contains("history newer"),
+                    "both are in history")
+        }
+
+        do {
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            typedUnconfirmed(h, mode, "idle")
+            h.overlayClock.advance(by: 1)
+            fireFailures(h)
+            t.equal(h.presenter.state.resultText, "idle", "an idle overlay shows the copy box at once")
+        }
+    }
+
+    /// The mic dropped mid-hold: what was heard still lands, and the user is
+    /// told the end may be missing (it used to type the fragment silently).
+    private static func micLostMidHold(_ t: inout Checks) {
+        do {
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            h.recorder.arm(deviceLost: true)
+            mode.end()
+            h.settle { h.ctx.queue.isEmpty }
+            t.equal(h.trail.all.first, "typed hello world", "mic lost mid-hold: the heard text still types")
+            t.equal(h.presenter.state, .result(OverlayResult(text: ModeContext.micLostNote)),
+                    "mic lost mid-hold: a notice says it may be cut short")
+        }
+
+        do {
+            let h = Harness()
+            h.settings.autoInsert = false
+            let mode = DictateMode(h.ctx)
+            h.recorder.arm(deviceLost: true)
+            mode.end()
+            h.settle { h.ctx.queue.isEmpty }
+            t.equal(h.presenter.state, .result(OverlayResult(text: "hello world", note: ModeContext.micLostNote)),
+                    "mic lost, copy box: the text with the mic note")
+        }
+
+        do {
+            let h = Harness()
+            let mode = DictateMode(h.ctx)
+            h.recorder.arm()
+            mode.end()
+            h.settle { h.ctx.queue.isEmpty }
+            t.check(h.presenter.state.result == nil, "a mic that stayed: no notice")
+        }
+    }
+
+    /// A stand-in's transcript isn't the pick's output: it's kept in history
+    /// but never saved as a training pair labelled as the user's model.
+    private static func standInTraining(_ t: inout Checks) {
+        do {
+            let h = Harness()
+            h.speech.ready = ["standin"]
+            h.models.servingDictationModel = "standin"
+            let mode = DictateMode(h.ctx)
+            h.recorder.arm()
+            mode.end()
+            h.settle { h.ctx.queue.isEmpty }
+            t.equal(h.trail.all, ["typed hello world", "history hello world", "pace hello world"],
+                    "decoded on the stand-in: history, but no training pair")
+        }
+
+        do {
+            let h = Harness()
+            h.models.servingDictationModel = "standin"
+            h.speech.ready.insert("standin")
+            let mode = DictateMode(h.ctx)
+            h.recorder.arm()
+            mode.end()
+            h.settle { h.ctx.queue.isEmpty }
+            t.equal(h.trail.all, ["typed hello world", "history hello world", "training hello world",
+                                  "pace hello world"], "decoded on the pick: history and a training pair")
+        }
     }
 
     // MARK: - Assist
@@ -337,7 +482,26 @@ enum DictationModeTests {
             t.check(!mode.isCapturing, "✕ stops the stream")
         }
 
+        do {
+            // The mic dropped mid-stream: typing just stopped, silently.
+            let h = Harness()
+            let mode = StreamMode(h.ctx, continuous: h.continuous)
+            mode.begin()
+            h.speech.liveUpdate?("hello there", 0.5)
+            h.settle { h.sink.field == "hello there" }
+            h.speech.liveMicLost?()
+            h.settle { h.trail.all.contains { $0.hasPrefix("history") } }
+            t.check(!mode.isCapturing && h.speech.liveStopped, "mic lost mid-stream: the session ends")
+            t.equal(h.sink.field, "hello world", "mic lost mid-stream: the final pass still lands")
+            t.equal(h.presenter.state, .result(OverlayResult(text: ModeContext.micLostNote)),
+                    "mic lost mid-stream: a notice says it may be cut short")
+            mode.end()   // the key's release, later
+            t.check(h.trail.all.filter { $0.hasPrefix("history") }.count == 1,
+                    "mic lost mid-stream: the later release does nothing more")
+        }
+
         streamTypeAtCursorOff(&t)
+        streamDuringFinalPass(&t)
 
         do {
             let h = Harness()
@@ -346,6 +510,86 @@ enum DictationModeTests {
             mode.begin()
             t.check(!mode.isCapturing && h.sink.streamsBegun == 0, "no model in memory: nothing streams")
             t.equal(h.presenter.state.resultText, "Loading model. Try again shortly.", "and it says why")
+        }
+    }
+
+    /// A new stream started while the previous one's final pass runs (held
+    /// open here): that pass must not edit the field or touch the new pill,
+    /// its text is still recorded, and ✕ ends the session it was meant for.
+    private static func streamDuringFinalPass(_ t: inout Checks) {
+        struct Overlap {
+            let h: Harness
+            let mode: StreamMode
+            let started: Bool
+            let pill: OverlayState
+            let editsAtB: Int
+        }
+        /// Stream A ("alpha one"), release it (its final pass held), run
+        /// `betweenAB`, then start B and stream "bravo".
+        func overlap(betweenAB: (StreamMode) -> Void = { _ in }) -> Overlap {
+            let h = Harness()
+            h.speech.holdDecodes = true
+            let mode = StreamMode(h.ctx, continuous: h.continuous)
+            mode.begin()
+            h.speech.liveUpdate?("alpha one", 0.5)
+            h.settle { h.sink.field == "alpha one" }
+            mode.end()
+            h.settle { h.speech.heldDecodes.count == 1 }
+            betweenAB(mode)
+            let editsAtB = h.sink.editLog.count
+            mode.begin()
+            let o = Overlap(h: h, mode: mode, started: mode.isCapturing, pill: h.presenter.state, editsAtB: editsAtB)
+            h.speech.liveUpdate?("bravo", 0.5)
+            h.settle { h.sink.field.hasSuffix("bravo") }
+            return o
+        }
+        /// A's final pass returns "alpha one two" (it would correct the field).
+        func finishA(_ o: Overlap) {
+            o.h.speech.heldDecodes.removeFirst().resume(returning: "alpha one two")
+            o.h.settle(1) { o.h.trail.all.contains { $0.hasPrefix("history") } }
+            o.h.settle(0.2) { false }   // room for a stray edit to land
+        }
+        func editsSinceB(_ o: Overlap) -> [String] { Array(o.h.sink.editLog.dropFirst(o.editsAtB)) }
+
+        do {
+            let o = overlap()
+            finishA(o)
+            t.check(o.started && o.pill == .listening(.live), "a new stream starts during the last one's final pass")
+            t.check(editsSinceB(o) == ["-0+bravo"] && o.h.sink.field == "alpha onebravo",
+                    "the old final pass leaves the field as typed once the new session began",
+                    "\(editsSinceB(o)) «\(o.h.sink.field)»")
+            t.equal(o.h.presenter.state, o.pill, "the old final pass leaves the new pill alone")
+            t.equal(o.h.trail.all.filter { !$0.hasPrefix("cue") }, ["history alpha one two", "pace alpha one two"],
+                    "the old session's final text is still recorded")
+            t.check(o.mode.isCapturing, "the new session keeps streaming")
+            o.mode.end()
+            o.h.settle { o.h.speech.heldDecodes.count == 1 }
+            o.h.speech.heldDecodes.removeFirst().resume(returning: "bravo")
+            o.h.settle { o.h.trail.all.contains("history bravo") }
+            t.check(o.h.sink.field == "alpha onebravo" && o.h.presenter.state.result == nil,
+                    "the new session then ends as usual", "«\(o.h.sink.field)» \(o.h.presenter.state)")
+        }
+
+        do {
+            let o = overlap()
+            o.mode.dismiss()   // ✕ on B's pill
+            let afterX = o.h.presenter.state
+            finishA(o)
+            t.check(!o.mode.isCapturing && editsSinceB(o) == ["-0+bravo"] && o.h.presenter.state == afterX,
+                    "✕ on the new session ends it; the old pass still edits nothing and shows nothing",
+                    "\(editsSinceB(o)) \(o.h.presenter.state)")
+            t.check(o.h.trail.all.contains("history alpha one two"), "✕ on the new session keeps the old one's text")
+        }
+
+        do {
+            let o = overlap(betweenAB: { $0.dismiss() })   // ✕ during A's final pass
+            o.mode.dismiss()                                // then ✕ on B
+            let afterX = o.h.presenter.state
+            finishA(o)
+            t.check(editsSinceB(o) == ["-0+bravo"] && !o.h.trail.all.contains { $0.hasPrefix("history") }
+                    && o.h.presenter.state == afterX,
+                    "✕ on each session: the first stays cancelled (types, records and shows nothing)",
+                    "\(editsSinceB(o)) \(o.h.trail.all) \(o.h.presenter.state)")
         }
     }
 
@@ -419,23 +663,24 @@ enum DictationModeTests {
 
     final class FakeRecorder: Recording {
         var isRecording = false
-        private var capture: (url: URL?, samples: [Float]) = (nil, [])
+        private var capture = RecordedAudio(url: nil, samples: [])
 
-        /// A hold is recording; `stop` returns a WAV file and 1s of speech-loud samples.
+        /// A hold is recording; `stop` returns a WAV file and 1s of speech-loud
+        /// samples. `deviceLost`: the mic dropped mid-hold.
         @discardableResult
-        func arm(silence: Bool = false) -> URL {
+        func arm(silence: Bool = false, deviceLost: Bool = false) -> URL {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("slive-modetest-\(UUID().uuidString).wav")
             FileManager.default.createFile(atPath: url.path, contents: Data())
             let samples = (0..<16_000).map { silence ? 0 : Float(sin(Double($0) * 0.17) * 0.3) }
-            capture = (url, samples)
+            capture = RecordedAudio(url: url, samples: samples, deviceLost: deviceLost)
             isRecording = true
             return url
         }
 
         func start(_ options: CaptureOptions) -> Bool { isRecording = true; return true }
 
-        func stop() -> (url: URL?, samples: [Float]) {
+        func stop() -> RecordedAudio {
             isRecording = false
             return capture
         }
@@ -446,6 +691,7 @@ enum DictationModeTests {
         var transcript = "hello world"
         var decoded = 0
         var liveUpdate: (@MainActor (String, Float) -> Void)?
+        var liveMicLost: (@MainActor () -> Void)?
         var liveStopped = false
         init(ready: Set<String>) { self.ready = ready }
 
@@ -460,8 +706,12 @@ enum DictationModeTests {
         func select(_ model: String) {}
         func primeIfCold(_ model: String) {}
         func awaitReady(_ model: String) async -> Bool { isReady(model) }
+        /// On: each decode waits until the test resumes it (`heldDecodes`).
+        var holdDecodes = false
+        var heldDecodes: [CheckedContinuation<String?, Never>] = []
         func transcribeSamples(_ samples: [Float], model: String) async -> String? {
             decoded += 1
+            if holdDecodes { return await withCheckedContinuation { heldDecodes.append($0) } }
             return transcript
         }
         func transcribe(_ url: URL, model: String) async -> String? {
@@ -470,8 +720,10 @@ enum DictationModeTests {
         }
         func startLiveDictation(model: String,
                                 onUpdate: @escaping @MainActor (String, Float) -> Void,
-                                onFailure: (@MainActor () -> Void)?) -> Bool {
+                                onFailure: (@MainActor () -> Void)?,
+                                onMicLost: (@MainActor () -> Void)?) -> Bool {
             liveUpdate = onUpdate
+            liveMicLost = onMicLost
             liveStopped = false
             return true
         }
@@ -499,6 +751,10 @@ enum DictationModeTests {
         private let lock = NSLock()
         private let trail: Trail
         var verdict = Deliverability.ok
+        /// Typed, but the delivery check will miss: the failure callbacks are
+        /// kept for the test to fire (`takeFailures`).
+        var unconfirmed = false
+        private var failures: [() -> Void] = []
         private(set) var delivered = 0
         private(set) var streamsBegun = 0
         private var text = ""
@@ -514,15 +770,24 @@ enum DictationModeTests {
             delivered += 1
             guard verdict.allowsDelivery else { return false }
             trail.add("typed \(text)")
+            if unconfirmed { failures.append(onDeliveryFailure) }
             return true
+        }
+        func takeFailures() -> [() -> Void] {
+            defer { failures = [] }
+            return failures
         }
         func beginStream() -> LiveStreamHandle {
             streamsBegun += 1
             return LiveStreamHandle(allowed: verdict.allowsDelivery, target: nil)
         }
+        /// Every live edit, in order: "-<backspaces>+<insert>".
+        var editLog: [String] { lock.lock(); defer { lock.unlock() }; return log }
+        private var log: [String] = []
         func replace(backspaces: Int, insert: String) {
             lock.lock(); defer { lock.unlock() }
             edits += 1
+            log.append("-\(backspaces)+\(insert)")
             text.removeLast(min(backspaces, text.count))
             text += insert
         }
@@ -556,9 +821,12 @@ enum DictationModeTests {
         let settings = Settings(store: InMemoryStore())
         let recorder = FakeRecorder()
         let speech: FakeSpeech
+        let models = FakeModels()
         let sink: FakeSink
         let assistant = FakeAssistant()
         let presenter: OverlayPresenter
+        /// The overlay's timers (hide-after-fade, auto-collapse).
+        let overlayClock: ManualScheduler
         let ctx: ModeContext
         let continuous: ContinuousDictation
 
@@ -566,13 +834,15 @@ enum DictationModeTests {
             settings.continuousTypeCPS = 1000   // instant: no pacing to wait out
             speech = FakeSpeech(ready: [settings.whisperModel, settings.continuousModel])
             sink = FakeSink(trail: trail)
-            presenter = OverlayStateTests.make().0
+            let overlay = OverlayStateTests.make()
+            presenter = overlay.0
+            overlayClock = overlay.2
             let clock = ManualScheduler()
             let session = SessionCoordinator(scheduler: clock, holdDelay: { 0 })
             let queue = DictationQueue()
             let trail = self.trail
             ctx = ModeContext(
-                recorder: recorder, speech: speech, models: FakeModels(), presenter: presenter,
+                recorder: recorder, speech: speech, models: models, presenter: presenter,
                 queue: queue, session: session, work: InFlightWork(queue: queue, session: session),
                 settings: settings, records: FakeRecords(trail: trail), report: FaultSink { _, _, _, _, _, _, _ in },
                 typing: sink, typingBlockedNote: { "Allow Accessibility" },

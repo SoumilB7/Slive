@@ -36,6 +36,8 @@ import AppKit
     private var collapseWork: DispatchWorkItem?
     /// Pending "offer a ✕" on the transcribing pill.
     private var stuckWork: DispatchWorkItem?
+    /// Run once at the next hide (see `whenIdle`).
+    private var idleWaiters: [@MainActor () -> Void] = []
 
     init(model: AudioModel, scheduler: MainScheduler = DispatchMainScheduler.shared,
          makeSurface: @escaping () -> OverlaySurface) {
@@ -122,8 +124,14 @@ import AppKit
         scheduler.after(Self.hideSoonSeconds) { [weak self] in
             guard let self else { return }
             guard self.isIdle else { return }
-            self.surface.hide()   // hide() resets the model
+            self.hide()
         }
+    }
+
+    /// Run `work` now if nothing is showing, else right after the overlay
+    /// next hides — for late results that mustn't cover a newer hold or box.
+    func whenIdle(_ work: @escaping @MainActor () -> Void) {
+        if isIdle { work() } else { idleWaiters.append(work) }
     }
 
     /// A new session supersedes the result box: its auto-collapse is moot.
@@ -153,6 +161,14 @@ import AppKit
 
     private func collapse() {
         collapseWork = nil
+        hide()
+    }
+
+    private func hide() {
         surface.hide()   // hide() resets the model
+        // A waiter may show something new; ones it queues wait for that to hide.
+        let waiters = idleWaiters
+        idleWaiters = []
+        for work in waiters { work() }
     }
 }

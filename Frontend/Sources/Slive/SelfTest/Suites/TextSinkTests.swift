@@ -58,21 +58,63 @@ enum TextSinkTests {
 
         // Secure input counts only when the frontmost app holds it (Nov 5:
         // Terminal's Secure Keyboard Entry blocked typing everywhere).
-        t.check(!P.secureInputBlocks(enabled: false, owner: 42, frontmost: 42), "secure input off never blocks")
-        t.check(P.secureInputBlocks(enabled: true, owner: 42, frontmost: 42), "frontmost app holds it → blocks")
-        t.check(!P.secureInputBlocks(enabled: true, owner: 7, frontmost: 42),
+        t.check(!P.secureInputBlocks(enabled: false, owner: 42, frontmost: 42, focusIsSecure: true),
+                "secure input off never blocks")
+        t.check(P.secureInputBlocks(enabled: true, owner: 42, frontmost: 42, focusIsSecure: false),
+                "frontmost app holds it → blocks")
+        t.check(!P.secureInputBlocks(enabled: true, owner: 7, frontmost: 42, focusIsSecure: false),
                 "a background app's secure input doesn't block")
-        t.check(P.secureInputBlocks(enabled: true, owner: nil, frontmost: 42), "unreadable holder → blocks")
-        t.check(!P.secureInputBlocks(enabled: true, owner: 7, frontmost: nil), "no frontmost app → holder isn't it")
+        t.check(!P.secureInputBlocks(enabled: true, owner: nil, frontmost: 42, focusIsSecure: false),
+                "unreadable holder, plain field → types (fails open)")
+        t.check(P.secureInputBlocks(enabled: true, owner: nil, frontmost: 42, focusIsSecure: true),
+                "unreadable holder, password field → blocks")
+        t.check(!P.secureInputBlocks(enabled: true, owner: 7, frontmost: nil, focusIsSecure: false),
+                "no frontmost app → holder isn't it")
+        var focusRead = false
+        _ = P.secureInputBlocks(enabled: true, owner: 42, frontmost: 42,
+                                focusIsSecure: { focusRead = true; return false }())
+        t.check(!focusRead, "a readable holder never reads focus")
 
-        // Delivery receipt: an unreadable field fails open (no copy box).
+        // A refused hold names the real cause (Nov 27: Terminal's Secure
+        // Keyboard Entry said "Password field" on every hold).
+        t.equal(P.secureInputMessage(focusIsSecure: true, ownerName: "Safari"), P.passwordFieldMessage,
+                "password field focused → the password line")
+        t.equal(P.secureInputMessage(focusIsSecure: false, ownerName: "Terminal"), "Secure input is on in Terminal",
+                "secure input without a password field names the app")
+        t.equal(P.secureInputMessage(focusIsSecure: false, ownerName: nil), "Secure input is on",
+                "unknown holder → plain line")
+        t.equal(P.secureInputMessage(focusIsSecure: false, ownerName: ""), "Secure input is on",
+                "nameless holder → plain line")
+        t.equal(P.holdNotice(owner: 42, frontmost: 42, focusIsSecure: false, ownerName: "Terminal"),
+                "Secure input is on in Terminal", "front app holds it, no password field → refused, names it")
+        t.equal(P.holdNotice(owner: 42, frontmost: 42, focusIsSecure: true, ownerName: "Safari"),
+                P.passwordFieldMessage, "front app's password field → refused, password line")
+        t.equal(P.holdNotice(owner: 7, frontmost: 42, focusIsSecure: true, ownerName: "1Password"), nil,
+                "a background app holds it → the hold starts")
+        t.equal(P.holdNotice(owner: nil, frontmost: 42, focusIsSecure: false, ownerName: nil),
+                "Secure input is on", "unreadable holder → still refused (the release may be unseen)")
+
+        // Delivery receipt.
         let r = CFRange(location: 3, length: 0)
         t.equal(DeliveryVerifier.receipt(beforeValue: "abc", beforeRange: r, afterValue: nil, afterRange: nil),
-                .unknown, "unreadable field after typing → unknown, no copy box")
+                .unknown, "unreadable field after typing → unknown")
         t.equal(DeliveryVerifier.receipt(beforeValue: "abc", beforeRange: r, afterValue: "abcd", afterRange: r),
                 .landed, "value changed → landed")
         t.equal(DeliveryVerifier.receipt(beforeValue: "abc", beforeRange: r, afterValue: "abc", afterRange: r),
                 .notYet, "nothing moved → not yet")
+
+        // What each re-read leads to: the copy box shows unless the text is
+        // CONFIRMED, so an unreadable field is a miss like "not yet".
+        typealias V = DeliveryVerifier
+        let last = V.delays.count - 1
+        t.equal(V.step(.landed, attempt: 0), .done, "landed → done, no box")
+        t.equal(V.step(.landed, attempt: last), .done, "landed on the last look → done, no box")
+        t.equal(V.step(.notYet, attempt: 0), .retry, "not yet → look again")
+        t.equal(V.step(.notYet, attempt: last), .fail, "not yet on the last look → copy box")
+        t.equal(V.step(.unknown, attempt: 0), .retry, "unreadable → look again")
+        t.equal(V.step(.unknown, attempt: last), .fail, "unreadable on the last look → copy box")
+        t.check((0..<last).allSatisfy { V.step(.unknown, attempt: $0) == .retry },
+                "every look before the last retries")
     }
 
     // MARK: Sinks

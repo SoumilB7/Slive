@@ -52,7 +52,8 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
         return self.customModels
     }
     private lazy var parakeetStorage = ParakeetStorage(basket: modelBasket)
-    private lazy var downloads = ModelDownloads(basket: modelBasket, board: self)
+    private let downloadStallSeconds: TimeInterval
+    private lazy var downloads = ModelDownloads(basket: modelBasket, board: self, stallSeconds: downloadStallSeconds)
     private lazy var loads = ModelLoads(residency: residency, board: self, report: .app) { [unowned self] in
         self.engine(for: $0).loader
     }
@@ -83,8 +84,10 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
     init(basket: ModelBasket = .standard,
          customModels: @escaping () -> [CustomWhisperModel] = CustomWhisperModelRegistry.load,
          policy: @escaping () -> ResidencyPolicy = { ResidencyPolicy(Settings.shared.resolvedSpeedTier) },
-         engines: ((String) -> (storage: ModelStorage, loader: ModelLoader))? = nil) {
+         engines: ((String) -> (storage: ModelStorage, loader: ModelLoader))? = nil,
+         downloadStallSeconds: TimeInterval = ModelDownloads.defaultStallSeconds) {
         modelBasket = basket
+        self.downloadStallSeconds = downloadStallSeconds
         loadCustomModels = customModels
         engineOverride = engines
         residency = ResidencyManager(policy: policy, warmUpAudio: { AudioClip.warmUp })
@@ -209,7 +212,8 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
     func startLiveDictation(
         model: String,
         onUpdate: @escaping @MainActor (_ transcript: String, _ energy: Float) -> Void,
-        onFailure: (@MainActor () -> Void)? = nil
+        onFailure: (@MainActor () -> Void)? = nil,
+        onMicLost: (@MainActor () -> Void)? = nil
     ) -> Bool {
         let context = LiveContext(
             model: model, mic: Self.chosenMic(), onUpdate: onUpdate, onFailure: onFailure,
@@ -219,7 +223,10 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
             })
         guard let session = residency.recognizer(model)?.makeLiveSession(context) else { return false }
         stopLiveDictation()   // never run two at once
-        guard session.start() else { return false }
+        // MicCapture calls this on the main queue.
+        context.mic.capture.onDeviceLost = { MainActor.assumeIsolated { onMicLost?() } }
+        liveCapture = context.mic.capture
+        guard session.start() else { clearMicLost(); return false }
         live = session
         liveModel = model
         liveConfirmedText = ""
@@ -246,10 +253,20 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
 
     /// Stop the live stream (ends its mic capture + realtime loop).
     func stopLiveDictation() {
+        clearMicLost()
         guard let session = live else { return }
         live = nil
         liveModel = nil
         session.stop()
+    }
+
+    /// The capture a live stream watches for mic loss; its handler must not
+    /// outlive the stream (the next hold shares the unit).
+    private var liveCapture: MicCapture?
+
+    private func clearMicLost() {
+        liveCapture?.onDeviceLost = nil
+        liveCapture = nil
     }
 
     // Silence trim moved to `SilenceTrim` (the pipeline's audio stage);
@@ -436,7 +453,10 @@ final class TranscriptionModel: ObservableObject, ModelStatusBoard {
         loads.clearFailure(model)
         let storage = storage(for: model)
         if storage.isInstalledLocally(model) { await loads.loadShared(model); return }
-        // Never delete files under a download that's still running.
+        // Never delete files under a download that's still running — nor
+        // under a stalled one the watchdog gave up on, which may still write.
+        if downloads.isRunning(model) { await download(model); return }
+        guard await downloads.settleAbandoned(model) else { return }
         if downloads.isRunning(model) { await download(model); return }
         // Let an in-flight load of this model finish first: deleting its
         // files under it and then JOINING it (download → loadShared) left

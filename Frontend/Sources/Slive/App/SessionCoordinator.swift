@@ -241,7 +241,10 @@ import Foundation
     private func sessionStartedRecently(within interval: TimeInterval) -> Bool {
         if let t = recordStart, now.timeIntervalSince(t) < interval { return true }
         if let t = liveStart, now.timeIntervalSince(t) < interval { return true }
-        if case .tail = gesture { return true }   // tap-1's delayed stop is still queued
+        // A tail with nothing capturing has nothing to lose. A capturing tail
+        // is judged by its start like any session: the tail of a long hold
+        // is a real dictation, not tap 1 of a double.
+        if case .tail = gesture, !(handler?.isCapturing ?? false) { return true }
         return false
     }
 

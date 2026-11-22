@@ -307,6 +307,12 @@ enum FocusProbe {
         return false
     }
 
+    /// Whether the focused element is a password field. One raw AX read;
+    /// false when AX can't say.
+    static func focusIsSecure() -> Bool {
+        rawFocusedElement().map(isSecure) ?? false
+    }
+
     // MARK: - Stream target
 
     /// Snapshot the current focus target (call right after the stream check).

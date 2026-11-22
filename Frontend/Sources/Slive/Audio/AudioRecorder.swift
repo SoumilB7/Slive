@@ -91,15 +91,16 @@ final class AudioRecorder {
     /// session's canonical in-memory samples (empty on the native-format
     /// fallback path — transcribe from the file then).
     @discardableResult
-    func stop() -> (url: URL?, samples: [Float]) {
-        guard isRecording, let source else { return (nil, []) }
+    func stop() -> RecordedAudio {
+        guard isRecording, let source else { return RecordedAudio(url: nil, samples: []) }
         isRecording = false
+        let deviceLost = source.deviceLost   // read before stop() forgets it
         source.stop()
         for consumer in consumers { consumer.end() }   // WAV closes; meters go to rest
         let url = wav.takeURL()
         startTime = nil
         source.rearm()
-        return (url, accumulator.take())
+        return RecordedAudio(url: url, samples: accumulator.take(), deviceLost: deviceLost)
     }
 
     /// AUDIO THREAD: one source buffer to every consumer.
@@ -107,4 +108,13 @@ final class AudioRecorder {
         let buffer = CapturedBuffer(pcm, canonicalRate: canonicalRate)
         for consumer in consumers { consumer.consume(buffer) }
     }
+}
+
+/// One finished recording.
+struct RecordedAudio {
+    let url: URL?
+    let samples: [Float]
+    /// The mic went away mid-recording (unplugged, Bluetooth dropped): the
+    /// rest of the hold is missing, and the delivery says so.
+    var deviceLost = false
 }
