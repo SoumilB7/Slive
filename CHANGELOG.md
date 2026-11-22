@@ -2,6 +2,22 @@
 
 Notable changes to Slive, newest first. Versions follow [semver](https://semver.org).
 
+## [0.2.5] - 2026-11-22
+
+### Added
+- Crash and freeze reports: a prefilled GitHub issue, personal details removed.
+- Show in Dock switch (Settings → General).
+- Shortcut clash warnings.
+- A notice when you dictate into a password field.
+
+### Fixed
+- Settings froze on new installs.
+- A crash during model warm-up.
+- F-key, arrow and double-tap shortcuts.
+- Typing into password fields in some browsers.
+- The copy box now shows whenever Slive can't confirm your text was typed.
+- Dictations right after launch no longer wait for the large model.
+
 ## [0.2.4] - 2026-11-01
 
 ### Changed
@@ -75,6 +91,7 @@ First release, in two downloads: **Slive** (on-device speech only) and **Slive F
 - Fine-tune Whisper on your own voice, on this Mac.
 - The bundled server starts only when needed, stops after 10 idle minutes, and only answers Slive.
 
+[0.2.5]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.5
 [0.2.4]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.4
 [0.2.3]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.3
 [0.2.2]: https://github.com/SoumilB7/Slive/releases/tag/v0.2.2
